@@ -1,0 +1,403 @@
+BestFirstSearch Test Report
+Author: Chalwe Silas
+
+Programme: Final-Year Computer Engineering
+
+Institution: The Copperbelt University
+
+Date: 8 May 2026
+This README reports the exact inputs, expected results, measured results and findings for the BestFirstSearch correctness and scalability tests.
+1. Final result
+Table 1 - Overall test result
+Test group	Cases or scales	Result
+Candidate scoring and Best-First ordering	3 exact Auto loads	PASS
+Constraint rejection reasons	5 rejection paths	PASS
+Sequential power allocation	2 Auto loads	PASS
+Incremental branch limit	3 Auto loads	PASS
+Equal-score ordering	2 Auto loads	PASS
+Validation, reset and reuse	1 combined test group	PASS
+Scalability and timing	10, 100, 200, 500 and 1,000 loads	PASS
+Strict C++17 compilation	-Wall -Wextra -Wpedantic -Werror	PASS
+AddressSanitizer	Invalid memory access	NONE DETECTED
+UndefinedBehaviorSanitizer	Undefined C++ behaviour	NONE DETECTED
+
+The final program output is:
+All BestFirstSearch correctness and scalability tests passed.
+
+2. Exact project layout and command
+The command below matches this flat library structure:
+kilowatts/
+|-- lib/
+|   `-- BestFirstSearch/
+|       |-- BestFirstSearch.h
+|       |-- BestFirstSearch.cpp
+|       `-- README.md
+`-- test/
+    `-- BestFirstSearch/
+        `-- test_best_first_search.cpp
+
+The test file must contain:
+#include "BestFirstSearch.h"
+
+From the kilowatts project root, run:
+g++ -std=c++17 -O2 \
+    -Wall -Wextra -Wpedantic -Werror \
+    -fno-exceptions -fno-rtti \
+    -Ilib/BestFirstSearch \
+    lib/BestFirstSearch/BestFirstSearch.cpp \
+    test/BestFirstSearch/test_best_first_search.cpp \
+    -o test_best_first_search
+
+./test_best_first_search
+
+Do not compile the test with -DNDEBUG. That option disables assert().
+3. System boundary: full tree or flat input?
+The complete distribution model is a hierarchical tree. BestFirstSearch does not traverse that full tree.
+Stage 1 traverses the full distribution tree once and creates the candidate array. This is Stage 1 and Algorithm 4.2 on PDF pages 36-37. Stage 2 receives the flat candidate array and applies Algorithms 4.3-4.5 on PDF pages 37-38.
+FULL DISTRIBUTION TREE
+        |
+        | Stage 1: traverse once
+        v
+FLAT AUTO-LOAD CANDIDATE ARRAY + BRANCH TOTALS/LIMITS
+        |
+        | Stage 2: BestFirstSearch
+        v
+FINAL ON/OFF SCHEDULE
+
+Each flat candidate keeps b_i, the branch index of load i. This preserves the electrical branch relationship required by the constraint guard.
+4. Formulas implemented and tested
+No LaTeX commands are used in this README. Every formula is shown as plain readable text.
+Table 2A - Exact Candidate Evaluation formulas (Algorithm 4.3, PDF page 37)
+Term	Exact implemented formula
+p_i	p_i = P_i / max(P_available, 1 W)
+s_i	s_i = max(0, P_i_peak - P_i) / max(P_available, 1 W)
+B	B = clamp((SoC_warn - SoC) / (SoC_warn - SoC_min), 0, 1)
+q_i	q_i = W_i / W_max
+r_i	r_i = a_i * (1 - d_i)
+g_i	g_i = (w_P * p_i) + (w_S * s_i) + (w_B * B)
+h_i	h_i = w_Q * (1 - q_i) + w_T * r_i
+f_i	f_i = g_i + h_i
+
+Table 2B - Candidate Evaluation meanings
+Term	Meaning	Unit/range
+p_i	Normalized running-power cost	Dimensionless
+s_i	Normalized startup-surge cost	Dimensionless
+B	Battery-pressure term	0 to 1
+q_i	Normalized user priority	0 to 1
+r_i	Penalty when a schedule exists but is not due	0 or 1
+g_i	Running, startup and battery cost	Dimensionless
+h_i	Priority and schedule heuristic cost	Dimensionless
+f_i	Final Best-First score	Dimensionless
+
+The candidate with the smallest f_i is extracted from OPEN first.
+Table 3A - Constraint Guard formulas (Algorithm 4.4, PDF pages 37-38)
+Order/check	Exact condition required to pass
+1 - Battery reserve	SoC > SoC_min
+2 - Power budget	P_i <= P_remaining
+3 - Battery limit	P_committed + P_i_peak <= P_battery_max
+4 - Main limit	(P_committed + P_i_peak) / V_B <= I_main_max
+5 - Branch limit	(P_b_i + P_i_peak) / V_B <= I_b_max_i
+
+Startup-current terms:
+I_main_start_i = (P_committed + P_i_peak) / V_B
+I_b_start_i    = (P_b_i + P_i_peak) / V_B
+
+Table 3B - Stored result when a constraint fails
+Order/check	Stored rejection reason
+1 - Battery reserve	LOW_BATTERY
+2 - Power budget	POWER_BUDGET_EXCEEDED
+3 - Battery limit	BATTERY_CURRENT_LIMIT
+4 - Main limit	MAIN_LIMIT_EXCEEDED
+5 - Branch limit	BRANCH_LIMIT_EXCEEDED
+
+Table 4 - Admission updates (Algorithm 4.5, PDF page 38)
+Updated value	Exact update after admission
+Decision	x_i = 1
+Remaining power	P_remaining = P_remaining - P_i
+Total committed power	P_committed = P_committed + P_i
+Branch committed power	P_b_i = P_b_i + P_i
+
+A rejected load receives x_i = 0 and stores its first failed constraint in rejectionReason_i.
+5. Exact scoring loads tested
+The scoring test used these common system values:
+Table 5 - Common scoring-test state
+Input	Value
+SoC	30%
+SoC_min	20%
+SoC_warn	40%
+P_available	100 W
+P_remaining	100 W
+P_committed	0 W
+P_battery_max	200 W
+V_B	10 V
+I_main_max	20 A
+w_P, w_S, w_B, w_Q, w_T	1 each
+W_max	10
+Branches	0 and 1, each limited to 10 A
+
+Battery pressure was:
+B = (40 - 30) / (40 - 20) = 0.5
+
+Table 6 - Exact Auto-load inputs used in the scoring test
+Load ID	b_i	P_i	P_i_peak	W_i	a_i	d_i
+101	0	20 W	30 W	10	0	0
+102	0	10 W	10 W	5	1	0
+103	1	5 W	5 W	10	0	0
+
+Table 7A - Normalized scoring terms
+Load ID	p_i	s_i	q_i	r_i
+101	0.20	0.10	1.00	0.00
+102	0.10	0.00	0.50	1.00
+103	0.05	0.00	1.00	0.00
+
+Table 7B - Final scores and observed decisions
+Load ID	g_i	h_i	f_i	Processing order	x_i
+101	0.80	0.00	0.80	1	1
+102	0.60	1.50	2.10	2	1
+103	0.55	0.00	0.55	0	1
+
+Observed Best-First order:
+Load 103 -> Load 101 -> Load 102
+
+Final state:
+Table 8 - Final state after the three scoring loads
+Result	Expected	Observed	Finding
+Selected loads	3	3	PASS
+Rejected loads	0	0	PASS
+P_committed	35 W	35 W	PASS
+P_remaining	65 W	65 W	PASS
+Branch 0 P_b_i	30 W	30 W	PASS
+Branch 1 P_b_i	5 W	5 W	PASS
+
+6. Exact rejection loads tested
+Table 9A - Battery and power inputs for rejection tests
+Case	SoC	P_remaining	P_committed	P_battery_max
+Low battery	20%	0 W	0 W	100 W
+Power budget	80%	5 W	0 W	100 W
+Battery limit	80%	80 W	20 W	25 W
+Main limit	80%	100 W	0 W	100 W
+Branch limit	80%	100 W	0 W	100 W
+
+Table 9B - Available power and main electrical inputs
+Case	P_available	V_B	I_main_max
+Low battery	0 W	10 V	10 A
+Power budget	100 W	10 V	10 A
+Battery limit	100 W	10 V	10 A
+Main limit	100 W	10 V	1 A
+Branch limit	100 W	10 V	10 A
+
+Table 10A - Branch and load inputs for rejection tests
+Case	Branch P_b_i	I_b_max_i	P_i	P_i_peak
+Low battery	0 W	10 A	1 W	1 W
+Power budget	0 W	10 A	10 W	10 W
+Battery limit	0 W	10 A	1 W	10 W
+Main limit	0 W	10 A	1 W	20 W
+Branch limit	0 W	1 A	1 W	20 W
+
+Table 10B - Expected and observed rejection results
+Case	Expected reason	Observed reason	Finding
+Low battery	LOW_BATTERY	LOW_BATTERY	PASS
+Power budget	POWER_BUDGET_EXCEEDED	POWER_BUDGET_EXCEEDED	PASS
+Battery limit	BATTERY_CURRENT_LIMIT	BATTERY_CURRENT_LIMIT	PASS
+Main limit	MAIN_LIMIT_EXCEEDED	MAIN_LIMIT_EXCEEDED	PASS
+Branch limit	BRANCH_LIMIT_EXCEEDED	BRANCH_LIMIT_EXCEEDED	PASS
+
+7. Sequential and branch-update loads tested
+Table 11A - Sequential power-budget load inputs and decisions
+Processing order	Load ID	P_i	W_i	Decision
+0	10	10 W	10	ON
+1	20	10 W	1	OFF
+
+Table 11B - Sequential power-budget state changes
+Load ID	Reason	P_remaining after decision
+10	NONE	0 W
+20	POWER_BUDGET_EXCEEDED	0 W
+
+This verifies that an admitted load changes the available budget before the next candidate is checked.
+Table 12 - Incremental branch-current test
+Common values were V_B = 10 V, I_b_max_i = 3 A, P_i = 10 W, and P_i_peak = 20 W.
+Processing order	Load ID	Startup-current calculation	Decision
+0	1	(0 W + 20 W) / 10 V = 2 A	ON
+1	2	(10 W + 20 W) / 10 V = 3 A	ON
+2	3	(20 W + 20 W) / 10 V = 4 A	OFF - BRANCH_LIMIT_EXCEEDED
+
+Final branch committed power was 20 W, as expected.
+8. Scalability workload tested
+The scalability test uses deterministic values, so every execution receives the same candidate data.
+Table 13 - Candidate-generation formulas
+Candidate value	Test formula
+Load ID	autoLoadId_i = i + 1
+Branch	b_i = 0
+Running power	P_i = 1.0 + ((i * 37) mod 10) * 0.05 W
+Peak power	P_i_peak = P_i + 0.5 + ((i * 17) mod 5) * 0.05 W
+Priority	W_i = ((i * 31) mod 100) + 1
+Has schedule	a_i = 1 when i mod 3 = 0; otherwise 0
+Schedule due	d_i = 1 when i mod 6 = 0; otherwise 0
+
+Candidate ranges were P_i = 1.00-1.45 W and P_i_peak = 1.50-2.15 W.
+Table 14A - Scalability battery and power inputs
+Candidate loads n	SoC	P_available	Initial P_remaining	P_battery_max
+10	80%	20 W	20 W	40 W
+100	80%	200 W	200 W	400 W
+200	80%	400 W	400 W	800 W
+500	80%	1,000 W	1,000 W	2,000 W
+1,000	80%	2,000 W	2,000 W	4,000 W
+
+Table 14B - Scalability electrical-limit inputs
+Candidate loads n	Branch used	V_B	I_main_max	I_b_max_i
+10	0	12 V	20 A	20 A
+100	0	12 V	200 A	200 A
+200	0	12 V	400 A	400 A
+500	0	12 V	1,000 A	1,000 A
+1,000	0	12 V	2,000 A	2,000 A
+
+These are synthetic algorithm-scaling limits. They are not proposed physical breaker or battery ratings.
+For each load count, the test performs 10 unmeasured warm-up cycles followed by 101 measured cycles. The reported time is the median of the 101 measured cycles.
+Table 15A - Amount of scalability work executed
+Loads per cycle	Total cycles	Candidate records checked
+10	111	1,110
+100	111	11,100
+200	111	22,200
+500	111	55,500
+1,000	111	111,000
+
+Table 15B - Final power results
+Loads	Expected P_committed	Observed P_committed	Expected P_remaining	Observed P_remaining
+10	12.25 W	12.25 W	7.75 W	7.75 W
+100	122.50 W	122.50 W	77.50 W	77.50 W
+200	245.00 W	245.00 W	155.00 W	155.00 W
+500	612.50 W	612.50 W	387.50 W	387.50 W
+1,000	1,225.00 W	1,225.00 W	775.00 W	775.00 W
+
+Table 16A - Processing validation at every scalability size
+Loads	Loads processed	Unique processing positions	Finite scores
+10	10	10	10
+100	100	100	100
+200	200	200	200
+500	500	500	500
+1,000	1,000	1,000	1,000
+
+Table 16B - Selection result at every scalability size
+Loads	Selected	Rejected	Result
+10	10	0	PASS
+100	100	0	PASS
+200	200	0	PASS
+500	500	0	PASS
+1,000	1,000	0	PASS
+
+9. Execution-time findings
+Reference host:
+Compiler: g++ 13.3.0
+Build:    C++17 with -O2, exceptions OFF, RTTI OFF
+CPU:      AMD EPYC 9V74 virtual CPU
+System:   64-bit Linux
+
+The values below are medians from three complete benchmark executions. Each execution internally used the median of 101 measured cycles after 10 warm-up cycles.
+Table 17 - Measured host execution time
+Candidate loads	Setup time	Registration time	Scheduler run() time	Complete time	Result
+10	0.22 us	0.18 us	0.42 us	0.86 us	PASS
+100	0.24 us	2.37 us	5.50 us	8.10 us	PASS
+200	0.28 us	6.13 us	11.69 us	18.14 us	PASS
+500	0.40 us	31.27 us	32.42 us	64.08 us	PASS
+1,000	0.43 us	108.67 us	77.69 us	186.60 us	PASS
+
+us means microseconds. These host times will differ on another computer. They are not ESP32 timing measurements.
+Table 18 - Normalized O(n log n) timing evidence
+n	n * log2(n)	Scheduler time	time / (n * log2(n))
+10	33.22	0.42 us	0.01264 us
+100	664.39	5.50 us	0.00828 us
+200	1,528.77	11.69 us	0.00765 us
+500	4,482.89	32.42 us	0.00723 us
+1,000	9,965.78	77.69 us	0.00780 us
+
+The normalized value becomes approximately stable from 100 through 1,000 candidates. This supports the source-code complexity analysis but does not replace the mathematical proof.
+10. Complexity finding
+Table 19 - BestFirstSearch::run() complexity
+Operation inside run()	Number of operations	Cost per operation	Total cost
+Evaluate candidate formulas	n	O(1)	O(n)
+Insert candidates into binary min-heap OPEN	n	O(log n)	O(n log n)
+Extract candidates from OPEN	n	O(log n)	O(n log n)
+Constraint check and decision update	n	O(1)	O(n)
+
+Therefore:
+T_run(n)
+  = O(n) + O(n log n) + O(n log n) + O(n)
+  = O(n log n)
+
+Memory = O(n)
+
+This matches Algorithm 4.5 on PDF page 38.
+Table 20 - Complete current path complexity
+Path	Current complexity	Reason
+Full-tree traversal in Stage 1	O(number of tree nodes)	Each tree node is visited once
+Repeated addAutoLoad() registration	Worst-case O(n^2)	Duplicate IDs are checked with a linear scan
+BestFirstSearch::run()	O(n log n)	Binary min-heap insertions and extractions
+
+The honest conclusion is that run() is O(n log n), while the current complete registration-plus-scheduling path is worst-case O(n^2) until duplicate-ID lookup is optimized.
+11. Complete term glossary
+Table 21 - Input and configuration terms
+Term	Exact meaning	Unit/range
+i	Candidate-array position, not the load ID	0 to n - 1
+n	Number of candidate Auto loads	Count
+autoLoadId_i	Unique system ID of Auto load i	Unsigned integer
+b_i	Zero-based branch index belonging to load i; written b(i) in Algorithm 4.4	Integer, no unit
+P_i	Normal running power of load i	Watts
+P_i_peak	Peak startup power of load i	Watts
+W_i	User priority of load i; it is not watts	0 to W_max
+W_max	Maximum permitted priority	Positive integer
+a_i	Whether load i has a schedule	0 or 1
+d_i	Whether the schedule is currently due	0 or 1
+SoC	Current battery state of charge	0% to 100%
+SoC_min	Protected minimum battery state of charge	Percent
+SoC_warn	Battery warning threshold	Percent
+P_available	Total safe power offered to the scheduler	Watts
+P_remaining	Power not yet assigned to admitted Auto loads	Watts
+P_committed	Running power already committed	Watts
+P_battery_max	Maximum permitted battery power	Watts
+V_B	Battery/DC-bus voltage	Volts
+I_main_max	Maximum main-path current	Amperes
+P_b_i	Running power already committed to branch b_i; not the power of load i	Watts
+I_b_max_i	Maximum current of branch b_i	Amperes
+w_P, w_S, w_B, w_Q, w_T	Non-negative scoring weights	Dimensionless
+
+Table 22 - Calculated and output terms
+Term	Exact meaning	Unit/range
+p_i	Normalized running-power term	Dimensionless
+s_i	Normalized startup-surge term	Dimensionless
+B	Battery-pressure term	0 to 1
+q_i	Normalized user-priority term	0 to 1
+r_i	Schedule-penalty term	0 or 1
+g_i	Running, startup and battery cost	Dimensionless
+h_i	Priority and schedule heuristic cost	Dimensionless
+f_i	Final Best-First score	Dimensionless
+I_main_start_i	Predicted main startup current for candidate i	Amperes
+I_b_start_i	Predicted startup current on branch b_i	Amperes
+x_i	Final decision	1 = ON, 0 = OFF
+OPEN	Binary min-heap ordered by the smallest f_i	Up to n indices
+processingOrder_i	Position in which candidate i was extracted	0 to n - 1
+rejectionReason_i	First constraint that rejected candidate i	Rejection code
+
+Table 23 - Rejection codes
+Code	Meaning
+NONE	Candidate passed all constraints
+LOW_BATTERY	SoC is at or below SoC_min
+POWER_BUDGET_EXCEEDED	P_i is greater than P_remaining
+BATTERY_CURRENT_LIMIT	Battery startup-power limit would be exceeded
+MAIN_LIMIT_EXCEEDED	Main startup-current limit would be exceeded
+BRANCH_LIMIT_EXCEEDED	Branch startup-current limit would be exceeded
+
+12. What this test does not claim
+Table 24 - Remaining integration and hardware tests
+Not covered by this host test	Required later
+Full distribution-tree traversal	Stage 1 unit and integration test
+INA219 voltage/current/power	Sensor calibration and hardware test
+Battery SoC accuracy	Battery model and discharge test
+ESP32 execution time	Measure using the ESP-IDF high-resolution timer
+Relay operation	GPIO, relay and feedback test
+ESP-NOW communication	Central-node/smart-node integration test
+Long-term memory stability	Endurance test
+Real DC electrical limits	Controlled hardware safety test
+
+13. Final finding
+The correctness suite passed every formula, ordering, rejection, capacity-update, branch-update, tie-handling, validation and reset test. The scalability suite passed every size from 10 to 1,000 candidates, with every score finite, every candidate processed exactly once, every processing position unique and every final power total correct.
+The implementation of BestFirstSearch::run() achieves the proposed O(n log n) scheduling complexity from Algorithm 4.5 on PDF page 38. The current duplicate-ID scan in addAutoLoad() remains a separately documented O(n^2) registration limitation.

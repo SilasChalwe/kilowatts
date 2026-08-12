@@ -1,0 +1,108 @@
+/**
+ * @file Node.cpp
+ * @brief Implements one ESP32 Node and the Loads that belong to it.
+ *
+ * @author Chalwe Silas
+ * @programme Final-Year Computer Engineering
+ * @institution The Copperbelt University
+ * @date 8 May 2026
+ */
+
+#include "Node.h"
+
+namespace kilowatts {
+
+
+Node::Node(const MacAddress& macAddress)
+    : macAddress_(macAddress)
+{
+}
+
+
+bool Node::addLoad(const Load& load)
+{
+    /*
+     * A Node may only contain Loads whose Load ID carries
+     * this Node's MAC address.
+     */
+    if (load.getMacAddress() != macAddress_) {
+        return false;
+    }
+
+    /*
+     * The relay pin identifies one Load inside this Node.
+     * Two Loads belonging to the same Node cannot use
+     * the same relay pin.
+     */
+    if (isRelayPinAlreadyUsed(load.getRelayPin())) {
+        return false;
+    }
+
+    loads_.push_back(load);
+    return true;
+}
+
+
+const Node::MacAddress& Node::getMacAddress() const
+{
+    return macAddress_;
+}
+
+
+std::size_t Node::getNumberOfLoads() const
+{
+    return loads_.size();
+}
+
+
+Load* Node::getLoad(std::size_t loadIndex)
+{
+    if (loadIndex >= loads_.size()) {
+        return nullptr;
+    }
+
+    return &loads_[loadIndex];
+}
+
+
+const Load* Node::getLoad(std::size_t loadIndex) const
+{
+    if (loadIndex >= loads_.size()) {
+        return nullptr;
+    }
+
+    return &loads_[loadIndex];
+}
+
+
+Load* Node::getLoadByRelayPin(std::uint8_t relayPin)
+{
+    for (Load& load : loads_) {
+        if (load.getRelayPin() == relayPin) {
+            return &load;
+        }
+    }
+
+    return nullptr;
+}
+
+
+const Load* Node::getLoadByRelayPin(std::uint8_t relayPin) const
+{
+    for (const Load& load : loads_) {
+        if (load.getRelayPin() == relayPin) {
+            return &load;
+        }
+    }
+
+    return nullptr;
+}
+
+
+bool Node::isRelayPinAlreadyUsed(std::uint8_t relayPin) const
+{
+    return getLoadByRelayPin(relayPin) != nullptr;
+}
+
+
+} // namespace kilowatts
