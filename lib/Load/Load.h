@@ -79,6 +79,18 @@ struct LoadPower {
 
 
 /**
+ * Installer-verified electrical ratings for a Load. These are planning
+ * inputs (nameplate or commissioning-test values), never a claim that the
+ * individual Load is currently being measured. The final hardware design
+ * has the single INA219 at Central's battery bus only.
+ */
+struct LoadElectricalRatings {
+    float nominalVoltageVolts;
+    float nominalCurrentAmps;
+};
+
+
+/**
  * A Load's physical health as last reported by the Node that owns it.
  *
  * This is deliberately separate from LoadMode (the configured intent):
@@ -176,7 +188,8 @@ public:
         const std::string& name,
         LoadPower power,
         std::uint16_t priority,
-        LoadMode::Value mode
+        LoadMode::Value mode,
+        LoadElectricalRatings electricalRatings = LoadElectricalRatings{0.0F, 0.0F}
     );
 
 
@@ -352,6 +365,18 @@ public:
     LoadPower getPower() const;
 
 
+    /**
+     * Stores the installer/nameplate voltage/current pair used to derive the
+     * configured running power. A zero/zero pair is permitted only for legacy
+     * loads that have no such rating; a real runtime configuration requires
+     * both values to be positive.
+     */
+    bool setElectricalRatings(LoadElectricalRatings electricalRatings);
+
+    /** Returns the configured installer/nameplate electrical ratings. */
+    LoadElectricalRatings getElectricalRatings() const;
+
+
     /** Changes the priority selected by the user. */
     void setPriority(std::uint16_t priority);
 
@@ -422,6 +447,10 @@ private:
 
     /** Normal running power and startup power. */
     LoadPower power_;
+
+
+    /** Installer/nameplate ratings, distinct from measurements_. */
+    LoadElectricalRatings electricalRatings_;
 
 
     /** Priority selected by the user. */

@@ -108,6 +108,16 @@ public:
     bool addRelay(const RelayConfiguration& configuration);
 
 
+    /**
+     * Removes a relay channel that was just provisionally registered during
+     * a failed hardware-configuration transaction. The relay is driven to
+     * logical OFF before its GPIO is released on ESP32 builds. Normal
+     * operational code does not remove live loads; this exists so a failed
+     * installer command cannot leave an orphaned, untracked output behind.
+     */
+    bool removeRelay(std::uint8_t relayPin);
+
+
     /** Returns how many relay channels are currently registered. */
     std::size_t getNumberOfRelays() const;
 

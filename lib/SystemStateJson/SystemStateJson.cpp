@@ -109,7 +109,7 @@ std::string SystemStateJson::build(const SystemStateInputs& inputs, std::uint32_
     json += "},";
 
     json += "\"power\":{";
-    appendNumberField(json, "measuredTotalLoadPowerWatts", inputs.measuredTotalLoadPowerWatts, true);
+    appendNumberField(json, "estimatedTotalLoadPowerWatts", inputs.estimatedTotalLoadPowerWatts, true);
     appendNumberField(json, "availablePowerWatts", inputs.availablePowerWatts, true);
     appendNumberField(json, "fixedOnRunningPowerWatts", inputs.fixedOnRunningPowerWatts, true);
     appendNumberField(json, "powerAvailableForAutoLoadsWatts", inputs.powerAvailableForAutoLoadsWatts, true);

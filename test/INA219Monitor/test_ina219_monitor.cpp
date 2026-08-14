@@ -420,6 +420,24 @@ void testDevelopmentOverrideBookkeeping() {
                 std::string(toText(MeasurementSource::SIMULATED)) == "SIMULATED");
 }
 
+/**
+ * TEST 12 - PROVISIONING ROLLBACK REMOVAL
+ */
+void testRollbackRemoval() {
+    printSection("TEST 12 - PROVISIONING ROLLBACK REMOVAL");
+
+    INA219Monitor monitor;
+    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
+
+    reportCheck("removeSensor() removes a provisionally registered INA219",
+                monitor.removeSensor(0x40U));
+    reportCheck("A removed INA219 no longer occupies its I2C address or relay pin",
+                monitor.getNumberOfSensors() == 0U &&
+                monitor.findSensorByI2CAddress(0x40U) == nullptr &&
+                monitor.findSensorByRelayPin(16U) == nullptr);
+    reportCheck("removeSensor() rejects an unknown I2C address", !monitor.removeSensor(0x41U));
+}
+
 } // namespace
 
 int main() {
@@ -434,6 +452,7 @@ int main() {
     testCalibrationValidationAndApplication();
     testHostBuildReportsNoHardware();
     testDevelopmentOverrideBookkeeping();
+    testRollbackRemoval();
 
     std::printf("\n======================================================================\n");
     std::printf("RESULTS: %zu passed, %zu failed\n", passedChecks, failedChecks);

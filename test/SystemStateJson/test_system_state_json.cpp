@@ -59,7 +59,7 @@ SystemStateInputs makeInputs() {
     inputs.stateOfChargePercent = 76.5F;
     inputs.stateOfChargeValid = true;
     inputs.stateOfChargeSourceText = "COULOMB_COUNTING";
-    inputs.measuredTotalLoadPowerWatts = 40.0F;
+    inputs.estimatedTotalLoadPowerWatts = 40.0F;
     inputs.availablePowerWatts = 162.0F;
     inputs.fixedOnRunningPowerWatts = 12.0F;
     inputs.powerAvailableForAutoLoadsWatts = 150.0F;
@@ -111,7 +111,7 @@ void testEveryRequiredFieldIsPresent() {
     reportCheck("Battery voltage is present", contains(json, "\"voltageVolts\":12.600"));
     reportCheck("Battery current is present", contains(json, "\"currentAmps\":8.000"));
     reportCheck("State of charge is present", contains(json, "\"stateOfChargePercent\":76.500"));
-    reportCheck("Measured total load power is present", contains(json, "\"measuredTotalLoadPowerWatts\":40.000"));
+    reportCheck("Estimated rated load power is present", contains(json, "\"estimatedTotalLoadPowerWatts\":40.000"));
     reportCheck("Available power (P_available) is present", contains(json, "\"availablePowerWatts\":162.000"));
     reportCheck("Fixed ON running power is present", contains(json, "\"fixedOnRunningPowerWatts\":12.000"));
     reportCheck("Power available for Auto Loads is present",

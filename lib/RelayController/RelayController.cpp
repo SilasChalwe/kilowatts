@@ -106,6 +106,42 @@ bool RelayController::addRelay(const RelayConfiguration& configuration)
 }
 
 
+bool RelayController::removeRelay(std::uint8_t relayPin)
+{
+    for (std::size_t index = 0U; index < relays_.size(); ++index) {
+        RegisteredRelay& relay = relays_[index];
+        if (relay.configuration.relayPin != relayPin) {
+            continue;
+        }
+
+#ifdef ESP_PLATFORM
+        /*
+         * A channel is only removed as part of rolling back a failed
+         * provisioning operation, but still establish the documented safe
+         * OFF level before releasing the pin.
+         */
+        if (relay.hardwareApplied) {
+            if (!writeGpioLevel(relay, false)) {
+                ESP_LOGE(TAG, "Could not drive relay pin %u OFF while rolling back configuration",
+                         static_cast<unsigned int>(relayPin));
+            }
+            const esp_err_t resetResult = gpio_reset_pin(
+                static_cast<gpio_num_t>(relay.configuration.relayPin));
+            if (resetResult != ESP_OK) {
+                ESP_LOGE(TAG, "gpio_reset_pin() failed for relay pin %u during rollback: %s",
+                         static_cast<unsigned int>(relayPin), esp_err_to_name(resetResult));
+            }
+        }
+#endif
+
+        relays_.erase(relays_.begin() + static_cast<std::ptrdiff_t>(index));
+        return true;
+    }
+
+    return false;
+}
+
+
 std::size_t RelayController::getNumberOfRelays() const
 {
     return relays_.size();

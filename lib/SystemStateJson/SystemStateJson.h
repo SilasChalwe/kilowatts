@@ -48,7 +48,8 @@ struct SystemStateInputs {
     /** "UNKNOWN" | "PERSISTED" | "INITIAL_COMMISSIONING" | "COULOMB_COUNTING" — see BatteryStateOfCharge::StateOfChargeSource. */
     const char* stateOfChargeSourceText;
 
-    float measuredTotalLoadPowerWatts;
+    /** Conservative estimate derived from relay confirmations and ratings, not a per-load sensor total. */
+    float estimatedTotalLoadPowerWatts;
     float availablePowerWatts;                 // P_available (Equation 4.14)
     float fixedOnRunningPowerWatts;             // P_fixed
     float powerAvailableForAutoLoadsWatts;      // P_remaining at cycle start (Equation 4.16)

@@ -54,6 +54,7 @@
 #include "BatteryStateOfCharge.h"
 #include "BestFirstSearch.h"
 #include "CentralNodeConfig.h"
+#include "CentralConfigurationStore.h"
 #include "CentralNodeRegistry.h"
 #include "ChipInfo.h"
 #include "CommissioningPackets.h"
@@ -62,6 +63,7 @@
 #include "DevelopmentSession.h"
 #include "EspNowCommunication.h"
 #include "FirmwareVersion.h"
+#include "HardwareConfigurationPackets.h"
 #include "INA219Monitor.h"
 #include "KilowattsSecrets.h"
 #include "Load.h"
@@ -83,6 +85,7 @@
 #include "WiFiManager.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -99,6 +102,11 @@
 #include "nvs_flash.h"
 
 using namespace kilowatts;
+
+static_assert(sizeof(ConfigureLoadCommandPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
+              "ConfigureLoadCommandPacket is too large for one ESP-NOW message");
+static_assert(sizeof(ConfigureLoadAcknowledgementPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
+              "ConfigureLoadAcknowledgementPacket is too large for one ESP-NOW message");
 
 static const char *TAG = "CENTRAL_MAIN";
 
@@ -119,6 +127,7 @@ INA219Monitor sensors;
 RelayController relays;
 BatteryStateOfCharge batteryStateOfCharge;
 LoadConfigurationStore loadConfigurationStore;
+CentralConfigurationStore centralConfigurationStore;
 CentralNodeRegistry registry;
 RelayCommandDispatcher relayCommandDispatcher;
 LoadScheduleEvaluator scheduleEvaluator;
@@ -146,11 +155,10 @@ SemaphoreHandle_t stateMutex = nullptr;
 SemaphoreHandle_t optimizationTriggerSemaphore = nullptr;
 
 /**
- * Section "Remove Automatic Development Battery Input": Central has no
- * battery sensor by default - batterySensorConfigured only ever becomes
- * true through an explicit Development Session SET_SENSOR_INPUT command
- * (see handleDevelopmentCommand()) in this phase, since real battery
- * sensor commissioning does not exist yet. Guarded by stateMutex.
+ * Central has no battery sensor by default. It becomes configured only when
+ * a persisted installer configuration has first registered and probed the
+ * real INA219 (or while an explicit Development Session is active). Guarded
+ * by stateMutex.
  */
 bool batterySensorConfigured = false;
 std::uint8_t batterySensorI2CAddress = 0U;
@@ -306,15 +314,65 @@ void formatMacAddressText(char* buffer, std::size_t bufferSize, const EspNowComm
 }
 
 
+const char* hardwareConfigurationFailureText(HardwareConfigurationFailureReason reason)
+{
+    switch (reason) {
+        case HardwareConfigurationFailureReason::NONE: return "applied";
+        case HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED: return "Node is not commissioned";
+        case HardwareConfigurationFailureReason::UNSUPPORTED_RELAY_PIN: return "relay GPIO is not declared safe by Node firmware";
+        case HardwareConfigurationFailureReason::DUPLICATE_RELAY_PIN: return "relay GPIO is already configured";
+        case HardwareConfigurationFailureReason::INVALID_ELECTRICAL_RATING: return "invalid nominal voltage/current or startup rating";
+        case HardwareConfigurationFailureReason::INVALID_CONFIGURATION: return "invalid load configuration";
+        case HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED: return "Node could not initialize or safely verify relay output";
+        case HardwareConfigurationFailureReason::PERSISTENCE_FAILED: return "Node could not persist configuration";
+        case HardwareConfigurationFailureReason::CAPACITY_REACHED: return "Node load capacity reached";
+    }
+    return "unknown configuration failure";
+}
+
+
+/**
+ * Central repeats the Smart Node's board-profile check before forwarding a
+ * load command. The Smart Node remains the final authority, but this avoids
+ * sending an obviously unsafe GPIO request across the mesh and makes an old
+ * or unverified capability report fail visibly at the installer console.
+ */
+bool nodeDeclaresRelayPin(const NodeCommissioningRegistry::CommissioningRecord& record,
+                          std::uint8_t relayPin)
+{
+    for (std::size_t index = 0U; index < record.relayCapabilityCount; ++index) {
+        if (record.relayPins[index] == relayPin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+bool sameBatterySensorConfiguration(
+    const CentralConfigurationStore::BatterySensorConfiguration& first,
+    const CentralConfigurationStore::BatterySensorConfiguration& second)
+{
+    constexpr float EPSILON = 0.00001F;
+    return first.configured == second.configured &&
+           first.i2cAddress == second.i2cAddress &&
+           std::fabs(first.shuntResistanceOhms - second.shuntResistanceOhms) <= EPSILON &&
+           std::fabs(first.maximumExpectedCurrentAmps - second.maximumExpectedCurrentAmps) <= EPSILON &&
+           std::fabs(first.emaAlpha - second.emaAlpha) <= EPSILON &&
+           std::fabs(first.batteryCapacityAmpHours - second.batteryCapacityAmpHours) <= EPSILON &&
+           std::fabs(first.initialStateOfChargePercent - second.initialStateOfChargePercent) <= EPSILON;
+}
+
+
 /**
  * Initializes Central's own I2C bus and registers Central's own
  * (currently Load-less) local Node. A freshly flashed/uncommissioned
  * Central has zero local Loads/Branches (Section "New Central Boot") and
  * zero configured sensors, including its own battery-bus INA219 (Section
  * "Remove Automatic Development Battery Input") — batterySensorConfigured
- * stays false until a later phase's sensor commissioning registers one
- * for real. This file no longer defines any local Load or battery sensor
- * address here.
+ * stays false until an installer command registers and verifies one for
+ * real. This file no longer defines any local Load or battery sensor address
+ * here.
  */
 void configureLocalHardware(const EspNowCommunication::MacAddress& localMac)
 {
@@ -322,6 +380,71 @@ void configureLocalHardware(const EspNowCommunication::MacAddress& localMac)
 
     const Node centralNode(localMac);
     registry.addLocalCentralNode(CentralNodeConfig::CENTRAL_NODE_NAME, centralNode, 0U);
+}
+
+
+CentralConfigurationStore::SafetyPolicy effectiveSafetyPolicy()
+{
+    const CentralConfigurationStore::SafetyPolicy configured =
+        centralConfigurationStore.getConfiguration().safetyPolicy;
+    if (configured.configured) {
+        return configured;
+    }
+    return CentralConfigurationStore::SafetyPolicy{
+        false,
+        CentralNodeConfig::MINIMUM_STATE_OF_CHARGE_PERCENT,
+        CentralNodeConfig::WARNING_STATE_OF_CHARGE_PERCENT,
+        CentralNodeConfig::TARGET_RUNTIME_HOURS,
+        CentralNodeConfig::SAFETY_FACTOR,
+        CentralNodeConfig::MAXIMUM_BATTERY_DISCHARGE_CURRENT_AMPS,
+        CentralNodeConfig::MAXIMUM_MAIN_CURRENT_AMPS,
+    };
+}
+
+
+PowerBudgetCalculator::Inputs configuredPowerBudgetInputs(
+    float stateOfChargePercent, float batteryBusVoltageVolts,
+    const CentralConfigurationStore::SafetyPolicy& policy)
+{
+    PowerBudgetCalculator::Inputs inputs{};
+    inputs.stateOfChargePercent = stateOfChargePercent;
+    inputs.minimumStateOfChargePercent = policy.minimumStateOfChargePercent;
+    inputs.nominalBatteryVoltageVolts = CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS;
+    inputs.batteryCapacityAmpHours = centralConfigurationStore.getConfiguration().batterySensor.configured
+        ? centralConfigurationStore.getConfiguration().batterySensor.batteryCapacityAmpHours
+        : CentralNodeConfig::BATTERY_CAPACITY_AMP_HOURS;
+    inputs.targetRuntimeHours = policy.targetRuntimeHours;
+    inputs.batteryBusVoltageVolts = batteryBusVoltageVolts;
+    inputs.maximumBatteryDischargeCurrentAmps = policy.maximumBatteryDischargeCurrentAmps;
+    inputs.maximumMainCurrentAmps = policy.maximumMainCurrentAmps;
+    inputs.safetyFactor = policy.safetyFactor;
+    return inputs;
+}
+
+
+bool applyPersistedBatterySensorConfiguration()
+{
+    const CentralConfigurationStore::BatterySensorConfiguration battery =
+        centralConfigurationStore.getConfiguration().batterySensor;
+    if (!battery.configured) {
+        return false;
+    }
+
+    if (sensors.findSensorByI2CAddress(battery.i2cAddress) == nullptr &&
+        !sensors.addSensor(INA219Monitor::INA219SensorConfiguration{
+            battery.i2cAddress, BATTERY_RELAY_PIN_SENTINEL, battery.shuntResistanceOhms,
+            battery.maximumExpectedCurrentAmps, battery.emaAlpha})) {
+        ESP_LOGE(TAG, "BATTERY_CONFIG: could not register INA219 at 0x%02X",
+                 static_cast<unsigned int>(battery.i2cAddress));
+        return false;
+    }
+
+    batterySensorConfigured = true;
+    batterySensorI2CAddress = battery.i2cAddress;
+    batteryStateOfCharge.initialize(battery.batteryCapacityAmpHours, battery.initialStateOfChargePercent);
+    ESP_LOGI(TAG, "BATTERY_CONFIG: restored INA219 at 0x%02X capacity=%.1fAh",
+             static_cast<unsigned int>(battery.i2cAddress), static_cast<double>(battery.batteryCapacityAmpHours));
+    return true;
 }
 
 
@@ -359,11 +482,11 @@ bool findNextHopFromCentral(
 
 
 /**
- * Sensor Acquisition Task (Section 4.6.1, ~1s): reads Central's own
- * battery-bus and local-Load INA219 sensors through the filtered
- * measurement path, applies the reading to Load::setMeasurements() for
- * local Loads, and advances BatteryStateOfCharge (Equation 4.8) from the
- * battery sensor's filtered current.
+ * Sensor Acquisition Task (Section 4.6.1, ~1s): reads Central's one
+ * battery-bus INA219 through the filtered measurement path and advances
+ * BatteryStateOfCharge (Equation 4.8) from that battery sensor's filtered
+ * current. Individual Smart-node Loads use installer-entered ratings, not
+ * per-load INA219 measurements.
  */
 void sensorAcquisitionTask(void *parameter)
 {
@@ -410,30 +533,6 @@ void sensorAcquisitionTask(void *parameter)
                 ESP_LOGW(TAG, "SENSOR FAULT: battery INA219 read failed this cycle");
             }
             /* !sensorConfiguredThisCycle: nothing to read, nothing to log every cycle - see the boot summary/state/system for the honest NOT_CONFIGURED status instead of a repeated warning. */
-
-            for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
-                const CentralNodeRegistry::PlanningNode *planningNode = registry.getNode(nodeIndex);
-                if (planningNode == nullptr || !planningNode->isCentralNode) {
-                    continue;
-                }
-
-                for (std::size_t loadIndex = 0U; loadIndex < planningNode->node.getNumberOfLoads(); ++loadIndex) {
-                    const Load *constLoad = planningNode->node.getLoad(loadIndex);
-                    if (constLoad == nullptr) {
-                        continue;
-                    }
-
-                    Load *load = registry.findMutableLoad(planningNode->node.getMacAddress(), constLoad->getRelayPin());
-                    if (load == nullptr) {
-                        continue;
-                    }
-
-                    LoadMeasurements filtered{};
-                    if (sensors.readFilteredMeasurementsForRelayPin(load->getRelayPin(), filtered)) {
-                        load->setMeasurements(filtered);
-                    }
-                }
-            }
 
             xSemaphoreGive(stateMutex);
         }
@@ -714,6 +813,7 @@ void runOptimizationCycle()
     LoadFilter loadFilter;
     AvailablePowerManager availablePowerManager;
     PowerBudgetCalculator powerBudget;
+    CentralConfigurationStore::SafetyPolicy safetyPolicy{};
     std::vector<RelayCommandDispatcher::RelayTarget> targets;
 
     /** One admitted-Auto Load's identity, kept by value (never a raw pointer) so it stays valid after stateMutex is released for dispatch. */
@@ -730,6 +830,8 @@ void runOptimizationCycle()
         ESP_LOGW(TAG, "Optimisation cycle skipped: could not acquire state lock");
         return;
     }
+
+    safetyPolicy = effectiveSafetyPolicy();
 
     /* Timed-out relay commands (Section "Relay Failure") become faults before this cycle plans anything new. */
     const std::uint32_t nowMilliseconds = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
@@ -807,7 +909,7 @@ void runOptimizationCycle()
         batteryVoltageVolts = latestBatteryMeasurements.voltageVolts;
         batteryCurrentAmps = latestBatteryMeasurements.currentAmps;
 
-        if (powerBudget.calculate(CentralNodeConfig::powerBudgetInputs(stateOfChargePercent, batteryVoltageVolts))) {
+        if (powerBudget.calculate(configuredPowerBudgetInputs(stateOfChargePercent, batteryVoltageVolts, safetyPolicy))) {
             lastValidAvailablePowerWatts = powerBudget.getAvailablePowerWatts();
             lastValidBatteryVoltageVolts = batteryVoltageVolts;
         }
@@ -820,7 +922,7 @@ void runOptimizationCycle()
         /* Section "Safe Behavior When SoC Unknown": Pavailable stays at its zero-initialized default until a real battery state has ever been established - never fabricated. */
         availablePowerWattsForPlanning = lastValidAvailablePowerWatts;
         maximumBatteryPowerWattsForPlanning =
-            lastValidBatteryVoltageVolts * CentralNodeConfig::MAXIMUM_BATTERY_DISCHARGE_CURRENT_AMPS;
+            lastValidBatteryVoltageVolts * safetyPolicy.maximumBatteryDischargeCurrentAmps;
 
         ++faultCount;
         if (!batterySensorConfigured) {
@@ -835,7 +937,14 @@ void runOptimizationCycle()
         }
     }
 
-    float measuredTotalLoadPowerWatts = 0.0F;
+    /*
+     * No Smart Node has a per-load current sensor in the final design.
+     * Build a conservative estimated demand from the last confirmed relay
+     * state and each installer-entered running rating. An unconfirmed relay
+     * is treated as ON so the pre-actuation safety gate never gains capacity
+     * by pretending an electrically unknown circuit is off.
+     */
+    float estimatedTotalLoadPowerWatts = 0.0F;
 
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
         const CentralNodeRegistry::PlanningNode *planningNode = registry.getNode(nodeIndex);
@@ -848,7 +957,9 @@ void runOptimizationCycle()
                 continue;
             }
             loadFilter.addLoad(*load);
-            measuredTotalLoadPowerWatts += load->getMeasurements().powerWatts;
+            if (!load->isConfirmedRelayStateValid() || load->getConfirmedRelayState()) {
+                estimatedTotalLoadPowerWatts += load->getPower().runningWatts;
+            }
         }
     }
 
@@ -862,11 +973,11 @@ void runOptimizationCycle()
 
     BestFirstSearch::ElectricalPlanningState planningState{};
     planningState.stateOfChargePercent = stateOfChargePercent;
-    planningState.minimumStateOfChargePercent = CentralNodeConfig::MINIMUM_STATE_OF_CHARGE_PERCENT;
-    planningState.warningStateOfChargePercent = CentralNodeConfig::WARNING_STATE_OF_CHARGE_PERCENT;
+    planningState.minimumStateOfChargePercent = safetyPolicy.minimumStateOfChargePercent;
+    planningState.warningStateOfChargePercent = safetyPolicy.warningStateOfChargePercent;
     planningState.batteryBusVoltageVolts = batteryVoltageVolts > 0.0F ? batteryVoltageVolts : CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS;
     planningState.maximumBatteryPowerWatts = maximumBatteryPowerWattsForPlanning;
-    planningState.maximumMainCurrentAmps = CentralNodeConfig::MAXIMUM_MAIN_CURRENT_AMPS;
+    planningState.maximumMainCurrentAmps = safetyPolicy.maximumMainCurrentAmps;
     planningState.totalAvailablePowerWatts = availablePowerManager.getTotalAvailablePowerWatts();
     planningState.powerAvailableForAutoLoadsWatts = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
     planningState.initialCommittedPowerWatts = availablePowerManager.getFixedOnRunningPowerWatts();
@@ -1008,13 +1119,13 @@ void runOptimizationCycle()
     /*
      * Live sequential accounting for the pre-ON safety re-check (Section
      * "Add The Documented Safety Re-Check Immediately Before Each ON
-     * Command"): starts from the best live estimate of power already
-     * actually flowing (this cycle's measured total), then only ever
+     * Command"): starts from the conservative rated estimate of power that
+     * may already be flowing, then only ever
      * advances after a genuinely CONFIRMED transition — never
      * optimistically, and never from a value BestFirstSearch merely
      * planned.
      */
-    float liveCommittedPowerWatts = measuredTotalLoadPowerWatts;
+    float liveCommittedPowerWatts = estimatedTotalLoadPowerWatts;
 
     for (const RelayCommandDispatcher::RelayTarget &target : dispatchOrder) {
         if (!target.desiredOn) {
@@ -1102,15 +1213,16 @@ void runOptimizationCycle()
             registry.findBranchMaximumCurrentAmps(target.nodeMacAddress, target.relayPin, branchMaximumCurrentAmps);
 
             BestFirstSearch::FeasibilityInputs recheckInputs{};
+            const CentralConfigurationStore::SafetyPolicy recheckPolicy = effectiveSafetyPolicy();
             recheckInputs.stateOfChargePercent = batteryStateOfCharge.getStateOfChargePercent();
-            recheckInputs.minimumStateOfChargePercent = CentralNodeConfig::MINIMUM_STATE_OF_CHARGE_PERCENT;
+            recheckInputs.minimumStateOfChargePercent = recheckPolicy.minimumStateOfChargePercent;
             recheckInputs.candidateRunningPowerWatts = candidateRunningWatts;
             recheckInputs.candidatePeakPowerWatts = load->getPower().startupWatts;
             recheckInputs.remainingPowerWatts = std::max(0.0F, availablePowerWattsForPlanning - liveCommittedPowerWatts);
             recheckInputs.committedPowerWatts = liveCommittedPowerWatts;
-            recheckInputs.maximumBatteryPowerWatts = liveVoltageVolts * CentralNodeConfig::MAXIMUM_BATTERY_DISCHARGE_CURRENT_AMPS;
+            recheckInputs.maximumBatteryPowerWatts = liveVoltageVolts * recheckPolicy.maximumBatteryDischargeCurrentAmps;
             recheckInputs.batteryBusVoltageVolts = liveVoltageVolts;
-            recheckInputs.maximumMainCurrentAmps = CentralNodeConfig::MAXIMUM_MAIN_CURRENT_AMPS;
+            recheckInputs.maximumMainCurrentAmps = recheckPolicy.maximumMainCurrentAmps;
             recheckInputs.branchCommittedPowerWatts = 0.0F; // one Load per Branch in this hardware model: this candidate's own branch starts uncommitted for its own check
             recheckInputs.branchMaximumCurrentAmps = branchMaximumCurrentAmps;
 
@@ -1156,7 +1268,7 @@ void runOptimizationCycle()
         systemState.stateOfChargePercent = stateOfChargePercent;
         systemState.stateOfChargeValid = stateOfChargeValid;
         systemState.stateOfChargeSourceText = toText(batteryStateOfCharge.getSource());
-        systemState.measuredTotalLoadPowerWatts = measuredTotalLoadPowerWatts;
+        systemState.estimatedTotalLoadPowerWatts = estimatedTotalLoadPowerWatts;
         systemState.availablePowerWatts = availablePowerManager.getTotalAvailablePowerWatts();
         systemState.fixedOnRunningPowerWatts = availablePowerManager.getFixedOnRunningPowerWatts();
         systemState.powerAvailableForAutoLoadsWatts = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
@@ -1266,16 +1378,16 @@ void espNowCommunicationTask(void *parameter)
                 const LoadReportPacket &loadPacket = packet.loads[i];
                 /* Only fields the wire packet actually carries - "target" is Central's own planning output, never transmitted by the Smart Node (see LoadReportPacket's own layout). */
                 ESP_LOGI(TAG, "LOAD_RX seq=%u node=%s pin=%u name=%s mode=%u confirmed=%u confirmedValid=%s "
-                              "health=%u V=%.3f I=%.3f P=%.3f",
+                              "health=%u ratedV=%.3f ratedI=%.3f plannedP=%.3f",
                          static_cast<unsigned int>(packet.reportSequenceId), srcText,
                          static_cast<unsigned int>(loadPacket.relayPin), loadPacket.name,
                          static_cast<unsigned int>(loadPacket.mode),
                          static_cast<unsigned int>(loadPacket.confirmedRelayState),
                          loadPacket.confirmedRelayStateValid != 0U ? "true" : "false",
                          static_cast<unsigned int>(loadPacket.availability),
-                         static_cast<double>(loadPacket.measuredVoltageVolts),
-                         static_cast<double>(loadPacket.measuredCurrentAmps),
-                         static_cast<double>(loadPacket.measuredPowerWatts));
+                         static_cast<double>(loadPacket.nominalVoltageVolts),
+                         static_cast<double>(loadPacket.nominalCurrentAmps),
+                         static_cast<double>(loadPacket.nominalVoltageVolts * loadPacket.nominalCurrentAmps));
             }
 
             const std::uint32_t nowMilliseconds = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
@@ -1395,7 +1507,7 @@ void espNowCommunicationTask(void *parameter)
                  */
                 isNewNode = commissioningRegistry.recordDiscovered(
                     originMac, static_cast<NodeRole>(packet.role), packet.firmwareVersion, packet.chipModel,
-                    nowMilliseconds);
+                    packet.relayPins.data(), packet.relayCapabilityCount, nowMilliseconds);
                 xSemaphoreGive(stateMutex);
             }
 
@@ -1421,20 +1533,37 @@ void espNowCommunicationTask(void *parameter)
             const bool success = acknowledgement.success != 0U;
             const NodeLifecycleState resultingState = static_cast<NodeLifecycleState>(acknowledgement.resultingState);
 
+            bool registryPersisted = false;
+            const char* acknowledgementReason = success ? "applied" : "rejected by Node";
             if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
-                commissioningRegistry.applyCommissionResult(originMac, success, resultingState);
-                commissioningRegistry.persist();
+                const NodeCommissioningRegistry previousRegistry = commissioningRegistry;
+                const bool registryUpdated = commissioningRegistry.applyCommissionResult(
+                    originMac, success, resultingState);
+                if (!registryUpdated) {
+                    acknowledgementReason = "Central has no matching commissioning record";
+                } else if (!success) {
+                    /* The Node rejected the command; retain the FAILED state in RAM for diagnostics. */
+                    registryPersisted = true;
+                } else if (commissioningRegistry.persist()) {
+                    registryPersisted = true;
+                } else {
+                    commissioningRegistry = previousRegistry;
+                    acknowledgementReason = "Central could not persist commissioning result";
+                }
                 xSemaphoreGive(stateMutex);
+            } else {
+                acknowledgementReason = "Central registry lock unavailable";
             }
 
             char targetText[18] = {};
             formatMacAddressText(targetText, sizeof(targetText), originMac);
 
-            mqttManager.publishAcknowledgement(acknowledgement.commandId, "NODE_COMMISSIONING",
-                                                success ? AckStatus::APPLIED : AckStatus::FAILED,
-                                                success ? "applied" : "rejected by Node", targetText);
+            mqttManager.publishAcknowledgement(
+                acknowledgement.commandId, "NODE_COMMISSIONING",
+                success && registryPersisted ? AckStatus::APPLIED : AckStatus::FAILED,
+                acknowledgementReason, targetText);
 
-            if (success) {
+            if (success && registryPersisted) {
                 mqttManager.publishEvent("NODE_COMMISSIONED", targetText, nullptr);
             }
 
@@ -1467,9 +1596,41 @@ void espNowCommunicationTask(void *parameter)
              */
             mqttManager.publishAcknowledgement(acknowledgement.commandId, "NODE_DECOMMISSIONING",
                                                 success ? AckStatus::APPLIED : AckStatus::FAILED,
-                                                success ? "applied" : "Node failed to reset local identity", targetText);
+                                                success ? "Node reset and prior load configuration cleared"
+                                                        : "Node could not safely clear local identity/configuration",
+                                                targetText);
+
+            if (!success) {
+                mqttManager.publishEvent("NODE_DECOMMISSION_RESET_FAILED", targetText, nullptr);
+            }
 
             ESP_LOGI(TAG, "DECOMMISSION_ACK: mac=%s success=%s", targetText, success ? "Yes" : "No");
+
+        } else if (destinationIsLocal &&
+                   received.message.header.messageType == EspNowCommunication::MessageType::CONFIGURE_LOAD_ACK &&
+                   received.message.header.payloadLength == sizeof(ConfigureLoadAcknowledgementPacket)) {
+
+            ConfigureLoadAcknowledgementPacket acknowledgement{};
+            std::memcpy(&acknowledgement, received.message.payload.data(), sizeof(acknowledgement));
+
+            char targetText[18] = {};
+            formatMacAddressText(targetText, sizeof(targetText), received.message.header.originMacAddress);
+            const bool success = acknowledgement.success != 0U;
+            const HardwareConfigurationFailureReason reason =
+                static_cast<HardwareConfigurationFailureReason>(acknowledgement.failureReason);
+
+            mqttManager.publishAcknowledgement(acknowledgement.commandId, "CONFIGURE_LOAD",
+                                                success ? AckStatus::APPLIED : AckStatus::FAILED,
+                                                hardwareConfigurationFailureText(reason), targetText);
+            if (success) {
+                mqttManager.publishEvent("LOAD_CONFIGURED", targetText, nullptr);
+                xSemaphoreGive(optimizationTriggerSemaphore);
+            }
+
+            ESP_LOGI(TAG, "CONFIGURE_LOAD_ACK: mac=%s commandId=%u relayPin=%u success=%s reason=%u",
+                     targetText, static_cast<unsigned int>(acknowledgement.commandId),
+                     static_cast<unsigned int>(acknowledgement.relayPin), success ? "Yes" : "No",
+                     static_cast<unsigned int>(acknowledgement.failureReason));
 
         } else if (destinationIsLocal &&
                    received.message.header.messageType == EspNowCommunication::MessageType::DEV_ACK &&
@@ -1653,6 +1814,38 @@ LoadCommandResult handleSystemCommand(void *context, const SystemCommandRequest 
         result.accepted = true;
         std::snprintf(result.reason, sizeof(result.reason), "optimization cycle requested");
 
+    } else if (request.action == SystemCommandAction::APPLY_SAFETY_CONFIG) {
+        if (!request.hasSafetyPolicy) {
+            std::snprintf(result.reason, sizeof(result.reason), "safetyConfig required");
+        } else if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
+            std::snprintf(result.reason, sizeof(result.reason), "internal: could not acquire state lock");
+        } else {
+            const CentralConfigurationStore::SafetyPolicy previousPolicy =
+                centralConfigurationStore.getConfiguration().safetyPolicy;
+            const CentralConfigurationStore::SafetyPolicy policy{
+                true,
+                request.minimumStateOfChargePercent,
+                request.warningStateOfChargePercent,
+                request.targetRuntimeHours,
+                request.safetyFactor,
+                request.maximumBatteryDischargeCurrentAmps,
+                request.maximumMainCurrentAmps,
+            };
+            if (!centralConfigurationStore.setSafetyPolicy(policy)) {
+                std::snprintf(result.reason, sizeof(result.reason), "invalid safety limits");
+            } else if (!centralConfigurationStore.persist()) {
+                centralConfigurationStore.setSafetyPolicy(previousPolicy);
+                std::snprintf(result.reason, sizeof(result.reason), "could not persist safety limits");
+            } else {
+                result.accepted = true;
+                std::snprintf(result.reason, sizeof(result.reason), "applied");
+            }
+            xSemaphoreGive(stateMutex);
+            if (result.accepted) {
+                xSemaphoreGive(optimizationTriggerSemaphore);
+            }
+        }
+
     } else if (request.action == SystemCommandAction::FACTORY_RESET_CENTRAL) {
         if (std::strcmp(request.confirmText, "FACTORY_RESET_CONFIRMED") != 0) {
             std::snprintf(result.reason, sizeof(result.reason), "confirm text did not match; reset refused");
@@ -1717,6 +1910,13 @@ LoadCommandResult handleDevelopmentCommand(void *context, const DevelopmentComma
     const EspNowCommunication::MacAddress localMac = communication.getLocalMacAddress();
 
     if (request.targetNodeMacAddress != localMac) {
+        if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT ||
+            request.action == DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE) {
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "Smart Nodes have no INA219; development sensor input is Central battery-only");
+            return result;
+        }
+
         EspNowCommunication::MacAddress nextHopMac{};
         bool routeFound = false;
 
@@ -1819,8 +2019,11 @@ LoadCommandResult handleDevelopmentCommand(void *context, const DevelopmentComma
             batterySensorConfigured = true;
             batterySensorI2CAddress = request.i2cAddress;
             if (!batteryStateOfCharge.isInitialized()) {
-                batteryStateOfCharge.initialize(CentralNodeConfig::BATTERY_CAPACITY_AMP_HOURS,
-                                                 CentralNodeConfig::DEFAULT_STATE_OF_CHARGE_PERCENT);
+                const CentralConfigurationStore::BatterySensorConfiguration battery =
+                    centralConfigurationStore.getConfiguration().batterySensor;
+                batteryStateOfCharge.initialize(
+                    battery.configured ? battery.batteryCapacityAmpHours : CentralNodeConfig::BATTERY_CAPACITY_AMP_HOURS,
+                    battery.configured ? battery.initialStateOfChargePercent : CentralNodeConfig::DEFAULT_STATE_OF_CHARGE_PERCENT);
             }
 
             std::snprintf(result.reason, sizeof(result.reason), success ? "sensor input armed" : "failed to arm sensor override");
@@ -2028,24 +2231,173 @@ LoadCommandResult handleConfigCommand(void *context, const ConfigCommandRequest 
 
     const EspNowCommunication::MacAddress localMac = communication.getLocalMacAddress();
 
+    if (request.action == ConfigCommandAction::CONFIGURE_BATTERY_SENSOR) {
+        if (!request.hasBatterySensorConfiguration || request.nodeMacAddress != localMac) {
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "battery configuration must target the Central Node");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        const CentralConfigurationStore::BatterySensorConfiguration configuration{
+            true,
+            request.batteryI2cAddress,
+            request.batteryShuntResistanceOhms,
+            request.batteryMaximumExpectedCurrentAmps,
+            request.batteryEmaAlpha,
+            request.batteryCapacityAmpHours,
+            request.batteryInitialStateOfChargePercent,
+        };
+        if (!CentralConfigurationStore::isValidBatterySensor(configuration)) {
+            std::snprintf(result.reason, sizeof(result.reason), "invalid battery sensor configuration");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        const CentralConfigurationStore::BatterySensorConfiguration previous =
+            centralConfigurationStore.getConfiguration().batterySensor;
+        if (previous.configured && !sameBatterySensorConfiguration(previous, configuration)) {
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "battery hardware settings cannot be changed after commissioning; factory-reset and recommission if the wiring changed");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+        bool sensorRegisteredNow = false;
+        if (sensors.findSensorByI2CAddress(configuration.i2cAddress) == nullptr) {
+            if (!sensors.addSensor(INA219Monitor::INA219SensorConfiguration{
+                configuration.i2cAddress, BATTERY_RELAY_PIN_SENTINEL,
+                configuration.shuntResistanceOhms, configuration.maximumExpectedCurrentAmps,
+                configuration.emaAlpha})) {
+                std::snprintf(result.reason, sizeof(result.reason), "could not initialize battery INA219");
+                xSemaphoreGive(stateMutex);
+                return result;
+            }
+            sensorRegisteredNow = true;
+        }
+        if (!sensors.isSensorPresent(configuration.i2cAddress)) {
+            if (sensorRegisteredNow) {
+                sensors.removeSensor(configuration.i2cAddress);
+            }
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "battery INA219 did not respond on the configured I2C address");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+        if (!centralConfigurationStore.setBatterySensor(configuration) || !centralConfigurationStore.persist()) {
+            centralConfigurationStore.setBatterySensor(previous);
+            if (sensorRegisteredNow) {
+                sensors.removeSensor(configuration.i2cAddress);
+            }
+            std::snprintf(result.reason, sizeof(result.reason), "could not persist battery sensor configuration");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        batterySensorConfigured = true;
+        batterySensorI2CAddress = configuration.i2cAddress;
+
+        /*
+         * MQTT QoS 1 can redeliver a command. Re-applying an already
+         * commissioned, identical battery configuration must not reset the
+         * accumulated state-of-charge estimate to the installer-entered
+         * starting value. A first successful commission still starts the
+         * estimate from that value, as intended.
+         */
+        if (!previous.configured) {
+            batteryTelemetryEverValid = false;
+            batteryStateOfCharge.initialize(configuration.batteryCapacityAmpHours,
+                                            configuration.initialStateOfChargePercent);
+        }
+        xSemaphoreGive(stateMutex);
+        xSemaphoreGive(optimizationTriggerSemaphore);
+        result.accepted = true;
+        std::snprintf(result.reason, sizeof(result.reason), "applied");
+        return result;
+    }
+
+    if (request.action == ConfigCommandAction::CONFIGURE_LOAD) {
+        if (!request.hasLoadConfiguration) {
+            std::snprintf(result.reason, sizeof(result.reason), "load configuration required");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        const NodeCommissioningRegistry::CommissioningRecord* record =
+            commissioningRegistry.findByMac(request.nodeMacAddress);
+        if (record == nullptr || record->role != NodeRole::SMART ||
+            (record->lifecycleState != NodeLifecycleState::COMMISSIONED &&
+             record->lifecycleState != NodeLifecycleState::OPERATIONAL)) {
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "target must be a commissioned Smart Node");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+        if (!nodeDeclaresRelayPin(*record, request.relayPin)) {
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "relay GPIO is not declared safe by Node firmware");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        EspNowCommunication::MacAddress nextHopMac{};
+        const bool routeFound = findNextHopFromCentral(localMac, request.nodeMacAddress, registry, nextHopMac);
+        if (!routeFound) {
+            std::snprintf(result.reason, sizeof(result.reason), "no known route to Node");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        ConfigureLoadCommandPacket packet{};
+        packet.commandId = request.commandId;
+        std::snprintf(packet.loadName, sizeof(packet.loadName), "%s", request.loadName);
+        packet.relayPin = request.relayPin;
+        packet.relayActiveHigh = request.relayActiveHigh ? 1U : 0U;
+        packet.mode = static_cast<std::uint8_t>(request.mode);
+        packet.priority = request.priority;
+        packet.nominalVoltageVolts = request.nominalVoltageVolts;
+        packet.nominalCurrentAmps = request.nominalCurrentAmps;
+        packet.branchMaximumCurrentAmps = request.branchMaximumCurrentAmps;
+        packet.startupWatts = request.startupWatts;
+        packet.scheduleEnabled = request.schedule.enabled ? 1U : 0U;
+        packet.scheduleHour = request.schedule.hour;
+        packet.scheduleMinute = request.schedule.minute;
+
+        xSemaphoreGive(stateMutex);
+
+        const bool sent = communication.sendTo(nextHopMac, request.nodeMacAddress,
+                                               EspNowCommunication::MessageType::CONFIGURE_LOAD_COMMAND, packet);
+        result.accepted = sent;
+        std::snprintf(result.reason, sizeof(result.reason),
+                      sent ? "dispatched to Node; awaiting confirmation" : "failed to send load configuration");
+        return result;
+    }
+
     if (request.action == ConfigCommandAction::DECOMMISSION_NODE) {
+        const NodeCommissioningRegistry previousRegistry = commissioningRegistry;
         if (!commissioningRegistry.decommission(request.nodeMacAddress)) {
             std::snprintf(result.reason, sizeof(result.reason), "unknown Node MAC, or already decommissioned");
             xSemaphoreGive(stateMutex);
             return result;
         }
-        commissioningRegistry.persist();
+        if (!commissioningRegistry.persist()) {
+            commissioningRegistry = previousRegistry;
+            std::snprintf(result.reason, sizeof(result.reason),
+                          "Central could not persist decommissioning state");
+            xSemaphoreGive(stateMutex);
+            return result;
+        }
 
         EspNowCommunication::MacAddress nextHopMac{};
         const bool routeFound = findNextHopFromCentral(localMac, request.nodeMacAddress, registry, nextHopMac);
 
         xSemaphoreGive(stateMutex);
 
+        bool nodeNotificationSent = false;
         if (routeFound) {
             DecommissionCommandPacket packet{};
             packet.commandId = request.commandId;
-            communication.sendTo(nextHopMac, request.nodeMacAddress,
-                                  EspNowCommunication::MessageType::DECOMMISSION_COMMAND, packet);
+            nodeNotificationSent = communication.sendTo(nextHopMac, request.nodeMacAddress,
+                                                         EspNowCommunication::MessageType::DECOMMISSION_COMMAND, packet);
         } else {
             ESP_LOGW(TAG, "DECOMMISSION_NODE commandId=%u: no known route to Node; Central-side state updated, "
                           "Node itself could not be notified", static_cast<unsigned int>(request.commandId));
@@ -2057,7 +2409,9 @@ LoadCommandResult handleConfigCommand(void *context, const ConfigCommandRequest 
         xSemaphoreGive(optimizationTriggerSemaphore);
 
         result.accepted = true;
-        std::snprintf(result.reason, sizeof(result.reason), "applied");
+        std::snprintf(result.reason, sizeof(result.reason),
+                      nodeNotificationSent ? "Central record decommissioned; Node reset requested"
+                                            : "Central record decommissioned; Node reset notification unavailable");
         return result;
     }
 
@@ -2126,15 +2480,23 @@ extern "C" void app_main()
     const EspNowCommunication::MacAddress localMac = communication.getLocalMacAddress();
 
     configureLocalHardware(localMac);
+    const bool centralConfigurationRestored = centralConfigurationStore.loadPersisted();
+    const bool batteryConfigurationApplied =
+        centralConfigurationRestored && applyPersistedBatterySensorConfiguration();
     /*
      * batteryStateOfCharge is deliberately NOT initialize()d here: Section
      * "SoC Must Have Validity"/"True Factory State" - with no battery
      * sensor configured, isValid() must honestly report false/UNKNOWN.
-     * initialize() only ever runs once a sensor actually exists (see
-     * handleDevelopmentCommand()'s SET_SENSOR_INPUT, the only path to one
-     * in this phase).
+     * initialize() only ever runs after a real installer-verified sensor
+     * exists (or during an explicit Development Session).
      */
-    ESP_LOGI(TAG, "BATTERY_SOC: No valid persisted SoC estimate; no battery sensor configured, remaining UNKNOWN");
+    if (!batteryConfigurationApplied) {
+        ESP_LOGI(TAG, "BATTERY_SOC: No valid persisted SoC estimate; no battery sensor configured, remaining UNKNOWN");
+    }
+    ESP_LOGI(TAG, "NVS_RESTORE: centralConfiguration=%s safetyPolicy=%s batterySensor=%s",
+             centralConfigurationRestored ? "VALID" : "ABSENT",
+             centralConfigurationStore.getConfiguration().safetyPolicy.configured ? "CONFIGURED" : "NOT_CONFIGURED",
+             batteryConfigurationApplied ? "CONFIGURED" : "NOT_CONFIGURED");
     loadConfigurationStore.loadPersisted();
 
     /*

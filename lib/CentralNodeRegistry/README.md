@@ -41,13 +41,12 @@ rather than left behind — a Node's real Load count can legitimately shrink,
 most notably to zero right after commissioning (a freshly flashed/
 uncommissioned Node reports none), and this registry must stay an honest,
 up-to-date mirror of what each Node currently reports, not an
-ever-accumulating history of every Load it has ever mentioned. Pruning only
-happens for a complete, single-page report (`pageIndex == 0 &&
-totalPages == 1`) — this project does not yet implement the multi-page
-reassembly `NodeReportPackets.h` describes for a Node with more Loads than
-fit one page, so every real report today already satisfies this; pruning
-against an incomplete page would otherwise wrongly delete Loads that
-simply live on a page not yet received.
+ever-accumulating history of every Load it has ever mentioned. The current
+wire contract supports only a complete, single-page report (`pageIndex == 0
+&& totalPages == 1`); `applyNodeReport()` rejects any other values before
+they can change or prune the planning topology. A future increase beyond
+three configured Loads per Smart Node must implement multi-page sending and
+reassembly on both sides first.
 
 A Load's identity is its owning Node's MAC address plus its relay pin
 (`Load::Id`). `CentralNodeRegistry` always takes that owning MAC address

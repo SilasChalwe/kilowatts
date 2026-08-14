@@ -31,10 +31,14 @@
 #include "EspNowCommunication.h"
 #include "NodeLifecycle.h"
 
+#include <array>
 #include <cstdint>
 #include <type_traits>
 
 namespace kilowatts {
+
+/** Board-declared GPIO capability slots carried in an infrequent identity report. */
+static constexpr std::size_t MAX_RELAY_GPIO_CAPABILITIES = 8U;
 
 
 /**
@@ -50,6 +54,8 @@ struct IdentityReportPacket {
     std::uint8_t lifecycleState;   // raw NodeLifecycleState byte
     char firmwareVersion[12];
     char chipModel[16];
+    std::uint8_t relayCapabilityCount;
+    std::array<std::uint8_t, MAX_RELAY_GPIO_CAPABILITIES> relayPins;
 };
 
 

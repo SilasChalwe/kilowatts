@@ -23,12 +23,10 @@ struct LoadReportPacket {
     std::uint8_t relayPin;
     std::uint8_t mode;                     // raw kilowatts::LoadMode::Value byte (configured)
     std::uint16_t priority;
-    float runningWatts;
     float startupWatts;
     float branchMaximumCurrentAmps;        // this relay pin's Branch configuration, I_branch,max
-    float measuredVoltageVolts;            // latest filtered (EMA) INA219 measurement
-    float measuredCurrentAmps;
-    float measuredPowerWatts;
+    float nominalVoltageVolts;             // installer/nameplate rating, not live sensor data
+    float nominalCurrentAmps;              // installer/nameplate rating, not live sensor data
     std::uint8_t confirmedRelayState;      // last GPIO read-back (0=OFF, 1=ON) — physical truth
     std::uint8_t confirmedRelayStateValid; // Load::isConfirmedRelayStateValid(): 1=trustworthy, 0=unknown
     std::uint8_t scheduleEnabled;
@@ -43,9 +41,9 @@ struct NodeReportPacket {
     EspNowCommunication::MacAddress upstreamNodeMacAddress;   // this Node's Next Hop to Central
     std::uint16_t hopCountToCentral;
     std::uint8_t numberOfLoads;
-    std::uint16_t reportSequenceId;        // shared by every page of one report cycle
-    std::uint8_t pageIndex;                // 0-based
-    std::uint8_t totalPages;               // page count for this reportSequenceId
+    std::uint16_t reportSequenceId;
+    std::uint8_t pageIndex;                // reserved; currently must be 0
+    std::uint8_t totalPages;               // reserved; currently must be 1
     std::array<LoadReportPacket, MAX_LOADS_PER_NODE_PACKET> loads;
 };
 
@@ -70,18 +68,14 @@ struct RelayCommandAcknowledgementPacket {
 };
 ```
 
-`MAX_LOADS_PER_NODE_PACKET = 3` is a **packet-page capacity** (one report
-*page* must fit inside one ESP-NOW message; ESP-NOW v1.0, which the
+`MAX_LOADS_PER_NODE_PACKET = 3` is the current **per-Smart-Node configured
+load limit** (the complete report must fit inside one ESP-NOW message; ESP-NOW v1.0, which the
 Central Node's classic ESP32 is limited to, caps one message at 250
-bytes), not a limit on how many Loads a real Node may physically control.
-It was sized to exactly match the current physical Smart Node's three
-demonstration Loads (see `include/SmartNodeConfig.h`), so today's report
-is always exactly one page (`pageIndex = 0`, `totalPages = 1`). A future
-Node with more Loads than fit in one page sends several
-`NodeReportPacket` messages sharing the same `reportSequenceId`, with
-`pageIndex` counting up to `totalPages` — the receiver (`CentralNodeRegistry`)
-reassembles them rather than the domain being capped at one page's worth
-of Loads.
+bytes). `pageIndex`/`totalPages` are reserved fields, but the current Central
+and Smart firmware support only one complete report (`pageIndex = 0`,
+`totalPages = 1`) and Central rejects a partial/multi-page report. Increasing
+the per-node limit requires a future release that implements complete
+multi-page sending and reassembly on both sides.
 
 The destination Node for a `RelayCommandPacket` /
 `RelayCommandAcknowledgementPacket` is already carried by the surrounding
@@ -107,6 +101,11 @@ bytes over ESP-NOW), and `NodeReportPacket`/`RelayCommandPacket`/
 `EspNowCommunication::MAX_PAYLOAD_SIZE`.
 
 ## Boundaries
+
+Smart Nodes have no per-load INA219 in the final design: their nominal
+voltage/current fields are installation ratings, and Central derives their
+planned power as V × A. It must be presented as an estimate. Central's
+separate battery-bus INA219 is the sole live current sensor.
 
 This header defines byte layout only. It does not perform the actual
 send/receive (`EspNowCommunication`), does not decide message routing or

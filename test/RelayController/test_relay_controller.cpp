@@ -122,6 +122,19 @@ void testHardwareApplicationNeverFabricatedOnHost() {
     reportCheck("isHardwareApplied() on an unregistered pin returns false", !relays.isHardwareApplied(99U));
 }
 
+void testRollbackRemoval() {
+    printSection("TEST 4 - PROVISIONING ROLLBACK REMOVAL");
+
+    RelayController relays;
+    relays.addRelay(RelayController::RelayConfiguration{16U, false, false});
+
+    reportCheck("removeRelay() removes a provisionally registered channel",
+                relays.removeRelay(16U));
+    reportCheck("A removed relay is no longer registered",
+                !relays.isRelayRegistered(16U) && relays.getNumberOfRelays() == 0U);
+    reportCheck("removeRelay() rejects an unknown channel", !relays.removeRelay(99U));
+}
+
 } // namespace
 
 int main() {
@@ -133,6 +146,7 @@ int main() {
     testRegistration();
     testCommandedStateTracking();
     testHardwareApplicationNeverFabricatedOnHost();
+    testRollbackRemoval();
 
     printSection("FINAL TEST SUMMARY");
     std::printf("Passed checks: %zu\n", passedChecks);

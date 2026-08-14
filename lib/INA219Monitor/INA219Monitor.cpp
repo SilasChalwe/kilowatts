@@ -338,6 +338,34 @@ bool INA219Monitor::addSensor(const INA219SensorConfiguration& sensorConfigurati
 }
 
 
+bool INA219Monitor::removeSensor(std::uint8_t i2cAddress)
+{
+    for (std::size_t index = 0U; index < sensors_.size(); ++index) {
+        RegisteredSensor& sensor = sensors_[index];
+        if (sensor.configuration.i2cAddress != i2cAddress) {
+            continue;
+        }
+
+#ifdef ESP_PLATFORM
+        if (sensor.deviceHandle != nullptr) {
+            const esp_err_t result = i2c_master_bus_rm_device(
+                reinterpret_cast<i2c_master_dev_handle_t>(sensor.deviceHandle));
+            if (result != ESP_OK) {
+                ESP_LOGE(TAG, "Could not remove INA219 0x%02X while rolling back configuration: %s",
+                         static_cast<unsigned int>(i2cAddress), esp_err_to_name(result));
+            }
+            sensor.deviceHandle = nullptr;
+        }
+#endif
+
+        sensors_.erase(sensors_.begin() + static_cast<std::ptrdiff_t>(index));
+        return true;
+    }
+
+    return false;
+}
+
+
 std::size_t INA219Monitor::getNumberOfSensors() const
 {
     return sensors_.size();

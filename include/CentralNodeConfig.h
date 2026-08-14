@@ -66,16 +66,17 @@ inline INA219Monitor::I2CBusConfiguration i2cBusConfiguration()
 /*
  * -----------------------------------------------------------------------
  * Central's battery-bus INA219 (Section 4.5.1: monitors the whole battery
- * bus, separate from any individual Load sensor) is deliberately NOT
+ * bus and is the final design's only INA219) is deliberately NOT
  * configured here. Section "Remove Automatic Development Battery Input":
  * a clean/uncommissioned Central must never automatically register an
  * installation-specific battery sensor address — battery sensor identity
  * (I2C address, shunt resistance, expected current) becomes real
- * commissioning configuration once a later phase implements it. Until
- * then, Central genuinely has no battery sensor: BatteryStateOfCharge is
- * never initialize()d, sensorAcquisitionTask() has nothing to read, and
- * every battery/SoC field the system publishes honestly reports
- * NOT_CONFIGURED/UNKNOWN rather than a fabricated reading (see
+ * commissioning configuration held by CentralConfigurationStore and applied
+ * only after an installer command verifies that the real INA219 responds.
+ * Until that succeeds, Central genuinely has no battery sensor:
+ * BatteryStateOfCharge is never initialize()d, sensorAcquisitionTask() has
+ * nothing to read, and every battery/SoC field the system publishes honestly
+ * reports NOT_CONFIGURED/UNKNOWN rather than a fabricated reading (see
  * SystemStateJson's batterySensorConfigured/stateOfChargeValid fields).
  * -----------------------------------------------------------------------
  */
@@ -181,9 +182,22 @@ constexpr std::uint32_t BATTERY_TELEMETRY_STALE_TIMEOUT_MILLISECONDS = 5000U;
  * "kilowatts/v1" namespace (see MqttManager).
  * -----------------------------------------------------------------------
  */
-constexpr const char* MQTT_TOPIC_NAMESPACE = "kilowatts/v1";
+/*
+ * The build may override this with a quoted PlatformIO build flag, for
+ * example:
+ *   -DKILOWATTS_MQTT_TOPIC_NAMESPACE=\"kilowatts/v1/home-42\"
+ *
+ * Keeping a safe default preserves existing Central builds, while a real
+ * deployment can give every installation a distinct topic root that is
+ * matched by the Flutter portal and enforced by broker ACLs.
+ */
+#ifndef KILOWATTS_MQTT_TOPIC_NAMESPACE
+#define KILOWATTS_MQTT_TOPIC_NAMESPACE "kilowatts/v1"
+#endif
+constexpr const char* MQTT_TOPIC_NAMESPACE = KILOWATTS_MQTT_TOPIC_NAMESPACE;
 constexpr const char* MQTT_DEVICE_ID = "central-01";
-constexpr std::uint32_t MQTT_SCHEMA_VERSION = 1U;
+/* Version 2 distinguishes installer-rated load estimates from live battery telemetry. */
+constexpr std::uint32_t MQTT_SCHEMA_VERSION = 2U;
 
 
 } // namespace CentralNodeConfig

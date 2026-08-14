@@ -16,7 +16,9 @@
  * This class never performs ESP-NOW communication itself (see
  * CommissioningPackets/EspNowCommunication), never decides *when* a
  * commissioning command should be sent, and never validates anything about
- * GPIO/I2C/Branches/Loads - those are later phases entirely.
+ * GPIO, battery I2C, Branches or Loads. Smart-node load configuration is
+ * owned locally by SmartNodeConfigurationStore and is cleared by that Node
+ * when it confirms decommissioning.
  *
  * @author Chalwe Silas
  * @programme Final-Year Computer Engineering
@@ -29,6 +31,7 @@
 
 #include "NodeLifecycle.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -43,6 +46,7 @@ public:
     static constexpr std::size_t FRIENDLY_NAME_BUFFER_SIZE = 20U;
     static constexpr std::size_t FIRMWARE_VERSION_BUFFER_SIZE = 12U;
     static constexpr std::size_t CHIP_MODEL_BUFFER_SIZE = 16U;
+    static constexpr std::size_t MAX_RELAY_GPIO_CAPABILITIES = 8U;
 
     /** Whether commissioning config Central holds for this Node currently matches what the Node itself has confirmed applying. */
     enum class SyncState : std::uint8_t {
@@ -64,6 +68,10 @@ public:
 
         char firmwareVersion[FIRMWARE_VERSION_BUFFER_SIZE];
         char chipModel[CHIP_MODEL_BUFFER_SIZE];
+
+        /** Board-safe relay outputs reported by the flashed Node image. */
+        std::uint8_t relayCapabilityCount;
+        std::array<std::uint8_t, MAX_RELAY_GPIO_CAPABILITIES> relayPins;
 
         std::uint32_t discoveredAtMilliseconds;
         SyncState syncState;
@@ -90,6 +98,12 @@ public:
     bool recordDiscovered(const MacAddress& macAddress, NodeRole role,
                            const char* firmwareVersion, const char* chipModel,
                            std::uint32_t nowMilliseconds);
+
+    /** Same discovery update, including the Node's board-declared relay GPIO inventory. */
+    bool recordDiscovered(const MacAddress& macAddress, NodeRole role,
+                          const char* firmwareVersion, const char* chipModel,
+                          const std::uint8_t* relayPins, std::size_t relayCapabilityCount,
+                          std::uint32_t nowMilliseconds);
 
 
     /**

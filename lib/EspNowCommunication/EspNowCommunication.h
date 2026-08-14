@@ -148,7 +148,9 @@ public:
         DEV_SENSOR_INPUT_COMMAND = 16U,
         DEV_ACK = 17U,
         FACTORY_RESET_COMMAND = 18U,
-        FACTORY_RESET_ACK = 19U
+        FACTORY_RESET_ACK = 19U,
+        CONFIGURE_LOAD_COMMAND = 20U,
+        CONFIGURE_LOAD_ACK = 21U
     };
 
 
