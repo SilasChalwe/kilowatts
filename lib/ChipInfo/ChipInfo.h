@@ -13,6 +13,7 @@
 
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 
@@ -49,6 +50,23 @@ public:
      */
     bool getMacAddress(
         MacAddress& macAddress
+    ) const;
+
+
+    /**
+     * Writes a short, stable chip-identity text (target + CPU core count,
+     * e.g. "esp32:2core") into buffer, truncated to fit bufferSize with a
+     * terminating null always present. Used by the commissioning identity
+     * report (see CommissioningPackets::IdentityReportPacket) so Central
+     * can record what kind of chip a Node is without duplicating the
+     * esp_chip_info() read this class already performs for printChip().
+     *
+     * Returns false (buffer left as an empty string) when buffer is
+     * nullptr or bufferSize is 0.
+     */
+    bool getChipModelText(
+        char* buffer,
+        std::size_t bufferSize
     ) const;
 
 

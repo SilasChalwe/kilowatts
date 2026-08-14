@@ -13,6 +13,7 @@
 
 
 #include <cinttypes>
+#include <cstdio>
 
 
 #include "esp_chip_info.h"
@@ -92,6 +93,35 @@ bool ChipInfo::getMacAddress(
 
         return false;
     }
+
+
+    return true;
+}
+
+
+
+bool ChipInfo::getChipModelText(
+    char* buffer,
+    std::size_t bufferSize
+) const
+{
+    if (buffer == nullptr || bufferSize == 0U)
+    {
+        return false;
+    }
+
+
+    esp_chip_info_t info;
+    esp_chip_info(&info);
+
+
+    std::snprintf(
+        buffer,
+        bufferSize,
+        "%s:%ucore",
+        CONFIG_IDF_TARGET,
+        static_cast<unsigned int>(info.cores)
+    );
 
 
     return true;

@@ -99,6 +99,19 @@ const Load* Node::getLoadByRelayPin(std::uint8_t relayPin) const
 }
 
 
+bool Node::removeLoadByRelayPin(std::uint8_t relayPin)
+{
+    for (std::size_t i = 0U; i < loads_.size(); ++i) {
+        if (loads_[i].getRelayPin() == relayPin) {
+            loads_.erase(loads_.begin() + static_cast<std::ptrdiff_t>(i));
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 bool Node::isRelayPinAlreadyUsed(std::uint8_t relayPin) const
 {
     return getLoadByRelayPin(relayPin) != nullptr;

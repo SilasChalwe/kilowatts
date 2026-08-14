@@ -1,0 +1,11 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+#
+# Custom partition table for the Kilowatts Central Node (esp32dev, 4 MB
+# flash, confirmed via esptool — see platformio.ini). The default
+# single-app table only allocates 1 MB to the app, which the Central
+# firmware (ESP-NOW + Wi-Fi + MQTT + cJSON + every domain module) now
+# exceeds. 1.5 MB leaves comfortable headroom for further growth while
+# staying well inside the 4 MB flash.
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x180000,

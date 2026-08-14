@@ -28,6 +28,11 @@ Load::Load(
     : id_(id),
       name_(name),
       measurements_{0.0F, 0.0F, 0.0F},
+      confirmedRelayState_(false),
+      confirmedRelayStateValid_(false),
+      targetRelayState_(mode == LoadMode::Fixed::ON || mode == LoadMode::Auto::ON),
+      health_(LoadHealth::AVAILABLE),
+      lastBestFirstRejectionReason_(0U),
       power_{0.0F, 0.0F},
       priority_(priority),
       mode_(mode),
@@ -130,6 +135,61 @@ bool Load::setMeasurements(LoadMeasurements measurements)
 LoadMeasurements Load::getMeasurements() const
 {
     return measurements_;
+}
+
+
+void Load::setConfirmedRelayState(bool on)
+{
+    confirmedRelayState_ = on;
+    confirmedRelayStateValid_ = true;
+}
+
+
+bool Load::getConfirmedRelayState() const
+{
+    return confirmedRelayState_;
+}
+
+
+bool Load::isConfirmedRelayStateValid() const
+{
+    return confirmedRelayStateValid_;
+}
+
+
+void Load::setTargetRelayState(bool targetOn)
+{
+    targetRelayState_ = targetOn;
+}
+
+
+bool Load::getTargetRelayState() const
+{
+    return targetRelayState_;
+}
+
+
+void Load::setHealth(LoadHealth health)
+{
+    health_ = health;
+}
+
+
+LoadHealth Load::getHealth() const
+{
+    return health_;
+}
+
+
+void Load::setLastBestFirstRejectionReason(std::uint8_t reason)
+{
+    lastBestFirstRejectionReason_ = reason;
+}
+
+
+std::uint8_t Load::getLastBestFirstRejectionReason() const
+{
+    return lastBestFirstRejectionReason_;
 }
 
 

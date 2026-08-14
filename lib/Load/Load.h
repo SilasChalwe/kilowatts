@@ -79,6 +79,21 @@ struct LoadPower {
 
 
 /**
+ * A Load's physical health as last reported by the Node that owns it.
+ *
+ * This is deliberately separate from LoadMode (the configured intent):
+ * AVAILABLE/FAULTED/UNAVAILABLE describes whether the physical relay can
+ * currently be trusted to do what it is told, not whether it is
+ * configured Fixed/Auto or ON/OFF.
+ */
+enum class LoadHealth : std::uint8_t {
+    AVAILABLE = 0U,     // Healthy; may be commanded normally.
+    FAULTED = 1U,        // A relay command failed to confirm; needs maintenance.
+    UNAVAILABLE = 2U     // Configuration invalid, or the owning hardware is not responding.
+};
+
+
+/**
  * Preferred running time for an AUTO load.
  *
  * Example:
@@ -96,6 +111,37 @@ struct AutoSchedule {
 
 /**
  * Represents one electrical load connected to one ESP32 Node.
+ *
+ * State authority: this class deliberately keeps several distinct
+ * concepts that must never overwrite one another (Section "State
+ * Authority After These Corrections"):
+ *
+ * - getMode()/setMode() — the CONFIGURED user/system operating mode
+ *   (FIXED_ON/FIXED_OFF/AUTO_ON/AUTO_OFF). This is a setting, changed
+ *   only by the user (via LoadConfigurationStore) or by a Node's own
+ *   report of its locally configured state. Best-First Search's
+ *   selection/rejection result for an Auto Load must NEVER be written
+ *   here — selecting AUTO_OFF Load for admission this cycle does not
+ *   make it "become AUTO_ON"; it stays configured AUTO_OFF with a target
+ *   of ON this cycle. isOn()/isOff() below read this configured value
+ *   only, not the planning target.
+ * - getTargetRelayState()/setTargetRelayState() — the relay state
+ *   Central's CURRENT planning cycle wants: derived from Fixed
+ *   configuration (or a critical-protection override) for a Fixed Load,
+ *   or from BestFirstSearch's admission decision for an Auto Load.
+ *   Recomputed every planning cycle.
+ * - getConfirmedRelayState()/setConfirmedRelayState() plus
+ *   isConfirmedRelayStateValid() — the last relay state actually
+ *   confirmed by hardware read-back, and whether that confirmation can
+ *   currently be trusted. A failed/timed-out relay command must never
+ *   force this to OFF or mark it invalid — see setConfirmedRelayState().
+ * - getHealth()/setHealth() — whether this Load can currently be
+ *   trusted to safely accept new commands (AVAILABLE/FAULTED/UNAVAILABLE).
+ *
+ * Reporting/MQTT/tree code must expose all of these separately so the
+ * mobile application (and this project's own diagnostics) can always
+ * tell "what the user configured" apart from "what we currently want"
+ * apart from "what we last knew for certain."
  */
 class Load {
 
@@ -209,6 +255,92 @@ public:
 
 
     /**
+     * Records the relay state actually read back from hardware
+     * (RelayController::readBackState()) after a successfully confirmed
+     * relay command. This is the physical truth, distinct from
+     * getMode()/isOn() (the configured/commanded intent) and from
+     * getTargetRelayState() (what the current planning cycle wants) — a
+     * caller must not treat any of the three as another.
+     *
+     * Calling this always marks the confirmation valid
+     * (isConfirmedRelayStateValid() becomes true): only call it when a
+     * command has genuinely been confirmed. A failed/timed-out command
+     * must NOT call this — see the class-level documentation and
+     * RelayCommandDispatcher's README for why a failed acknowledgement
+     * does not prove the relay is OFF.
+     */
+    void setConfirmedRelayState(bool on);
+
+    /**
+     * Returns the last relay state confirmed by hardware read-back — the
+     * last value ever passed to setConfirmedRelayState(), preserved
+     * exactly as-is across any number of failed commands in between.
+     * Always check isConfirmedRelayStateValid() first: when it is false,
+     * this value is stale/unknown and must not be trusted as current
+     * physical truth (though it may still be a useful conservative
+     * estimate — see Load's class documentation).
+     */
+    bool getConfirmedRelayState() const;
+
+    /**
+     * Returns whether getConfirmedRelayState() currently reflects a
+     * trustworthy physical confirmation. False from construction until
+     * the first setConfirmedRelayState() call, and stays exactly as it
+     * was through any number of failed/timed-out commands afterward —
+     * only a fresh successful confirmation ever makes it true again
+     * (there is no separate "invalidate" call: failure simply never
+     * touches this flag, which is what "preserve the previous trusted
+     * state" means in practice).
+     */
+    bool isConfirmedRelayStateValid() const;
+
+
+    /**
+     * Records targetOn as the relay state Central's current planning
+     * cycle wants for this Load — derived from Fixed configuration (or
+     * documented critical-protection override) for a Fixed Load, or from
+     * BestFirstSearch's admission decision for an Auto Load. This is
+     * planning output, recomputed every cycle; it is deliberately NEVER
+     * written into getMode()/setMode() — an Auto Load's configured
+     * AUTO_ON/AUTO_OFF mode is a user/system setting that Best-First
+     * Search must never overwrite merely because it selected or rejected
+     * the Load this cycle (see Load's class documentation).
+     */
+    void setTargetRelayState(bool targetOn);
+
+    /**
+     * Returns the relay state the current planning cycle wants for this
+     * Load. Undefined/stale before the first setTargetRelayState() call
+     * this boot — callers that run after the planning cycle has executed
+     * at least once may rely on it.
+     */
+    bool getTargetRelayState() const;
+
+
+    /** Records this Load's current physical health. */
+    void setHealth(LoadHealth health);
+
+    /** Returns this Load's current physical health. */
+    LoadHealth getHealth() const;
+
+
+    /**
+     * Records the raw rejection-reason byte BestFirstSearch produced the
+     * last time this Load was evaluated as an Auto candidate (see
+     * BestFirstSearch::NONE/LOW_BATTERY/... in BestFirstSearch.h). Stored
+     * as a plain byte, not BestFirstSearch's type, so this header never
+     * depends on BestFirstSearch.h — Load is a leaf dependency of that
+     * class, never the reverse. 0 (BestFirstSearch::NONE) means either
+     * "admitted" or "never evaluated this cycle" (for example a Fixed
+     * Load, which Best-First Search never ranks).
+     */
+    void setLastBestFirstRejectionReason(std::uint8_t reason);
+
+    /** Returns the raw rejection-reason byte set by setLastBestFirstRejectionReason(). */
+    std::uint8_t getLastBestFirstRejectionReason() const;
+
+
+    /**
      * Changes the normal running power and startup power.
      *
      * startupWatts must not be lower than runningWatts.
@@ -268,6 +400,26 @@ private:
     LoadMeasurements measurements_;
 
 
+    /** Last relay state confirmed by hardware read-back (physical truth). */
+    bool confirmedRelayState_;
+
+
+    /** Whether confirmedRelayState_ currently reflects a trustworthy confirmation. */
+    bool confirmedRelayStateValid_;
+
+
+    /** Relay state the current planning cycle wants (Central's target, not the configured mode). */
+    bool targetRelayState_;
+
+
+    /** Current physical health as last reported by the owning Node. */
+    LoadHealth health_;
+
+
+    /** Raw BestFirstSearch rejection-reason byte from the last evaluation. */
+    std::uint8_t lastBestFirstRejectionReason_;
+
+
     /** Normal running power and startup power. */
     LoadPower power_;
 
@@ -277,10 +429,9 @@ private:
 
 
     /**
-     * The ONLY stored value that determines:
-     * Fixed or Auto
-     * and
-     * ON or OFF.
+     * The ONLY stored value that determines CONFIGURED Fixed/Auto and
+     * ON/OFF — never the planning target (see targetRelayState_) and
+     * never mutated by Best-First Search's per-cycle selection result.
      */
     LoadMode::Value mode_;
 

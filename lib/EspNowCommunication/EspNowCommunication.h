@@ -121,7 +121,13 @@ public:
      *
      * The ESP-NOW transport therefore remains reusable for:
      * Node reports, Load reports, relay commands, acknowledgements,
-     * errors, connection handshakes and discovery.
+     * errors, connection handshakes, discovery and commissioning.
+     *
+     * IDENTITY_REPORT/COMMISSION_COMMAND/COMMISSION_ACK/
+     * DECOMMISSION_COMMAND/DECOMMISSION_ACK (see lib/CommissioningPackets)
+     * were appended for the commissioning lifecycle without renumbering
+     * 1-8, the same "append, never renumber" convention already used for
+     * BestFirstSearch's rejection-reason codes.
      */
     enum class MessageType : std::uint8_t {
         NODE_REPORT = 1U,
@@ -131,7 +137,18 @@ public:
         ERROR_MESSAGE = 5U,
         HANDSHAKE = 6U,
         DISCOVERY_REQUEST = 7U,
-        DISCOVERY_RESPONSE = 8U
+        DISCOVERY_RESPONSE = 8U,
+        IDENTITY_REPORT = 9U,
+        COMMISSION_COMMAND = 10U,
+        COMMISSION_ACK = 11U,
+        DECOMMISSION_COMMAND = 12U,
+        DECOMMISSION_ACK = 13U,
+        NODE_REPORT_ACK = 14U,
+        DEV_SESSION_COMMAND = 15U,
+        DEV_SENSOR_INPUT_COMMAND = 16U,
+        DEV_ACK = 17U,
+        FACTORY_RESET_COMMAND = 18U,
+        FACTORY_RESET_ACK = 19U
     };
 
 
@@ -257,6 +274,25 @@ public:
     bool registerDirectDownstreamNode(
         const char* nodeName,
         const MacAddress& nodeMacAddress,
+        std::uint16_t hopCountToCentral
+    );
+
+
+    /**
+     * Registers one directly attached downstream Node with a supplied
+     * signal-strength value.
+     *
+     * This overload is useful for behaviour tests where the downstream
+     * Node is simulated but we still want the connection table to show
+     * an RSSI value.
+     *
+     * In the real system, RSSI comes automatically from the ESP-NOW
+     * receive metadata when the downstream Node physically communicates.
+     */
+    bool registerDirectDownstreamNode(
+        const char* nodeName,
+        const MacAddress& nodeMacAddress,
+        std::int8_t signalStrengthDbm,
         std::uint16_t hopCountToCentral
     );
 

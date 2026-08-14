@@ -88,6 +88,20 @@ public:
     const Load* getLoadByRelayPin(std::uint8_t relayPin) const;
 
 
+    /**
+     * Removes the Load using the given relay pin, if this Node has one.
+     *
+     * Used to prune a Load that a Node's own later report no longer
+     * includes (see CentralNodeRegistry::applyNodeReport()) - a Node's
+     * real Load count can legitimately shrink (for example after
+     * decommissioning), and this registry must not keep reporting a Load
+     * that no longer physically exists.
+     *
+     * Returns true when a Load was actually removed.
+     */
+    bool removeLoadByRelayPin(std::uint8_t relayPin);
+
+
 private:
 
     /**

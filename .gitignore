@@ -3,3 +3,8 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Wi-Fi/MQTT credentials for the Central Node (see
+# include/KilowattsSecrets.h.example for the template). Never commit the
+# real file.
+include/KilowattsSecrets.h

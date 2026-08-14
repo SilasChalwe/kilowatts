@@ -1,51 +1,61 @@
 /**
- * @file main.cpp
- * @brief Runs ESP32 unit and integration tests for Load and BestFirstSearch.
+ * @file test_best_first_search.cpp
+ * @brief Host-native correctness tests for Load, LoadFilter,
+ *        AvailablePowerManager and the Chapter 4 BestFirstSearch
+ *        implementation.
  *
- * The tests follow the document-defined separation of responsibilities:
- * Load stores and validates one managed DC load, while BestFirstSearch receives
- * only validated, healthy AUTO loads and performs Candidate Evaluation,
- * Constraint Guard checks, and Best-First scheduling.
+ * Every expected numeric value in the scoring/rejection sections below is
+ * hand-derived directly from the formulas in Sections 4.6.2-4.6.4 of the
+ * dissertation (Equations 4.8-4.37, Algorithms 4.2-4.5) and cross-checked
+ * against BestFirstSearch.cpp's actual implementation of them.
+ *
+ * LoadScheduleEvaluator is not exercised here: it calls
+ * CurrentTimeProvider's real methods, which require ESP-IDF's SNTP/NVS
+ * headers and cannot be linked into a host build (see
+ * LoadScheduleEvaluator's own README). Instead, the schedule tests below
+ * supply r_i directly to BestFirstSearch::addLoad(), exactly as
+ * LoadScheduleEvaluator::evaluateSchedule() would have computed it for
+ * each of its three cases (no schedule, schedule not yet due, schedule
+ * due) — this still exercises exactly the part of the formula
+ * BestFirstSearch is responsible for.
+ *
+ * This file uses a standard host int main(), not an ESP-IDF app_main(), so
+ * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
  *
  * @author Chalwe Silas
  * @programme Final-Year Computer Engineering
  * @institution The Copperbelt University
- * @date 11 August 2026
+ * @date 13 August 2026
  */
 
-#include "Load.h"
+#include "AvailablePowerManager.h"
 #include "BestFirstSearch.h"
+#include "Load.h"
+#include "LoadFilter.h"
 
-#include "esp_chip_info.h"
-#include "esp_heap_caps.h"
-#include "esp_system.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
-#include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <inttypes.h>
 #include <limits>
+#include <vector>
 
+using kilowatts::AvailablePowerManager;
 using kilowatts::BestFirstSearch;
 using kilowatts::Load;
-using kilowatts::LoadAvailabilityReason;
+using kilowatts::LoadFilter;
 using kilowatts::LoadMode;
-using kilowatts::LoadState;
+using kilowatts::LoadPower;
 
-static std::size_t passedChecks = 0U;
-static std::size_t failedChecks = 0U;
+namespace {
 
-static bool nearValue(float actual, float expected, float tolerance = 0.0001F) {
+std::size_t passedChecks = 0U;
+std::size_t failedChecks = 0U;
+
+bool nearValue(float actual, float expected, float tolerance = 0.0005F) {
     return std::fabs(actual - expected) <= tolerance;
 }
 
-static const char* recordResult(bool passed) {
+const char* recordResult(bool passed) {
     if (passed) {
         ++passedChecks;
         return "PASS";
@@ -55,1026 +65,1116 @@ static const char* recordResult(bool passed) {
     return "FAIL";
 }
 
-static bool reportCheck(const char* name, bool passed) {
-    std::printf("%-66s %s\n", name, recordResult(passed));
+bool reportCheck(const char* name, bool passed) {
+    std::printf("%-78s %s\n", name, recordResult(passed));
     return passed;
 }
 
-static void printSection(const char* title) {
+void printSection(const char* title) {
     std::printf("\n======================================================================\n");
     std::printf("%s\n", title);
     std::printf("======================================================================\n");
 }
 
-static const char* loadModeText(LoadMode mode) {
-    return mode == LoadMode::FIXED ? "FIXED" : "AUTO";
+using BranchId = BestFirstSearch::BranchId;
+
+/*
+ * A Branch is physically identified by {Node MAC, relay pin} — the same
+ * addressing as Load::Id, since a Branch is the relay-controlled circuit
+ * feeding a Load. Two distinct demonstration Nodes give every test below
+ * real, distinguishable Branch identities rather than opaque integers.
+ */
+const Load::MacAddress BRANCH_NODE_A_MAC = {0x02, 0x00, 0x00, 0x00, 0xB0, 0x0A};
+const Load::MacAddress BRANCH_NODE_B_MAC = {0x02, 0x00, 0x00, 0x00, 0xB0, 0x0B};
+
+const BranchId BRANCH_0 = BranchId{BRANCH_NODE_A_MAC, 16U};
+const BranchId BRANCH_1 = BranchId{BRANCH_NODE_B_MAC, 16U};
+const BranchId UNREGISTERED_BRANCH = BranchId{BRANCH_NODE_A_MAC, 99U};
+
+BestFirstSearch::Weights makeWeights(
+    float runningPowerWeight,
+    float startupPowerWeight,
+    float batteryStressWeight,
+    float priorityWeight,
+    float scheduleWeight,
+    std::uint16_t maximumAllowedPriority)
+{
+    BestFirstSearch::Weights weights{};
+    weights.runningPowerWeight = runningPowerWeight;
+    weights.startupPowerWeight = startupPowerWeight;
+    weights.batteryStressWeight = batteryStressWeight;
+    weights.priorityWeight = priorityWeight;
+    weights.scheduleWeight = scheduleWeight;
+    weights.maximumAllowedPriority = maximumAllowedPriority;
+    return weights;
 }
 
-static const char* loadStateText(LoadState state) {
-    return state == LoadState::ON ? "ON" : "OFF";
+BestFirstSearch::ElectricalPlanningState makePlanningState(
+    float stateOfChargePercent,
+    float minimumStateOfChargePercent,
+    float warningStateOfChargePercent,
+    float batteryBusVoltageVolts,
+    float maximumBatteryPowerWatts,
+    float maximumMainCurrentAmps,
+    float totalAvailablePowerWatts,
+    float powerAvailableForAutoLoadsWatts,
+    float initialCommittedPowerWatts)
+{
+    BestFirstSearch::ElectricalPlanningState state{};
+    state.stateOfChargePercent = stateOfChargePercent;
+    state.minimumStateOfChargePercent = minimumStateOfChargePercent;
+    state.warningStateOfChargePercent = warningStateOfChargePercent;
+    state.batteryBusVoltageVolts = batteryBusVoltageVolts;
+    state.maximumBatteryPowerWatts = maximumBatteryPowerWatts;
+    state.maximumMainCurrentAmps = maximumMainCurrentAmps;
+    state.totalAvailablePowerWatts = totalAvailablePowerWatts;
+    state.powerAvailableForAutoLoadsWatts = powerAvailableForAutoLoadsWatts;
+    state.initialCommittedPowerWatts = initialCommittedPowerWatts;
+    return state;
 }
 
-static const char* availabilityReasonText(LoadAvailabilityReason reason) {
-    switch (reason) {
-        case LoadAvailabilityReason::NONE:
-            return "NONE";
-        case LoadAvailabilityReason::HARDWARE_FAULT:
-            return "HARDWARE_FAULT";
-        case LoadAvailabilityReason::INVALID_CONFIGURATION:
-            return "INVALID_CONFIGURATION";
-        case LoadAvailabilityReason::RELAY_FAILURE:
-            return "RELAY_FAILURE";
-        default:
-            return "UNKNOWN";
-    }
-}
-
-static bool configureDefault(BestFirstSearch& search) {
-    return search.configure(
-        1.0F,  // w_P
-        1.0F,  // w_S
-        1.0F,  // w_B
-        1.0F,  // w_Q
-        1.0F,  // w_T
-        10U,   // W_max
-        20.0F, // SoC_min
-        40.0F  // SoC_warn
-    );
+bool configureEqualWeights(BestFirstSearch& search, std::uint16_t maximumAllowedPriority = 10U) {
+    return search.setSearchScoreWeights(makeWeights(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, maximumAllowedPriority));
 }
 
 /**
- * Makes one load healthy, validates its per-load configuration, confirms that
- * it is an available AUTO load, then transfers only the documented candidate
- * fields into BestFirstSearch.
+ * TEST 1 - CURRENT LOAD MODEL
+ * Construction with a real six-byte MAC-style Node identity, and the exact
+ * acceptance rules implemented by setPower(), setMeasurements() and
+ * setSchedule(). Load.h/Load.cpp are unchanged by the Chapter 4 rework, so
+ * this test documents the same current behaviour as before.
  */
-static bool validateAndAddAutoLoad(BestFirstSearch& search,
-                                   Load& load,
-                                   std::size_t maximumBranches,
-                                   std::uint16_t W_max) {
-    load.setHealthy_i(true);
+void testLoadDataModel() {
+    printSection("TEST 1 - CURRENT LOAD MODEL");
 
-    if (!load.validateConfiguration(maximumBranches, W_max) ||
-        !load.isCandidateAutoLoad()) {
-        return false;
-    }
+    const Load::MacAddress sittingRoomMac = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xB8};
 
-    return search.addAutoLoad(
-        load.getLoadId_i(),
-        load.get_b_i(),
-        load.get_P_i(),
-        load.get_P_i_peak(),
-        load.get_W_i(),
-        load.get_a_i(),
-        load.get_d_i());
-}
+    Load fan(Load::Id{sittingRoomMac, 18U}, "Fan", LoadPower{18.0F, 25.0F}, 3U, LoadMode::Auto::ON);
 
-static void printLoadRecord(const Load& load) {
-    std::printf(
-        "Load=%" PRIu32 " mode=%s node=%" PRIu32 " branch=%zu pin=%u "
-        "P=%.2fW peak=%.2fW kappa=%.2f W_i=%u a=%u d=%u "
-        "user=%s x=%s current=%s healthy=%u valid=%u available=%u reason=%s\n",
-        load.getLoadId_i(),
-        loadModeText(load.getMode_i()),
-        load.getSmartNodeId_i(),
-        load.get_b_i(),
-        static_cast<unsigned int>(load.getRelayControlPin_i()),
-        load.get_P_i(),
-        load.get_P_i_peak(),
-        load.get_kappa_i(),
-        static_cast<unsigned int>(load.get_W_i()),
-        static_cast<unsigned int>(load.get_a_i()),
-        static_cast<unsigned int>(load.get_d_i()),
-        loadStateText(load.getUserSelectedState_i()),
-        loadStateText(load.get_x_i()),
-        loadStateText(load.getCurrentState_i()),
-        static_cast<unsigned int>(load.isHealthy()),
-        static_cast<unsigned int>(load.isConfigurationValid()),
-        static_cast<unsigned int>(load.isAvailable()),
-        availabilityReasonText(load.getAvailabilityReason_i()));
+    reportCheck("Load identity is Node MAC address + relay pin, not an integer ID",
+                fan.getId().macAddress == sittingRoomMac && fan.getId().relayPin == 18U);
+    reportCheck("getMacAddress() matches the Id's MAC address", fan.getMacAddress() == sittingRoomMac);
+    reportCheck("getRelayPin() matches the Id's relay pin", fan.getRelayPin() == 18U);
+    reportCheck("Constructor stores the supplied name", fan.getName() == "Fan");
+    reportCheck("Constructor stores valid power unchanged",
+                nearValue(fan.getPower().runningWatts, 18.0F) &&
+                nearValue(fan.getPower().startupWatts, 25.0F));
+    reportCheck("Constructor stores the supplied priority", fan.getPriority() == 3U);
+    reportCheck("Constructor stores the supplied combined mode", fan.getMode() == LoadMode::Auto::ON);
+    reportCheck("AUTO_ON Load reports isAuto() and isOn()", fan.isAuto() && fan.isOn());
+    reportCheck("AUTO_ON Load does not report isFixed() or isOff()",
+                !fan.isFixed() && !fan.isOff());
+
+    fan.setName("Ceiling Fan");
+    reportCheck("setName() changes the stored name", fan.getName() == "Ceiling Fan");
+
+    const bool validPowerAccepted = fan.setPower(LoadPower{20.0F, 28.0F});
+    reportCheck("setPower() accepts startupWatts >= runningWatts",
+                validPowerAccepted && nearValue(fan.getPower().runningWatts, 20.0F) &&
+                nearValue(fan.getPower().startupWatts, 28.0F));
+
+    const bool invalidPowerRejected = !fan.setPower(LoadPower{20.0F, 10.0F});
+    reportCheck("setPower() rejects startupWatts < runningWatts",
+                invalidPowerRejected && nearValue(fan.getPower().runningWatts, 20.0F));
+
+    const bool scheduleAccepted = fan.setSchedule(kilowatts::AutoSchedule{true, 6U, 30U});
+    reportCheck("setSchedule() accepts a valid time on an AUTO Load",
+                scheduleAccepted && fan.getSchedule().enabled &&
+                fan.getSchedule().hour == 6U && fan.getSchedule().minute == 30U);
+
+    fan.setMode(LoadMode::Fixed::ON);
+    reportCheck("setMode() to FIXED clears any AUTO schedule",
+                fan.isFixed() && !fan.getSchedule().enabled);
+
+    Load router(Load::Id{sittingRoomMac, 17U}, "Router", LoadPower{10.0F, 10.0F}, 2U, LoadMode::Fixed::OFF);
+    reportCheck("FIXED_OFF Load reports isFixed() and isOff()",
+                router.isFixed() && router.isOff() && !router.isOn());
 }
 
 /**
- * TEST 1
- * Unit tests for the Load data model and Candidate Preparation inputs.
+ * TEST 2 - LOADFILTER CLASSIFICATION
+ * LoadFilter.h/LoadFilter.cpp are unchanged by this phase: AUTO_ON and
+ * AUTO_OFF both remain Auto candidates, Fixed Loads remain boundary
+ * conditions.
  */
-static void testLoadDataModel() {
-    printSection("TEST 1 - LOAD DATA MODEL AND CANDIDATE PREPARATION");
+void testLoadFilterClassification() {
+    printSection("TEST 2 - LOADFILTER CLASSIFICATION");
 
-    constexpr std::size_t maximumBranches = 2U;
-    constexpr std::uint16_t W_max = 10U;
+    const Load::MacAddress centralMac = {0xA4, 0xCF, 0x12, 0x0E, 0x32, 0xC0};
+    const Load::MacAddress sittingRoomMac = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xB8};
 
-    Load autoLoad(
-        101U, LoadMode::AUTO, 1U, 0U, 16U,
-        20.0F, 30.0F, 10U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
+    Load fixedOnLoad(Load::Id{centralMac, 25U}, "Central Status Indicator",
+                      LoadPower{2.0F, 2.0F}, 1U, LoadMode::Fixed::ON);
+    Load fixedOffLoad(Load::Id{sittingRoomMac, 17U}, "Router",
+                       LoadPower{10.0F, 10.0F}, 2U, LoadMode::Fixed::OFF);
+    Load autoOnLoad(Load::Id{sittingRoomMac, 18U}, "Fan",
+                     LoadPower{18.0F, 25.0F}, 3U, LoadMode::Auto::ON);
+    Load autoOffLoad(Load::Id{sittingRoomMac, 19U}, "WaterPump",
+                      LoadPower{35.0F, 55.0F}, 4U, LoadMode::Auto::OFF);
 
-    reportCheck("Constructor derives kappa_i = P_i_peak / P_i",
-                nearValue(autoLoad.get_kappa_i(), 1.5F));
-    reportCheck("A new load requires health/configuration validation",
-                !autoLoad.isAvailable() && !autoLoad.isConfigurationValid());
+    LoadFilter loadFilter;
+    reportCheck("addLoad() accepts a FIXED_ON Load", loadFilter.addLoad(fixedOnLoad));
+    reportCheck("addLoad() accepts a FIXED_OFF Load", loadFilter.addLoad(fixedOffLoad));
+    reportCheck("addLoad() accepts an AUTO_ON Load", loadFilter.addLoad(autoOnLoad));
+    reportCheck("addLoad() accepts an AUTO_OFF Load", loadFilter.addLoad(autoOffLoad));
 
-    autoLoad.setHealthy_i(true);
-    reportCheck("Healthy but not-yet-validated load is still unavailable",
-                autoLoad.isHealthy() && !autoLoad.isAvailable());
+    reportCheck("FIXED_ON routes to the Fixed ON collection",
+                loadFilter.getNumberOfFixedOnLoads() == 1U &&
+                loadFilter.getFixedOnLoad(0U) == &fixedOnLoad);
+    reportCheck("AUTO_ON routes to the Auto candidate collection",
+                loadFilter.getNumberOfAutoCandidateLoads() == 2U &&
+                loadFilter.getAutoCandidateLoad(0U) == &autoOnLoad);
+    reportCheck("AUTO_OFF also routes to the Auto candidate collection",
+                loadFilter.getAutoCandidateLoad(1U) == &autoOffLoad);
 
-    const bool autoValid = autoLoad.validateConfiguration(maximumBranches, W_max);
-    reportCheck("Valid AUTO load passes per-load validation", autoValid);
-    reportCheck("Healthy + valid AUTO load is available", autoLoad.isAvailable());
-    reportCheck("Healthy + valid AUTO load is a Best-First candidate",
-                autoLoad.isCandidateAutoLoad());
-
-    const bool surgeSet = autoLoad.setPowerProfileFromSurgeMultiplier_i(12.0F, 1.5F);
-    reportCheck("Equation 4.17 surge multiplier is accepted", surgeSet);
-    reportCheck("Equation 4.17 calculates P_i_peak = kappa_i * P_i",
-                nearValue(autoLoad.get_P_i_peak(), 18.0F) &&
-                nearValue(autoLoad.get_kappa_i(), 1.5F));
-    reportCheck("Changing configuration invalidates prior validation",
-                !autoLoad.isConfigurationValid());
-    reportCheck("Revalidation restores a healthy valid load",
-                autoLoad.validateConfiguration(maximumBranches, W_max) &&
-                autoLoad.isAvailable());
-
-    autoLoad.setHealthy_i(false);
-    reportCheck("Hardware fault makes load unavailable",
-                !autoLoad.isAvailable() &&
-                autoLoad.getAvailabilityReason_i() ==
-                    LoadAvailabilityReason::HARDWARE_FAULT);
-
-    autoLoad.setHealthy_i(true);
-    reportCheck("Health restoration clears hardware fault after valid config",
-                autoLoad.isAvailable() &&
-                autoLoad.getAvailabilityReason_i() ==
-                    LoadAvailabilityReason::NONE);
-
-    const bool relayFailureStored = autoLoad.setAvailabilityReason_i(
-        LoadAvailabilityReason::RELAY_FAILURE);
-    reportCheck("Relay failure can mark an otherwise valid load unavailable",
-                relayFailureStored && !autoLoad.isAvailable() &&
-                autoLoad.getAvailabilityReason_i() ==
-                    LoadAvailabilityReason::RELAY_FAILURE);
-
-    const bool availabilityCleared = autoLoad.setAvailabilityReason_i(
-        LoadAvailabilityReason::NONE);
-    reportCheck("Available state can be restored after relay fault is cleared",
-                availabilityCleared && autoLoad.isAvailable());
-
-    Load fixedLoad(
-        201U, LoadMode::FIXED, 2U, 1U, 17U,
-        15.0F, 15.0F, 8U, true, false,
-        LoadState::ON, LoadState::OFF, LoadState::OFF);
-    fixedLoad.setHealthy_i(true);
-
-    reportCheck("FIXED load may retain valid schedule information",
-                fixedLoad.validateConfiguration(maximumBranches, W_max));
-    reportCheck("FIXED load is not an AUTO candidate",
-                !fixedLoad.isCandidateAutoLoad());
-    reportCheck("FIXED user-selected state can be applied to x_i",
-                fixedLoad.set_x_i(fixedLoad.getUserSelectedState_i()) &&
-                fixedLoad.get_x_i() == LoadState::ON);
-
-    Load invalidSchedule(
-        301U, LoadMode::AUTO, 1U, 0U, 18U,
-        5.0F, 5.0F, 5U, false, true,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    invalidSchedule.setHealthy_i(true);
-    reportCheck("d_i=true while a_i=false fails Load validation",
-                !invalidSchedule.validateConfiguration(maximumBranches, W_max));
-
-    Load invalidBranch(
-        302U, LoadMode::AUTO, 1U, 2U, 19U,
-        5.0F, 5.0F, 5U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    invalidBranch.setHealthy_i(true);
-    reportCheck("Branch index outside maximumBranches fails Load validation",
-                !invalidBranch.validateConfiguration(maximumBranches, W_max));
-
-    Load invalidPriority(
-        303U, LoadMode::AUTO, 1U, 0U, 20U,
-        5.0F, 5.0F, 11U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    invalidPriority.setHealthy_i(true);
-    reportCheck("W_i above W_max fails Load validation",
-                !invalidPriority.validateConfiguration(maximumBranches, W_max));
-
-    Load invalidPeak(
-        304U, LoadMode::AUTO, 1U, 0U, 21U,
-        10.0F, 5.0F, 5U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    invalidPeak.setHealthy_i(true);
-    reportCheck("P_i_peak below P_i fails Load validation",
-                !invalidPeak.validateConfiguration(maximumBranches, W_max));
-
-    std::printf("\nRepresentative records after unit tests:\n");
-    printLoadRecord(autoLoad);
-    printLoadRecord(fixedLoad);
+    loadFilter.reset();
+    reportCheck("reset() clears every collection",
+                loadFilter.getNumberOfFixedOnLoads() == 0U &&
+                loadFilter.getNumberOfFixedOffLoads() == 0U &&
+                loadFilter.getNumberOfAutoCandidateLoads() == 0U);
 }
 
 /**
- * TEST 2
- * Integration test for Algorithm 4.2 Candidate Preparation followed by
- * Algorithms 4.3-4.5. FIXED loads form the boundary condition; only validated
- * available AUTO loads are transferred to BestFirstSearch.
+ * TEST 3 - SEARCH SCORE WEIGHT VALIDATION
+ * setSearchScoreWeights() now takes one BestFirstSearch::Weights value
+ * carrying w_P, w_S, w_B, w_Q, w_T and W_max.
  */
-static void testLoadToBestFirstIntegration() {
-    printSection("TEST 2 - LOAD -> BESTFIRSTSEARCH INTEGRATION");
-    std::printf("Reference: Candidate Preparation + Algorithms 4.3-4.5\n");
+void testSearchScoreWeightValidation() {
+    printSection("TEST 3 - SEARCH SCORE WEIGHT VALIDATION");
 
-    constexpr std::size_t maximumBranches = 2U;
-    constexpr std::uint16_t W_max = 10U;
-    constexpr float SoC = 30.0F;
-    constexpr float P_available = 100.0F;
-    constexpr float P_battery_max = 200.0F;
-    constexpr float V_B = 10.0F;
-    constexpr float I_main_max = 20.0F;
+    BestFirstSearch rejectNegative;
+    reportCheck("A negative weight is rejected",
+                !rejectNegative.setSearchScoreWeights(makeWeights(-1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 10U)));
 
-    Load fixedLoad(
-        100U, LoadMode::FIXED, 1U, 0U, 15U,
-        20.0F, 20.0F, 10U, false, false,
-        LoadState::ON, LoadState::OFF, LoadState::ON);
-    fixedLoad.setHealthy_i(true);
+    BestFirstSearch rejectZeroPriority;
+    reportCheck("maximumAllowedPriority == 0 is rejected",
+                !rejectZeroPriority.setSearchScoreWeights(makeWeights(1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 0U)));
 
-    const bool fixedValid = fixedLoad.validateConfiguration(maximumBranches, W_max);
-    const bool fixedStateApplied = fixedValid &&
-        fixedLoad.set_x_i(fixedLoad.getUserSelectedState_i());
+    BestFirstSearch rejectNonFinite;
+    const float notANumber = std::numeric_limits<float>::quiet_NaN();
+    reportCheck("A non-finite weight is rejected",
+                !rejectNonFinite.setSearchScoreWeights(makeWeights(notANumber, 1.0F, 1.0F, 1.0F, 1.0F, 10U)));
 
-    float initialBranch0 = 0.0F;
-    float initialBranch1 = 0.0F;
-    float P_fixed = 0.0F;
+    BestFirstSearch acceptsZeroWeights;
+    reportCheck("Zero-valued weights are accepted (zero is non-negative)",
+                acceptsZeroWeights.setSearchScoreWeights(makeWeights(0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 10U)));
 
-    if (fixedStateApplied && fixedLoad.get_x_i() == LoadState::ON) {
-        P_fixed += fixedLoad.get_P_i();
-        if (fixedLoad.get_b_i() == 0U) {
-            initialBranch0 += fixedLoad.get_P_i();
-        } else if (fixedLoad.get_b_i() == 1U) {
-            initialBranch1 += fixedLoad.get_P_i();
-        }
-    }
-
-    const float initialPRemaining = std::max(0.0F, P_available - P_fixed);
-    const float initialPCommitted = P_fixed;
-
-    BestFirstSearch search(3U, maximumBranches);
-    const bool configured = configureDefault(search);
-    const bool cycleStarted = configured && search.startPlanningCycle(
-        SoC,
-        P_available,
-        initialPRemaining,
-        initialPCommitted,
-        P_battery_max,
-        V_B,
-        I_main_max);
-    const bool branch0Set = cycleStarted &&
-        search.setBranchState(0U, initialBranch0, 10.0F);
-    const bool branch1Set = branch0Set &&
-        search.setBranchState(1U, initialBranch1, 10.0F);
-
-    Load load101(
-        101U, LoadMode::AUTO, 1U, 0U, 16U,
-        20.0F, 30.0F, 10U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    Load load102(
-        102U, LoadMode::AUTO, 1U, 0U, 17U,
-        10.0F, 10.0F, 5U, true, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    Load load103(
-        103U, LoadMode::AUTO, 2U, 1U, 18U,
-        5.0F, 5.0F, 10U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-
-    const bool load101Added = branch1Set &&
-        validateAndAddAutoLoad(search, load101, maximumBranches, W_max);
-    const bool load102Added = load101Added &&
-        validateAndAddAutoLoad(search, load102, maximumBranches, W_max);
-    const bool load103Added = load102Added &&
-        validateAndAddAutoLoad(search, load103, maximumBranches, W_max);
-    const bool schedulerCompleted = load103Added && search.run();
-
-    const bool prerequisitesPassed = fixedValid && fixedStateApplied && configured &&
-        cycleStarted && branch0Set && branch1Set && load101Added && load102Added &&
-        load103Added && schedulerCompleted;
-    if (!reportCheck("FIXED boundary, AUTO candidate preparation, and scheduler run",
-                     prerequisitesPassed)) {
-        return;
-    }
-
-    reportCheck("FIXED load remains outside BestFirstSearch candidate array",
-                search.getAutoLoadCount() == 3U);
-    reportCheck("P_fixed is committed before AUTO scheduling",
-                nearValue(initialPCommitted, 20.0F) &&
-                nearValue(initialPRemaining, 80.0F));
-
-    std::printf("\nFIXED boundary load\n");
-    printLoadRecord(fixedLoad);
-    std::printf("P_fixed=%.2f W, initial P_remaining=%.2f W\n",
-                P_fixed, initialPRemaining);
-
-    constexpr float expectedB = 0.50F;
-    reportCheck("Battery stress B is calculated from SoC_warn, SoC, SoC_min",
-                nearValue(search.get_B(), expectedB));
-
-    constexpr float expected_p_i[] = {0.20F, 0.10F, 0.05F};
-    constexpr float expected_s_i[] = {0.10F, 0.00F, 0.00F};
-    constexpr float expected_q_i[] = {1.00F, 0.50F, 1.00F};
-    constexpr float expected_r_i[] = {0.00F, 1.00F, 0.00F};
-    constexpr float expected_g_i[] = {0.80F, 0.60F, 0.55F};
-    constexpr float expected_h_i[] = {0.00F, 1.50F, 0.00F};
-    constexpr float expected_f_i[] = {0.80F, 2.10F, 0.55F};
-    constexpr std::size_t expectedOrder[] = {1U, 2U, 0U};
-
-    std::printf("\nCandidate Evaluation\n");
-    std::printf("%-7s %-7s %-7s %-7s %-7s %-7s %-7s %-7s %-7s %s\n",
-                "Load", "p", "s", "q", "r", "g", "h", "f", "Order", "Result");
-    for (std::size_t i = 0U; i < 3U; ++i) {
-        const bool rowPassed =
-            nearValue(search.get_p_i(i), expected_p_i[i]) &&
-            nearValue(search.get_s_i(i), expected_s_i[i]) &&
-            nearValue(search.get_q_i(i), expected_q_i[i]) &&
-            nearValue(search.get_r_i(i), expected_r_i[i]) &&
-            nearValue(search.get_g_i(i), expected_g_i[i]) &&
-            nearValue(search.get_h_i(i), expected_h_i[i]) &&
-            nearValue(search.get_f_i(i), expected_f_i[i]) &&
-            search.getProcessingOrder_i(i) == expectedOrder[i];
-
-        std::printf("%-7" PRIu32 " %-7.2f %-7.2f %-7.2f %-7.2f %-7.2f %-7.2f %-7.2f %-7zu %s\n",
-                    search.getAutoLoadId_i(i),
-                    search.get_p_i(i),
-                    search.get_s_i(i),
-                    search.get_q_i(i),
-                    search.get_r_i(i),
-                    search.get_g_i(i),
-                    search.get_h_i(i),
-                    search.get_f_i(i),
-                    search.getProcessingOrder_i(i),
-                    recordResult(rowPassed));
-    }
-
-    for (std::size_t i = 0U; i < 3U; ++i) {
-        const bool selected = search.get_x_i(i) == 1U &&
-            search.getRejectionReason_i(i) == BestFirstSearch::NONE;
-        char checkName[80] = {};
-        std::snprintf(checkName, sizeof(checkName),
-                      "AUTO load %" PRIu32 " is admitted with reason NONE",
-                      search.getAutoLoadId_i(i));
-        reportCheck(checkName, selected);
-    }
-
-    reportCheck("Final P_remaining includes FIXED + admitted AUTO loads",
-                nearValue(search.get_P_remaining(), 45.0F));
-    reportCheck("Final P_committed includes FIXED + admitted AUTO loads",
-                nearValue(search.get_P_committed(), 55.0F));
-    reportCheck("Final branch 0 committed power is 50 W",
-                nearValue(search.get_P_b_i(0U), 50.0F));
-    reportCheck("Final branch 1 committed power is 5 W",
-                nearValue(search.get_P_b_i(1U), 5.0F));
+    BestFirstSearch reconfigureAfterStart;
+    reportCheck("Weights configure successfully before a search starts", configureEqualWeights(reconfigureAfterStart));
+    reportCheck("startSearch() succeeds once weights are configured",
+                reconfigureAfterStart.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
+    reportCheck("setSearchScoreWeights() is rejected once a search has started",
+                !reconfigureAfterStart.setSearchScoreWeights(makeWeights(2.0F, 2.0F, 2.0F, 2.0F, 2.0F, 10U)));
 }
 
 /**
- * Executes one Algorithm 4.4 rejection case using a real Load object.
+ * TEST 4 - ELECTRICAL PLANNING STATE VALIDATION
+ * startSearch() rejects an ElectricalPlanningState with an out-of-range
+ * percentage, SoC_warn not strictly above SoC_min (Equation 4.29's
+ * denominator would be zero or negative), a non-positive battery bus
+ * voltage, or a negative power/current figure.
  */
-static void runConstraintGuardCase(
-    const char* caseName,
-    float SoC,
-    float P_available,
-    float P_remaining,
-    float P_committed,
-    float P_battery_max,
-    float V_B,
-    float I_main_max,
-    float P_branch,
-    float I_branch_max,
-    float P_i,
-    float P_i_peak,
-    std::uint8_t expectedReason,
-    const char* expectedReasonText) {
+void testElectricalPlanningStateValidation() {
+    printSection("TEST 4 - ELECTRICAL PLANNING STATE VALIDATION");
 
-    BestFirstSearch search(1U, 1U);
-    const bool configured = configureDefault(search);
-    const bool cycleStarted = configured && search.startPlanningCycle(
-        SoC, P_available, P_remaining, P_committed,
-        P_battery_max, V_B, I_main_max);
-    const bool branchSet = cycleStarted &&
-        search.setBranchState(0U, P_branch, I_branch_max);
+    BestFirstSearch weightsNotConfigured;
+    reportCheck("startSearch() is rejected before weights are configured",
+                !weightsNotConfigured.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
 
-    Load candidate(
-        1U, LoadMode::AUTO, 1U, 0U, 16U,
-        P_i, P_i_peak, 10U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
+    BestFirstSearch socOutOfRange;
+    configureEqualWeights(socOutOfRange);
+    reportCheck("SoC above 100 is rejected",
+                !socOutOfRange.startSearch(
+                    makePlanningState(150.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
 
-    const bool loadAdded = branchSet &&
-        validateAndAddAutoLoad(search, candidate, 1U, 10U);
-    const bool runCompleted = loadAdded && search.run();
+    BestFirstSearch warnEqualsMin;
+    configureEqualWeights(warnEqualsMin);
+    reportCheck("SoC_warn equal to SoC_min is rejected (zero stress denominator)",
+                !warnEqualsMin.startSearch(
+                    makePlanningState(80.0F, 20.0F, 20.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
 
-    const bool decisionPassed = configured && cycleStarted && branchSet &&
-        loadAdded && runCompleted && search.get_x_i(0U) == 0U &&
-        search.getRejectionReason_i(0U) == expectedReason;
+    BestFirstSearch warnBelowMin;
+    configureEqualWeights(warnBelowMin);
+    reportCheck("SoC_warn below SoC_min is rejected (negative stress denominator)",
+                !warnBelowMin.startSearch(
+                    makePlanningState(80.0F, 30.0F, 20.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
 
-    std::printf("\nCase: %s\n", caseName);
-    printLoadRecord(candidate);
-    std::printf("Expected reason: %-28s Observed: %-28s Result: %s\n",
-                expectedReasonText,
-                runCompleted ? search.getRejectionReasonText_i(0U) : "RUN_FAILED",
-                recordResult(decisionPassed));
+    BestFirstSearch zeroVoltage;
+    configureEqualWeights(zeroVoltage);
+    reportCheck("A battery bus voltage of zero is rejected",
+                !zeroVoltage.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, 0.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
+
+    BestFirstSearch negativeVoltage;
+    configureEqualWeights(negativeVoltage);
+    reportCheck("A negative battery bus voltage is rejected",
+                !negativeVoltage.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, -12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
+
+    BestFirstSearch negativePower;
+    configureEqualWeights(negativePower);
+    reportCheck("A negative totalAvailablePowerWatts is rejected",
+                !negativePower.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, -1.0F, 50.0F, 0.0F)));
+
+    BestFirstSearch validState;
+    configureEqualWeights(validState);
+    reportCheck("A fully valid planning state is accepted",
+                validState.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F)));
+
+    BestFirstSearch inProgress;
+    configureEqualWeights(inProgress);
+    inProgress.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F));
+    reportCheck("startSearch() is rejected while a started-but-incomplete search has not been run() yet",
+                !inProgress.startSearch(
+                    makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 20.0F, 20.0F, 0.0F)));
 }
 
-/** TEST 3 - all five documented Constraint Guard rejection paths. */
-static void testConstraintGuard() {
-    printSection("TEST 3 - CONSTRAINT GUARD REJECTIONS USING LOAD OBJECTS");
+/**
+ * TEST 5 - REGISTERBRANCH VALIDATION
+ */
+void testRegisterBranchValidation() {
+    printSection("TEST 5 - REGISTERBRANCH VALIDATION");
 
-    runConstraintGuardCase(
-        "LOW_BATTERY",
-        20.0F, 0.0F, 0.0F, 0.0F,
-        100.0F, 10.0F, 10.0F,
-        0.0F, 10.0F,
-        1.0F, 1.0F,
-        BestFirstSearch::LOW_BATTERY, "LOW_BATTERY");
+    BestFirstSearch beforeStart;
+    configureEqualWeights(beforeStart);
+    reportCheck("registerBranch() is rejected before startSearch()",
+                !beforeStart.registerBranch(BRANCH_0, 0.0F, 10.0F));
 
-    runConstraintGuardCase(
-        "POWER_BUDGET_EXCEEDED",
-        80.0F, 100.0F, 5.0F, 0.0F,
-        100.0F, 10.0F, 10.0F,
-        0.0F, 10.0F,
-        10.0F, 10.0F,
-        BestFirstSearch::POWER_BUDGET_EXCEEDED,
-        "POWER_BUDGET_EXCEEDED");
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 50.0F, 50.0F, 0.0F));
 
-    runConstraintGuardCase(
-        "BATTERY_CURRENT_LIMIT",
-        80.0F, 100.0F, 80.0F, 20.0F,
-        25.0F, 10.0F, 10.0F,
-        0.0F, 10.0F,
-        1.0F, 10.0F,
-        BestFirstSearch::BATTERY_CURRENT_LIMIT,
-        "BATTERY_CURRENT_LIMIT");
+    reportCheck("registerBranch() rejects a negative initial committed power",
+                !search.registerBranch(BRANCH_0, -1.0F, 10.0F));
+    reportCheck("registerBranch() rejects a negative maximum current",
+                !search.registerBranch(BRANCH_0, 0.0F, -10.0F));
 
-    runConstraintGuardCase(
-        "MAIN_LIMIT_EXCEEDED",
-        80.0F, 100.0F, 100.0F, 0.0F,
-        100.0F, 10.0F, 1.0F,
-        0.0F, 10.0F,
-        1.0F, 20.0F,
-        BestFirstSearch::MAIN_LIMIT_EXCEEDED,
-        "MAIN_LIMIT_EXCEEDED");
+    reportCheck("registerBranch() accepts a valid branch", search.registerBranch(BRANCH_0, 0.0F, 10.0F));
+    reportCheck("registerBranch() rejects registering the same BranchId twice",
+                !search.registerBranch(BRANCH_0, 5.0F, 20.0F));
+    reportCheck("The first registration's values are kept after a rejected duplicate",
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 0.0F));
 
-    runConstraintGuardCase(
-        "BRANCH_LIMIT_EXCEEDED",
-        80.0F, 100.0F, 100.0F, 0.0F,
-        100.0F, 10.0F, 10.0F,
-        0.0F, 1.0F,
-        1.0F, 20.0F,
-        BestFirstSearch::BRANCH_LIMIT_EXCEEDED,
-        "BRANCH_LIMIT_EXCEEDED");
+    reportCheck("A second, distinct BranchId registers independently",
+                search.registerBranch(BRANCH_1, 3.0F, 8.0F));
+    reportCheck("Each branch's committed power is tracked independently",
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 0.0F) &&
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_1), 3.0F));
+
+    reportCheck("getBranchCommittedPowerWatts() on an unregistered BranchId returns 0",
+                nearValue(search.getBranchCommittedPowerWatts(UNREGISTERED_BRANCH), 0.0F));
 }
 
-/** TEST 4 - user priority changes ranking but never bypasses feasibility. */
-static void testUserPriorityAllocation() {
-    printSection("TEST 4 - USER PRIORITY ALLOCATION THROUGH LOAD OBJECTS");
+/**
+ * TEST 5B - BRANCH IDENTITY IS {NODE MAC, RELAY PIN}
+ * A Branch is one relay-controlled circuit on one Node. Two Nodes reusing
+ * the same relay pin number must remain distinct Branches, and one Node
+ * using two different relay pins must also remain distinct Branches —
+ * BranchId must never collapse to just the MAC or just the pin.
+ */
+void testBranchIdentityIsMacPlusRelayPin() {
+    printSection("TEST 5B - BRANCH IDENTITY IS {NODE MAC, RELAY PIN}");
 
-    BestFirstSearch search(2U, 1U);
-    const bool configured = search.configure(
-        0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
-        10U, 20.0F, 40.0F);
-    const bool cycleStarted = configured && search.startPlanningCycle(
-        80.0F, 10.0F, 10.0F, 0.0F, 100.0F, 10.0F, 10.0F);
-    const bool branchSet = cycleStarted &&
-        search.setBranchState(0U, 0.0F, 10.0F);
+    const Load::MacAddress nodeA = {0x02, 0x00, 0x00, 0x00, 0xC0, 0x0A};
+    const Load::MacAddress nodeB = {0x02, 0x00, 0x00, 0x00, 0xC0, 0x0B};
 
-    Load highPriority(
-        10U, LoadMode::AUTO, 1U, 0U, 16U,
-        10.0F, 10.0F, 10U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    Load lowPriority(
-        20U, LoadMode::AUTO, 1U, 0U, 17U,
-        10.0F, 10.0F, 1U, false, false,
-        LoadState::OFF, LoadState::OFF, LoadState::OFF);
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 100.0F, 100.0F, 0.0F));
 
-    const bool highAdded = branchSet &&
-        validateAndAddAutoLoad(search, highPriority, 1U, 10U);
-    const bool lowAdded = highAdded &&
-        validateAndAddAutoLoad(search, lowPriority, 1U, 10U);
-    const bool runCompleted = lowAdded && search.run();
+    const BranchId nodeAPin16 = BranchId{nodeA, 16U};
+    const BranchId nodeBPin16 = BranchId{nodeB, 16U};
+    const BranchId nodeAPin17 = BranchId{nodeA, 17U};
 
-    if (!reportCheck("Priority test setup and scheduling complete",
-                     configured && cycleStarted && branchSet &&
-                     highAdded && lowAdded && runCompleted)) {
-        return;
+    reportCheck("Node A / pin 16 registers", search.registerBranch(nodeAPin16, 0.0F, 10.0F));
+    reportCheck("Node B / pin 16 (same pin, different Node MAC) registers independently",
+                search.registerBranch(nodeBPin16, 0.0F, 10.0F));
+    reportCheck("Node A / pin 17 (same Node, different pin) registers independently",
+                search.registerBranch(nodeAPin17, 0.0F, 10.0F));
+
+    Load loadOnNodeAPin16(Load::Id{nodeA, 16U}, "NodeA-Pin16", LoadPower{4.0F, 4.0F}, 5U, LoadMode::Auto::ON);
+    Load loadOnNodeBPin16(Load::Id{nodeB, 16U}, "NodeB-Pin16", LoadPower{6.0F, 6.0F}, 5U, LoadMode::Auto::ON);
+
+    search.addLoad(loadOnNodeAPin16, nodeAPin16, 0.0F);
+    search.addLoad(loadOnNodeBPin16, nodeBPin16, 0.0F);
+    reportCheck("Search over the two same-pin-different-Node loads runs to completion", search.run());
+
+    reportCheck("Node A / pin 16 committed power reflects only its own Load (4W)",
+                nearValue(search.getBranchCommittedPowerWatts(nodeAPin16), 4.0F));
+    reportCheck("Node B / pin 16 committed power reflects only its own Load (6W), proving MAC distinguishes the branches",
+                nearValue(search.getBranchCommittedPowerWatts(nodeBPin16), 6.0F));
+    reportCheck("Node A / pin 17 stayed at 0W (no Load was added to it)",
+                nearValue(search.getBranchCommittedPowerWatts(nodeAPin17), 0.0F));
+}
+
+/**
+ * TEST 6 - ADDLOAD VALIDATION
+ * A search must be started and not completed, branchId must already be
+ * registered, scheduleFuturePenalty must lie in [0, 1], running power
+ * must be > 0, startup power must be >= running power, and priority must
+ * not exceed maximumAllowedPriority.
+ */
+void testAddLoadValidation() {
+    printSection("TEST 6 - ADDLOAD VALIDATION");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x21};
+    Load validLoad(Load::Id{mac, 16U}, "Valid", LoadPower{5.0F, 8.0F}, 3U, LoadMode::Auto::ON);
+
+    BestFirstSearch notStarted;
+    configureEqualWeights(notStarted);
+    reportCheck("addLoad() is rejected before startSearch()", !notStarted.addLoad(validLoad, BRANCH_0, 0.0F));
+
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 100.0F, 100.0F, 0.0F));
+
+    reportCheck("addLoad() rejects an unregistered branchId", !search.addLoad(validLoad, BRANCH_0, 0.0F));
+
+    search.registerBranch(BRANCH_0, 0.0F, 50.0F);
+
+    reportCheck("addLoad() rejects scheduleFuturePenalty below 0",
+                !search.addLoad(validLoad, BRANCH_0, -0.1F));
+    reportCheck("addLoad() rejects scheduleFuturePenalty above 1",
+                !search.addLoad(validLoad, BRANCH_0, 1.1F));
+
+    reportCheck("addLoad() accepts a valid AUTO Load", search.addLoad(validLoad, BRANCH_0, 0.0F));
+    reportCheck("addLoad() rejects the same Load object added twice",
+                !search.addLoad(validLoad, BRANCH_0, 0.0F));
+
+    Load zeroRunningPower(Load::Id{mac, 17U}, "ZeroRunning", LoadPower{0.0F, 0.0F}, 1U, LoadMode::Auto::OFF);
+    reportCheck("addLoad() rejects runningWatts == 0 even though Load itself allows it",
+                !search.addLoad(zeroRunningPower, BRANCH_0, 0.0F));
+
+    Load priorityTooHigh(Load::Id{mac, 18U}, "TooHighPriority", LoadPower{5.0F, 5.0F}, 11U, LoadMode::Auto::ON);
+    reportCheck("addLoad() rejects priority above maximumAllowedPriority",
+                !search.addLoad(priorityTooHigh, BRANCH_0, 0.0F));
+
+    Load priorityAtLimit(Load::Id{mac, 19U}, "AtLimitPriority", LoadPower{5.0F, 5.0F}, 10U, LoadMode::Auto::ON);
+    reportCheck("addLoad() accepts priority exactly equal to maximumAllowedPriority",
+                search.addLoad(priorityAtLimit, BRANCH_0, 0.0F));
+
+    search.run();
+    Load afterCompletion(Load::Id{mac, 20U}, "AfterCompletion", LoadPower{5.0F, 5.0F}, 1U, LoadMode::Auto::ON);
+    reportCheck("addLoad() is rejected after run() has completed the search",
+                !search.addLoad(afterCompletion, BRANCH_0, 0.0F));
+}
+
+/**
+ * TEST 7 - CHAPTER 4 WORKED EXAMPLE: CANDIDATE EVALUATION (Algorithm 4.3)
+ * SoC=30%, SoC_min=20%, SoC_warn=40%, so B = (40-30)/(40-20) = 0.5.
+ * P_available (total) = 100 W, P_remaining (auto) starts at 100 W.
+ * All five weights are 1.0, W_max = 10.
+ *
+ * Load101 (branch 0): P_i=20W P_i_peak=30W W_i=10 r_i=0 (no schedule)
+ * Load102 (branch 0): P_i=10W P_i_peak=10W W_i=5  r_i=1 (schedule not due)
+ * Load103 (branch 1): P_i=5W  P_i_peak=5W  W_i=10 r_i=0 (no schedule)
+ *
+ * Hand-derived (Equations 4.27-4.33):
+ *   101: p=0.20 s=0.10 q=1.00 g=0.80 h=0.00 f=0.80
+ *   102: p=0.10 s=0.00 q=0.50 g=0.60 h=1.50 f=2.10
+ *   103: p=0.05 s=0.00 q=1.00 g=0.55 h=0.00 f=0.55
+ * Best-First order (smallest f first): 103 -> 101 -> 102.
+ * All three fit within 100 W and the generous branch/battery/main limits
+ * below, so all three are admitted (Algorithm 4.5):
+ *   P_remaining = 100 - 5 - 20 - 10 = 65 W
+ *   P_committed = 0 + 5 + 20 + 10 = 35 W
+ *   branch 0 committed = 20 + 10 = 30 W (Load101 + Load102)
+ *   branch 1 committed = 5 W (Load103)
+ */
+void testChapter4WorkedExample() {
+    printSection("TEST 7 - CHAPTER 4 WORKED EXAMPLE: SCORING, ORDERING AND ADMISSION");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x31};
+
+    BestFirstSearch search;
+    reportCheck("Weights configured (wP=wS=wB=wQ=wT=1, Wmax=10)", configureEqualWeights(search));
+    reportCheck("Search started: SoC=30 SoC_min=20 SoC_warn=40 Ptotal=100 Pauto=100",
+                search.startSearch(makePlanningState(30.0F, 20.0F, 40.0F, 10.0F, 200.0F, 20.0F, 100.0F, 100.0F, 0.0F)));
+    reportCheck("Battery stress B = (40-30)/(40-20) = 0.5", nearValue(search.getBatteryStressTerm(), 0.5F));
+
+    reportCheck("Branch 0 registered: committed=0W max=10A", search.registerBranch(BRANCH_0, 0.0F, 10.0F));
+    reportCheck("Branch 1 registered: committed=0W max=10A", search.registerBranch(BRANCH_1, 0.0F, 10.0F));
+
+    Load load101(Load::Id{mac, 16U}, "Load101", LoadPower{20.0F, 30.0F}, 10U, LoadMode::Auto::ON);
+    Load load102(Load::Id{mac, 17U}, "Load102", LoadPower{10.0F, 10.0F}, 5U, LoadMode::Auto::ON);
+    Load load103(Load::Id{mac, 18U}, "Load103", LoadPower{5.0F, 5.0F}, 10U, LoadMode::Auto::OFF);
+
+    reportCheck("Load101 added on branch 0 with r_i=0", search.addLoad(load101, BRANCH_0, 0.0F));
+    reportCheck("Load102 added on branch 0 with r_i=1 (schedule not due)", search.addLoad(load102, BRANCH_0, 1.0F));
+    reportCheck("Load103 added on branch 1 with r_i=0", search.addLoad(load103, BRANCH_1, 0.0F));
+
+    reportCheck("Search runs to completion", search.run());
+
+    reportCheck("Load101 p_i = 20/100 = 0.20", nearValue(search.getLoadRunningPowerRatio(0U), 0.20F));
+    reportCheck("Load101 s_i = (30-20)/100 = 0.10", nearValue(search.getLoadStartupPowerRatio(0U), 0.10F));
+    reportCheck("Load101 q_i = 10/10 = 1.00", nearValue(search.getLoadPriorityRatio(0U), 1.00F));
+    reportCheck("Load101 g(i) = 0.20+0.10+0.5 = 0.80", nearValue(search.getLoadPhysicalCost(0U), 0.80F));
+    reportCheck("Load101 h(i) = (1-1.00)+0 = 0.00", nearValue(search.getLoadHeuristicCost(0U), 0.00F));
+    reportCheck("Load101 f(i) = 0.80", nearValue(search.getLoadFinalScore(0U), 0.80F));
+
+    reportCheck("Load102 p_i = 10/100 = 0.10", nearValue(search.getLoadRunningPowerRatio(1U), 0.10F));
+    reportCheck("Load102 s_i = (10-10)/100 = 0.00", nearValue(search.getLoadStartupPowerRatio(1U), 0.00F));
+    reportCheck("Load102 q_i = 5/10 = 0.50", nearValue(search.getLoadPriorityRatio(1U), 0.50F));
+    reportCheck("Load102 g(i) = 0.10+0.00+0.5 = 0.60", nearValue(search.getLoadPhysicalCost(1U), 0.60F));
+    reportCheck("Load102 h(i) = (1-0.50)+1 = 1.50", nearValue(search.getLoadHeuristicCost(1U), 1.50F));
+    reportCheck("Load102 f(i) = 2.10", nearValue(search.getLoadFinalScore(1U), 2.10F));
+
+    reportCheck("Load103 p_i = 5/100 = 0.05", nearValue(search.getLoadRunningPowerRatio(2U), 0.05F));
+    reportCheck("Load103 s_i = (5-5)/100 = 0.00", nearValue(search.getLoadStartupPowerRatio(2U), 0.00F));
+    reportCheck("Load103 q_i = 10/10 = 1.00", nearValue(search.getLoadPriorityRatio(2U), 1.00F));
+    reportCheck("Load103 g(i) = 0.05+0.00+0.5 = 0.55", nearValue(search.getLoadPhysicalCost(2U), 0.55F));
+    reportCheck("Load103 h(i) = (1-1.00)+0 = 0.00", nearValue(search.getLoadHeuristicCost(2U), 0.00F));
+    reportCheck("Load103 f(i) = 0.55 (smallest -> extracted first by the min-heap)",
+                nearValue(search.getLoadFinalScore(2U), 0.55F));
+
+    reportCheck("All three candidates admitted (0.55 < 0.80 < 2.10 all fit)",
+                search.isLoadSelectedToBeOn(0U) && search.isLoadSelectedToBeOn(1U) && search.isLoadSelectedToBeOn(2U));
+    reportCheck("All three rejection reasons are NONE",
+                search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::NONE &&
+                search.getLoadSelectionRejectionReason(1U) == BestFirstSearch::NONE &&
+                search.getLoadSelectionRejectionReason(2U) == BestFirstSearch::NONE);
+
+    reportCheck("Final P_remaining = 100 - 5 - 20 - 10 = 65 W", nearValue(search.getRemainingPowerWatts(), 65.0F));
+    reportCheck("Final P_committed = 5 + 20 + 10 = 35 W", nearValue(search.getCommittedPowerWatts(), 35.0F));
+    reportCheck("Branch 0 committed power = 20 + 10 = 30 W",
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 30.0F));
+    reportCheck("Branch 1 committed power = 5 W", nearValue(search.getBranchCommittedPowerWatts(BRANCH_1), 5.0F));
+    reportCheck("getTotalAvailablePowerWatts() stays the constant P_available=100W",
+                nearValue(search.getTotalAvailablePowerWatts(), 100.0F));
+
+    reportCheck("Load101's stored priority is unchanged after scoring/scheduling", load101.getPriority() == 10U);
+    reportCheck("Load102's stored priority is unchanged after scoring/scheduling", load102.getPriority() == 5U);
+}
+
+/**
+ * TEST 8 - ALL FIVE CONSTRAINT-GUARD REJECTION REASONS (Algorithm 4.4)
+ * Each case isolates exactly one failing condition; every other input is
+ * kept generous enough to pass. Values are hand-derived directly from
+ * Equations 4.20-4.25.
+ */
+void testConstraintGuardRejectionReasons() {
+    printSection("TEST 8 - CONSTRAINT GUARD REJECTION REASONS");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x41};
+
+    {
+        // SoC(20) <= SoC_min(20) -> LOW_BATTERY, checked before any other condition.
+        BestFirstSearch search;
+        configureEqualWeights(search);
+        search.startSearch(makePlanningState(20.0F, 20.0F, 40.0F, 10.0F, 100.0F, 10.0F, 0.0F, 0.0F, 0.0F));
+        search.registerBranch(BRANCH_0, 0.0F, 10.0F);
+        Load load(Load::Id{mac, 1U}, "LowBattery", LoadPower{1.0F, 1.0F}, 1U, LoadMode::Auto::ON);
+        search.addLoad(load, BRANCH_0, 0.0F);
+        search.run();
+        reportCheck("SoC <= SoC_min yields LOW_BATTERY",
+                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::LOW_BATTERY);
+        reportCheck("LOW_BATTERY candidate is not selected", !search.isLoadSelectedToBeOn(0U));
     }
 
-    reportCheck("High priority has q_i=1 and f_i=0",
-                nearValue(search.get_q_i(0U), 1.0F) &&
-                nearValue(search.get_f_i(0U), 0.0F));
-    reportCheck("Low priority has q_i=0.1 and f_i=0.9",
-                nearValue(search.get_q_i(1U), 0.1F) &&
-                nearValue(search.get_f_i(1U), 0.9F));
-    reportCheck("High-priority load is processed first and admitted",
-                search.getProcessingOrder_i(0U) == 0U &&
-                search.get_x_i(0U) == 1U);
-    reportCheck("Low-priority load cannot bypass exhausted power budget",
-                search.getProcessingOrder_i(1U) == 1U &&
-                search.get_x_i(1U) == 0U &&
-                search.getRejectionReason_i(1U) ==
-                    BestFirstSearch::POWER_BUDGET_EXCEEDED);
-}
-
-/** TEST 5 - branch totals are updated after every admitted candidate. */
-static void testIncrementalBranchConstraint() {
-    printSection("TEST 5 - INCREMENTAL BRANCH CONSTRAINT");
-
-    BestFirstSearch search(3U, 1U);
-    const bool configured = search.configure(
-        0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
-        10U, 20.0F, 40.0F);
-    const bool cycleStarted = configured && search.startPlanningCycle(
-        80.0F, 100.0F, 100.0F, 0.0F, 200.0F, 10.0F, 20.0F);
-    const bool branchSet = cycleStarted &&
-        search.setBranchState(0U, 0.0F, 3.0F);
-
-    Load load1(1U, LoadMode::AUTO, 1U, 0U, 16U,
-               10.0F, 20.0F, 10U, false, false,
-               LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    Load load2(2U, LoadMode::AUTO, 1U, 0U, 17U,
-               10.0F, 20.0F, 9U, false, false,
-               LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    Load load3(3U, LoadMode::AUTO, 1U, 0U, 18U,
-               10.0F, 20.0F, 8U, false, false,
-               LoadState::OFF, LoadState::OFF, LoadState::OFF);
-
-    const bool load1Added = branchSet &&
-        validateAndAddAutoLoad(search, load1, 1U, 10U);
-    const bool load2Added = load1Added &&
-        validateAndAddAutoLoad(search, load2, 1U, 10U);
-    const bool load3Added = load2Added &&
-        validateAndAddAutoLoad(search, load3, 1U, 10U);
-    const bool runCompleted = load3Added && search.run();
-
-    if (!reportCheck("Incremental branch test setup and run",
-                     configured && cycleStarted && branchSet &&
-                     load1Added && load2Added && load3Added && runCompleted)) {
-        return;
+    {
+        // P_i(10) > P_remaining(5) -> POWER_BUDGET_EXCEEDED, independent of
+        // P_available(total)=100W: this is exactly why P_available and
+        // P_remaining must be two separate fields.
+        BestFirstSearch search;
+        configureEqualWeights(search);
+        search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 10.0F, 100.0F, 10.0F, 100.0F, 5.0F, 0.0F));
+        search.registerBranch(BRANCH_0, 0.0F, 10.0F);
+        Load load(Load::Id{mac, 2U}, "PowerBudget", LoadPower{10.0F, 10.0F}, 1U, LoadMode::Auto::ON);
+        search.addLoad(load, BRANCH_0, 0.0F);
+        search.run();
+        reportCheck("P_i > P_remaining yields POWER_BUDGET_EXCEEDED",
+                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+        reportCheck("P_remaining is unchanged by a rejected candidate", nearValue(search.getRemainingPowerWatts(), 5.0F));
     }
 
-    float expectedBranchPower = 0.0F;
-    for (std::size_t order = 0U; order < 3U; ++order) {
-        std::size_t candidate = search.getAutoLoadCount();
-        for (std::size_t i = 0U; i < search.getAutoLoadCount(); ++i) {
-            if (search.getProcessingOrder_i(i) == order) {
-                candidate = i;
-                break;
-            }
-        }
+    {
+        // P_committed(20) + P_i_peak(10) = 30 > P_battery_max(25) -> BATTERY_CURRENT_LIMIT.
+        BestFirstSearch search;
+        configureEqualWeights(search);
+        search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 10.0F, 25.0F, 10.0F, 100.0F, 80.0F, 20.0F));
+        search.registerBranch(BRANCH_0, 0.0F, 10.0F);
+        Load load(Load::Id{mac, 3U}, "BatteryLimit", LoadPower{1.0F, 10.0F}, 1U, LoadMode::Auto::ON);
+        search.addLoad(load, BRANCH_0, 0.0F);
+        search.run();
+        reportCheck("P_committed + P_i_peak > P_battery,max yields BATTERY_CURRENT_LIMIT",
+                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::BATTERY_CURRENT_LIMIT);
+        reportCheck("P_committed is unchanged by a rejected candidate", nearValue(search.getCommittedPowerWatts(), 20.0F));
+    }
 
-        if (candidate >= search.getAutoLoadCount()) {
-            reportCheck("Every candidate receives one processing order", false);
-            continue;
-        }
+    {
+        // I_main,start = (0+20)/10 = 2A > I_main,max(1A) -> MAIN_LIMIT_EXCEEDED.
+        BestFirstSearch search;
+        configureEqualWeights(search);
+        search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 10.0F, 100.0F, 1.0F, 100.0F, 100.0F, 0.0F));
+        search.registerBranch(BRANCH_0, 0.0F, 10.0F);
+        Load load(Load::Id{mac, 4U}, "MainLimit", LoadPower{1.0F, 20.0F}, 1U, LoadMode::Auto::ON);
+        search.addLoad(load, BRANCH_0, 0.0F);
+        search.run();
+        reportCheck("I_main,start > I_main,max yields MAIN_LIMIT_EXCEEDED",
+                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::MAIN_LIMIT_EXCEEDED);
+    }
 
-        const float startupCurrent =
-            (expectedBranchPower + search.get_P_i_peak(candidate)) /
-            search.get_V_B();
-        const bool expectedSelected =
-            startupCurrent <= search.get_I_b_max_i(0U);
-        const std::uint8_t expectedX = expectedSelected ? 1U : 0U;
-        const std::uint8_t expectedReason = expectedSelected
-            ? BestFirstSearch::NONE
-            : BestFirstSearch::BRANCH_LIMIT_EXCEEDED;
+    {
+        // I_branch,start = (0+20)/10 = 2A > I_branch,max(1A) -> BRANCH_LIMIT_EXCEEDED.
+        BestFirstSearch search;
+        configureEqualWeights(search);
+        search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 10.0F, 100.0F, 10.0F, 100.0F, 100.0F, 0.0F));
+        search.registerBranch(BRANCH_0, 0.0F, 1.0F);
+        Load load(Load::Id{mac, 5U}, "BranchLimit", LoadPower{1.0F, 20.0F}, 1U, LoadMode::Auto::ON);
+        search.addLoad(load, BRANCH_0, 0.0F);
+        search.run();
+        reportCheck("I_branch,start > I_branch,max yields BRANCH_LIMIT_EXCEEDED",
+                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::BRANCH_LIMIT_EXCEEDED);
+        reportCheck("Branch committed power is unchanged by a rejected candidate",
+                    nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 0.0F));
+    }
+}
 
+/**
+ * TEST 9 - SEQUENTIAL ALLOCATION (Algorithm 4.5)
+ * Two Auto candidates on the same branch: the cheaper one (by f(i)) is
+ * extracted and admitted first, consuming part of P_remaining before the
+ * second candidate is even checked — so the second is rejected purely
+ * because the first one already used the power it needed, not because
+ * the original budget could never have covered it.
+ */
+void testSequentialAllocation() {
+    printSection("TEST 9 - SEQUENTIAL ALLOCATION OF REMAINING CAPACITY");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x51};
+
+    BestFirstSearch search;
+    /* Only running power drives ordering here (all other weights zero). */
+    search.setSearchScoreWeights(makeWeights(1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 10U));
+    search.startSearch(makePlanningState(90.0F, 10.0F, 20.0F, 10.0F, 1000.0F, 1000.0F, 15.0F, 15.0F, 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 1000.0F);
+
+    Load loadB(Load::Id{mac, 16U}, "LoadB", LoadPower{8.0F, 8.0F}, 1U, LoadMode::Auto::ON);
+    Load loadA(Load::Id{mac, 17U}, "LoadA", LoadPower{10.0F, 10.0F}, 1U, LoadMode::Auto::ON);
+
+    search.addLoad(loadB, BRANCH_0, 0.0F);
+    search.addLoad(loadA, BRANCH_0, 0.0F);
+
+    reportCheck("Search runs to completion", search.run());
+
+    /* p(B) = 8/15 = 0.5333 < p(A) = 10/15 = 0.6667, so B is admitted first. */
+    reportCheck("The cheaper Load (LoadB) is admitted first", search.isLoadSelectedToBeOn(0U));
+    reportCheck("The more expensive Load (LoadA) is rejected with POWER_BUDGET_EXCEEDED",
+                !search.isLoadSelectedToBeOn(1U) &&
+                search.getLoadSelectionRejectionReason(1U) == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+    reportCheck("Remaining power after the cycle is 15 - 8 = 7 W", nearValue(search.getRemainingPowerWatts(), 7.0F));
+    reportCheck("Committed power after the cycle is 8 W", nearValue(search.getCommittedPowerWatts(), 8.0F));
+}
+
+/**
+ * TEST 10 - INCREMENTAL BRANCH CURRENT
+ * Three candidates on the same branch, admitted in a strictly deterministic
+ * order (tiny priority differences break ties), each with P_i=10W and
+ * P_i_peak=20W. V_B=10V, I_branch,max=3A:
+ *   Load1: (0+20)/10  = 2A <= 3A -> ON, branch = 10 W
+ *   Load2: (10+20)/10 = 3A <= 3A -> ON, branch = 20 W
+ *   Load3: (20+20)/10 = 4A >  3A -> OFF (BRANCH_LIMIT_EXCEEDED)
+ */
+void testIncrementalBranchCurrent() {
+    printSection("TEST 10 - INCREMENTAL BRANCH CURRENT");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x61};
+
+    BestFirstSearch search;
+    /* wQ tiny and strictly decreasing priority forces a deterministic
+       extraction order (Load1, Load2, Load3) without changing the
+       electrical quantities under test. */
+    search.setSearchScoreWeights(makeWeights(1.0F, 0.0F, 0.0F, 0.001F, 0.0F, 10U));
+    search.startSearch(makePlanningState(90.0F, 10.0F, 20.0F, 10.0F, 1000.0F, 1000.0F, 1000.0F, 1000.0F, 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 3.0F);
+
+    Load load1(Load::Id{mac, 1U}, "Load1", LoadPower{10.0F, 20.0F}, 10U, LoadMode::Auto::ON);
+    Load load2(Load::Id{mac, 2U}, "Load2", LoadPower{10.0F, 20.0F}, 9U, LoadMode::Auto::ON);
+    Load load3(Load::Id{mac, 3U}, "Load3", LoadPower{10.0F, 20.0F}, 8U, LoadMode::Auto::ON);
+
+    search.addLoad(load1, BRANCH_0, 0.0F);
+    search.addLoad(load2, BRANCH_0, 0.0F);
+    search.addLoad(load3, BRANCH_0, 0.0F);
+
+    reportCheck("Search runs to completion", search.run());
+
+    reportCheck("Load1 admitted: (0+20)/10 = 2A <= 3A", search.isLoadSelectedToBeOn(0U));
+    reportCheck("Load2 admitted: (10+20)/10 = 3A <= 3A", search.isLoadSelectedToBeOn(1U));
+    reportCheck("Load3 rejected: (20+20)/10 = 4A > 3A, BRANCH_LIMIT_EXCEEDED",
+                !search.isLoadSelectedToBeOn(2U) &&
+                search.getLoadSelectionRejectionReason(2U) == BestFirstSearch::BRANCH_LIMIT_EXCEEDED);
+    reportCheck("Final branch committed power is 10 + 10 = 20 W",
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 20.0F));
+}
+
+/**
+ * TEST 11 - SCHEDULE FUTURE PENALTY r_i AND UNCHANGED PRIORITY
+ * r_i is supplied to addLoad() exactly as LoadScheduleEvaluator would
+ * compute it (r_i = a_i(1 - d_i), Equation 4.32) for each of its three
+ * cases, and h(i) reflects it while priority and schedule stay two
+ * separate additive terms.
+ */
+void testScheduleFuturePenaltyAndPriorityIsUnchanged() {
+    printSection("TEST 11 - SCHEDULE FUTURE PENALTY r_i");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x71};
+
+    auto runSingleCandidate = [&](const char* caseName, float scheduleFuturePenalty, float expectedHeuristicCost) {
+        BestFirstSearch search;
+        /* wQ=1, wT=1, Wmax=10, priority=7 -> q_i=0.7, (1-q_i)=0.3. */
+        search.setSearchScoreWeights(makeWeights(0.0F, 0.0F, 0.0F, 1.0F, 1.0F, 10U));
+        search.startSearch(makePlanningState(90.0F, 10.0F, 20.0F, 10.0F, 1000.0F, 1000.0F, 100.0F, 100.0F, 0.0F));
+        search.registerBranch(BRANCH_0, 0.0F, 1000.0F);
+
+        Load load(Load::Id{mac, 1U}, "ScheduledLoad", LoadPower{5.0F, 5.0F}, 7U, LoadMode::Auto::ON);
+        search.addLoad(load, BRANCH_0, scheduleFuturePenalty);
+        search.run();
+
+        char message[128] = {};
+        std::snprintf(message, sizeof(message), "%s: h(i) = 0.3 + wT*r_i = %.2f", caseName, expectedHeuristicCost);
+        reportCheck(message, nearValue(search.getLoadHeuristicCost(0U), expectedHeuristicCost));
+
+        char priorityMessage[128] = {};
+        std::snprintf(priorityMessage, sizeof(priorityMessage),
+                      "%s: Load's stored priority is unchanged by scoring", caseName);
+        reportCheck(priorityMessage, load.getPriority() == 7U);
+    };
+
+    /* No schedule configured: a_i=0 -> r_i=0. */
+    runSingleCandidate("No schedule (r_i=0)", 0.0F, 0.3F);
+
+    /* Schedule configured and already due: a_i=1, d_i=1 -> r_i=a_i(1-d_i)=0. */
+    runSingleCandidate("Schedule due (r_i=0)", 0.0F, 0.3F);
+
+    /* Schedule configured but not yet due: a_i=1, d_i=0 -> r_i=1. */
+    runSingleCandidate("Schedule not due (r_i=1)", 1.0F, 1.3F);
+}
+
+/**
+ * TEST 12 - AUTO_ON AND AUTO_OFF ARE BOTH VALID CANDIDATES
+ * Two otherwise-identical Loads, one starting AUTO_ON and one starting
+ * AUTO_OFF, receive identical scores and identical admission treatment:
+ * BestFirstSearch never reads a Load's mode/state.
+ */
+void testAutoOnAndAutoOffAreEquivalentCandidates() {
+    printSection("TEST 12 - AUTO_ON AND AUTO_OFF ARE BOTH VALID CANDIDATES");
+
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x81};
+
+    Load startsOn(Load::Id{mac, 16U}, "StartsOn", LoadPower{10.0F, 10.0F}, 4U, LoadMode::Auto::ON);
+    Load startsOff(Load::Id{mac, 17U}, "StartsOff", LoadPower{10.0F, 10.0F}, 4U, LoadMode::Auto::OFF);
+
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 100.0F, 100.0F, 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 100.0F);
+    search.addLoad(startsOn, BRANCH_0, 0.0F);
+    search.addLoad(startsOff, BRANCH_0, 0.0F);
+
+    reportCheck("Search runs to completion", search.run());
+
+    reportCheck("Both AUTO_ON and AUTO_OFF Loads with identical power/priority score identically",
+                nearValue(search.getLoadFinalScore(0U), search.getLoadFinalScore(1U)));
+    reportCheck("Both are admitted (both selected)",
+                search.isLoadSelectedToBeOn(0U) && search.isLoadSelectedToBeOn(1U));
+    reportCheck("A Load's starting mode/state does not change its own admission outcome",
+                search.getLoadSelectionRejectionReason(1U) == BestFirstSearch::NONE);
+}
+
+/**
+ * TEST 13 - LOADFILTER + AVAILABLEPOWERMANAGER -> BESTFIRSTSEARCH
+ * INTEGRATION
+ * Only LoadFilter's Auto candidate Loads are handed to BestFirstSearch,
+ * on a real branch, using AvailablePowerManager's own
+ * getTotalAvailablePowerWatts()/getPowerAvailableForAutoLoadsWatts()/
+ * getFixedOnRunningPowerWatts() to build the ElectricalPlanningState —
+ * the exact seam described in AvailablePowerManager's and
+ * BestFirstSearch's own READMEs.
+ */
+void testLoadFilterAndAvailablePowerManagerIntegration() {
+    printSection("TEST 13 - LOADFILTER + AVAILABLEPOWERMANAGER -> BESTFIRSTSEARCH INTEGRATION");
+
+    const Load::MacAddress centralMac = {0xA4, 0xCF, 0x12, 0x0E, 0x32, 0xC0};
+    const Load::MacAddress sittingRoomMac = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xB8};
+
+    Load statusIndicator(Load::Id{centralMac, 25U}, "Central Status Indicator",
+                          LoadPower{2.0F, 2.0F}, 1U, LoadMode::Fixed::ON);
+    Load coolingFan(Load::Id{centralMac, 26U}, "Central Cooling Fan",
+                     LoadPower{6.0F, 9.0F}, 2U, LoadMode::Auto::ON);
+    Load router(Load::Id{sittingRoomMac, 17U}, "Router",
+                LoadPower{10.0F, 10.0F}, 2U, LoadMode::Fixed::OFF);
+    Load fan(Load::Id{sittingRoomMac, 18U}, "Fan",
+             LoadPower{18.0F, 25.0F}, 3U, LoadMode::Auto::ON);
+    Load waterPump(Load::Id{sittingRoomMac, 19U}, "WaterPump",
+                    LoadPower{35.0F, 55.0F}, 4U, LoadMode::Auto::OFF);
+
+    LoadFilter loadFilter;
+    loadFilter.addLoad(statusIndicator);
+    loadFilter.addLoad(coolingFan);
+    loadFilter.addLoad(router);
+    loadFilter.addLoad(fan);
+    loadFilter.addLoad(waterPump);
+
+    constexpr float testTotalAvailablePowerWatts = 100.0F;
+
+    AvailablePowerManager availablePowerManager;
+    const bool availablePowerCalculated =
+        availablePowerManager.calculateAvailablePower(testTotalAvailablePowerWatts, loadFilter);
+
+    reportCheck("Fixed ON running power committed before Auto scheduling is 2 W",
+                availablePowerCalculated &&
+                nearValue(availablePowerManager.getFixedOnRunningPowerWatts(), 2.0F));
+    reportCheck("Power remaining for Auto Loads is 100 - 2 = 98 W",
+                nearValue(availablePowerManager.getPowerAvailableForAutoLoadsWatts(), 98.0F));
+
+    BestFirstSearch search;
+    const bool configured = configureEqualWeights(search);
+    const bool started = configured && search.startSearch(makePlanningState(
+        80.0F, 20.0F, 40.0F, 12.0F, 1000.0F, 1000.0F,
+        availablePowerManager.getTotalAvailablePowerWatts(),
+        availablePowerManager.getPowerAvailableForAutoLoadsWatts(),
+        availablePowerManager.getFixedOnRunningPowerWatts()));
+
+    reportCheck("BestFirstSearch starts from AvailablePowerManager's own outputs", started);
+    reportCheck("BestFirstSearch's constant P_available matches Total Available Power (100 W)",
+                nearValue(search.getTotalAvailablePowerWatts(), 100.0F));
+    reportCheck("BestFirstSearch's initial P_remaining matches Power Available for Auto Loads (98 W)",
+                nearValue(search.getRemainingPowerWatts(), 98.0F));
+    reportCheck("BestFirstSearch's initial P_committed matches Fixed ON Running Power (2 W)",
+                nearValue(search.getCommittedPowerWatts(), 2.0F));
+
+    search.registerBranch(BRANCH_0, 0.0F, 1000.0F);
+
+    bool everyAutoLoadAdded = started;
+    for (std::size_t i = 0U; i < loadFilter.getNumberOfAutoCandidateLoads(); ++i) {
+        const Load* autoLoad = loadFilter.getAutoCandidateLoad(i);
+        everyAutoLoadAdded = everyAutoLoadAdded && autoLoad != nullptr &&
+                             search.addLoad(*autoLoad, BRANCH_0, 0.0F);
+    }
+
+    reportCheck("All three Auto candidate Loads (coolingFan, fan, waterPump) were added",
+                everyAutoLoadAdded &&
+                search.getNumberOfLoadsAdded() == loadFilter.getNumberOfAutoCandidateLoads() &&
+                search.getNumberOfLoadsAdded() == 3U);
+
+    for (std::size_t i = 0U; i < loadFilter.getNumberOfAutoCandidateLoads(); ++i) {
         char checkName[96] = {};
         std::snprintf(checkName, sizeof(checkName),
-                      "Order %zu load %" PRIu32 " branch feasibility result",
-                      order, search.getAutoLoadId_i(candidate));
-        reportCheck(checkName,
-                    search.get_x_i(candidate) == expectedX &&
-                    search.getRejectionReason_i(candidate) == expectedReason);
-
-        if (expectedSelected) {
-            expectedBranchPower += search.get_P_i(candidate);
-        }
+                      "Auto candidate %zu keeps its original Load identity inside the search", i);
+        reportCheck(checkName, search.getLoad(i) == loadFilter.getAutoCandidateLoad(i));
     }
 
-    reportCheck("Final branch committed power is updated incrementally to 20 W",
-                nearValue(expectedBranchPower, 20.0F) &&
-                nearValue(search.get_P_b_i(0U), 20.0F));
-}
-
-static void printValidationResult(const char* condition, bool passed) {
-    std::printf("%-66s %s\n", condition, recordResult(passed));
+    const bool ran = search.run();
+    reportCheck("Fixed Loads never entered the search (2 Fixed Loads excluded)",
+                ran && search.getNumberOfLoadsAdded() == loadFilter.getNumberOfAutoCandidateLoads());
 }
 
 /**
- * TEST 6
- * Checks input validation and verifies that equal f_i values are not assigned
- * an undocumented secondary priority rule. Either equal-score order is valid;
- * both candidates must simply be processed exactly once.
+ * TEST 14 - RESET AND BOUNDS SAFETY
  */
-static void testValidationAndEqualScores() {
-    printSection("TEST 6 - INPUT VALIDATION AND EQUAL f_i BEHAVIOUR");
+void testResetAndBoundsSafety() {
+    printSection("TEST 14 - RESET AND BOUNDS SAFETY");
 
-    BestFirstSearch equalSearch(2U, 1U);
-    bool operation = equalSearch.configure(
-        0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
-        10U, 20.0F, 40.0F);
-    operation = operation && equalSearch.startPlanningCycle(
-        80.0F, 100.0F, 100.0F, 0.0F, 200.0F, 10.0F, 20.0F);
-    operation = operation && equalSearch.setBranchState(0U, 0.0F, 20.0F);
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x91};
 
-    Load equalA(20U, LoadMode::AUTO, 1U, 0U, 16U,
-                5.0F, 5.0F, 5U, false, false,
-                LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    Load equalB(10U, LoadMode::AUTO, 1U, 0U, 17U,
-                5.0F, 5.0F, 5U, false, false,
-                LoadState::OFF, LoadState::OFF, LoadState::OFF);
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 20.0F, 20.0F, 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 100.0F);
 
-    operation = operation &&
-        validateAndAddAutoLoad(equalSearch, equalA, 1U, 10U);
-    operation = operation &&
-        validateAndAddAutoLoad(equalSearch, equalB, 1U, 10U);
-    operation = operation && equalSearch.run();
+    Load load(Load::Id{mac, 16U}, "Load", LoadPower{5.0F, 5.0F}, 1U, LoadMode::Auto::ON);
+    search.addLoad(load, BRANCH_0, 0.0F);
+    search.run();
 
-    const std::size_t order0 = equalSearch.getProcessingOrder_i(0U);
-    const std::size_t order1 = equalSearch.getProcessingOrder_i(1U);
-    reportCheck("Equal-score candidates have equal f_i",
-                operation && nearValue(equalSearch.get_f_i(0U),
-                                       equalSearch.get_f_i(1U)));
-    reportCheck("Equal-score candidates are both processed exactly once",
-                operation && order0 < 2U && order1 < 2U && order0 != order1);
-    reportCheck("No tie-order assumption is required for correct admission",
-                operation && equalSearch.get_x_i(0U) == 1U &&
-                equalSearch.get_x_i(1U) == 1U);
+    search.resetSearch();
+    reportCheck("resetSearch() clears every added Load", search.getNumberOfLoadsAdded() == 0U);
+    reportCheck("resetSearch() clears the power fields",
+                nearValue(search.getTotalAvailablePowerWatts(), 0.0F) &&
+                nearValue(search.getRemainingPowerWatts(), 0.0F) &&
+                nearValue(search.getCommittedPowerWatts(), 0.0F));
+    reportCheck("resetSearch() clears branch registrations",
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 0.0F));
+    reportCheck("Score weights remain configured after resetSearch(), so startSearch() succeeds again",
+                search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 500.0F, 100.0F, 30.0F, 30.0F, 0.0F)));
+    reportCheck("A BranchId can be registered again after reset (registration was really cleared)",
+                search.registerBranch(BRANCH_0, 0.0F, 50.0F));
 
-    BestFirstSearch invalidCapacity(0U, 1U);
-    printValidationResult(
-        "Zero AUTO-load capacity is rejected",
-        !invalidCapacity.configure(1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
-                                   10U, 20.0F, 40.0F));
-
-    BestFirstSearch search(2U, 1U);
-    printValidationResult(
-        "Negative scoring weight is rejected",
-        !search.configure(-1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
-                          10U, 20.0F, 40.0F));
-    printValidationResult(
-        "SoC_warn equal to SoC_min is rejected",
-        !search.configure(1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
-                          10U, 40.0F, 40.0F));
-
-    const bool validConfiguration = configureDefault(search);
-    const bool validCycle = validConfiguration && search.startPlanningCycle(
-        80.0F, 100.0F, 100.0F, 0.0F, 100.0F, 10.0F, 10.0F);
-    const bool validBranch = validCycle &&
-        search.setBranchState(0U, 0.0F, 10.0F);
-
-    Load first(1U, LoadMode::AUTO, 1U, 0U, 16U,
-               10.0F, 10.0F, 10U, false, false,
-               LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    const bool firstLoad = validBranch &&
-        validateAndAddAutoLoad(search, first, 1U, 10U);
-    printValidationResult("Valid Load candidate is accepted", firstLoad);
-
-    Load duplicate(1U, LoadMode::AUTO, 1U, 0U, 17U,
-                   10.0F, 10.0F, 10U, false, false,
-                   LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    duplicate.setHealthy_i(true);
-    const bool duplicateValid = duplicate.validateConfiguration(1U, 10U);
-    printValidationResult(
-        "Duplicate AUTO-load identifier is rejected by BestFirstSearch",
-        duplicateValid &&
-        !search.addAutoLoad(duplicate.getLoadId_i(), duplicate.get_b_i(),
-                            duplicate.get_P_i(), duplicate.get_P_i_peak(),
-                            duplicate.get_W_i(), duplicate.get_a_i(),
-                            duplicate.get_d_i()));
-
-    Load invalidSchedule(2U, LoadMode::AUTO, 1U, 0U, 18U,
-                         10.0F, 10.0F, 10U, false, true,
-                         LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    invalidSchedule.setHealthy_i(true);
-    printValidationResult(
-        "Invalid a_i=false, d_i=true is rejected before candidate registration",
-        !invalidSchedule.validateConfiguration(1U, 10U));
-
-    search.resetPlanningCycle();
-    const bool resetPassed = search.isConfigured() &&
-                             !search.isPlanningCycleStarted() &&
-                             search.getAutoLoadCount() == 0U;
-    printValidationResult("Reset retains policy and clears cycle data", resetPassed);
-
-    const bool emptyCycleStarted = search.startPlanningCycle(
-        80.0F, 100.0F, 100.0F, 0.0F, 100.0F, 10.0F, 10.0F);
-    const bool emptyCycleRun = emptyCycleStarted && search.run();
-    printValidationResult(
-        "Valid empty planning cycle completes",
-        emptyCycleRun && search.getSelectedAutoLoadCount() == 0U &&
-        search.getRejectedAutoLoadCount() == 0U);
-
-    search.resetPlanningCycle();
-    const bool missingBranchCycle = search.startPlanningCycle(
-        80.0F, 100.0F, 100.0F, 0.0F, 100.0F, 10.0F, 10.0F);
-    Load missingBranchLoad(5U, LoadMode::AUTO, 1U, 0U, 19U,
-                           10.0F, 10.0F, 10U, false, false,
-                           LoadState::OFF, LoadState::OFF, LoadState::OFF);
-    const bool candidateAdded = missingBranchCycle &&
-        validateAndAddAutoLoad(search, missingBranchLoad, 1U, 10U);
-    printValidationResult(
-        "Scheduler refuses candidate whose branch state is missing",
-        candidateAdded && !search.run());
-}
-
-static float expectedScalabilityCommittedPower(std::size_t loadCount) {
-    float total = 0.0F;
-    for (std::size_t i = 0U; i < loadCount; ++i) {
-        total += 1.0F + static_cast<float>((i * 37U) % 10U) * 0.05F;
-    }
-    return total;
+    reportCheck("getLoad() on an out-of-range index returns nullptr", search.getLoad(99U) == nullptr);
+    reportCheck("isLoadSelectedToBeOn() on an out-of-range index returns false", !search.isLoadSelectedToBeOn(99U));
+    reportCheck("getLoadSelectionRejectionReason() on an out-of-range index defaults to LOW_BATTERY",
+                search.getLoadSelectionRejectionReason(99U) == BestFirstSearch::LOW_BATTERY);
 }
 
 /**
- * Executes one on-device scalability cycle. Registration time includes Load
- * construction, Load health/configuration validation, and transfer into
- * BestFirstSearch; scheduler time measures BestFirstSearch::run() only.
+ * TEST 15 - DYNAMIC CANDIDATE COUNT
+ * BestFirstSearch's containers are all std::vector, so there is no
+ * project-imposed maximum candidate count. This adds 120 distinct Auto
+ * candidates across two branches with an ample power budget and confirms
+ * every one is processed exactly once and admitted.
  */
-static bool executeScalabilityCycle(
-    std::size_t loadCount,
-    std::int64_t& setupMicroseconds,
-    std::int64_t& registrationMicroseconds,
-    std::int64_t& schedulerMicroseconds,
-    std::int64_t& totalMicroseconds,
-    float& observedCommittedPower,
-    float& observedRemainingPower,
-    std::size_t& selectedLoads,
-    std::size_t& rejectedLoads,
-    std::size_t& freeHeapDuringCycle) {
+void testDynamicCandidateCount() {
+    printSection("TEST 15 - DYNAMIC CANDIDATE COUNT");
 
-    const std::int64_t totalStart = esp_timer_get_time();
-    BestFirstSearch search(loadCount, 1U);
+    constexpr std::size_t candidateCount = 120U;
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0xA1};
 
-    bool valid = search.configure(
-        1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
-        100U, 20.0F, 40.0F);
+    std::vector<Load> candidates;
+    candidates.reserve(candidateCount);
+    for (std::size_t i = 0U; i < candidateCount; ++i) {
+        char name[24] = {};
+        std::snprintf(name, sizeof(name), "Candidate%zu", i);
+        candidates.emplace_back(
+            Load::Id{mac, static_cast<std::uint8_t>(i)}, name,
+            LoadPower{1.0F, 1.0F}, 1U, LoadMode::Auto::ON);
+    }
 
-    const float P_available = static_cast<float>(loadCount) * 2.0F;
-    valid = valid && search.startPlanningCycle(
-        80.0F,
-        P_available,
-        P_available,
-        0.0F,
-        P_available * 2.0F,
-        12.0F,
-        P_available);
-    valid = valid && search.setBranchState(0U, 0.0F, P_available);
-    const std::int64_t setupEnd = esp_timer_get_time();
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    /* One watt per candidate is exactly enough for every candidate to fit. */
+    search.startSearch(makePlanningState(
+        90.0F, 10.0F, 20.0F, 12.0F, 10000.0F, 10000.0F,
+        static_cast<float>(candidateCount), static_cast<float>(candidateCount), 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 10000.0F);
+    search.registerBranch(BRANCH_1, 0.0F, 10000.0F);
 
-    float expectedCommittedPower = 0.0F;
-    const std::int64_t registrationStart = esp_timer_get_time();
-    for (std::size_t i = 0U; valid && i < loadCount; ++i) {
-        const float P_i =
-            1.0F + static_cast<float>((i * 37U) % 10U) * 0.05F;
-        const float P_i_peak =
-            P_i + 0.5F + static_cast<float>((i * 17U) % 5U) * 0.05F;
-        const std::uint16_t W_i =
-            static_cast<std::uint16_t>(((i * 31U) % 100U) + 1U);
-        const bool a_i = (i % 3U) == 0U;
-        const bool d_i = (i % 6U) == 0U;
+    bool everyLoadAdded = true;
+    for (std::size_t i = 0U; i < candidates.size(); ++i) {
+        const BranchId branch = (i % 2U == 0U) ? BRANCH_0 : BRANCH_1;
+        everyLoadAdded = everyLoadAdded && search.addLoad(candidates[i], branch, 0.0F);
+    }
 
-        Load load(
-            static_cast<std::uint32_t>(i + 1U),
-            LoadMode::AUTO,
-            1U,
-            0U,
-            static_cast<std::uint8_t>(16U + (i % 8U)),
-            P_i,
-            P_i_peak,
-            W_i,
-            a_i,
-            d_i,
-            LoadState::OFF,
-            LoadState::OFF,
-            LoadState::OFF);
+    reportCheck("All 120 dynamically-created candidates were accepted by addLoad()",
+                everyLoadAdded && search.getNumberOfLoadsAdded() == candidateCount);
 
-        valid = validateAndAddAutoLoad(search, load, 1U, 100U);
-        if (valid) {
-            expectedCommittedPower += P_i;
+    reportCheck("Search over 120 candidates runs to completion", search.run());
+
+    std::size_t selectedCount = 0U;
+    for (std::size_t i = 0U; i < search.getNumberOfLoadsAdded(); ++i) {
+        if (search.isLoadSelectedToBeOn(i)) {
+            ++selectedCount;
         }
     }
-    const std::int64_t registrationEnd = esp_timer_get_time();
-    freeHeapDuringCycle = heap_caps_get_free_size(MALLOC_CAP_8BIT);
 
-    const std::int64_t schedulerStart = esp_timer_get_time();
-    valid = valid && search.run();
-    const std::int64_t schedulerEnd = esp_timer_get_time();
-    freeHeapDuringCycle = std::min(
-        freeHeapDuringCycle,
-        heap_caps_get_free_size(MALLOC_CAP_8BIT));
-
-    setupMicroseconds = setupEnd - totalStart;
-    registrationMicroseconds = registrationEnd - registrationStart;
-    schedulerMicroseconds = schedulerEnd - schedulerStart;
-    totalMicroseconds = schedulerEnd - totalStart;
-    observedCommittedPower = search.get_P_committed();
-    observedRemainingPower = search.get_P_remaining();
-    selectedLoads = search.getSelectedAutoLoadCount();
-    rejectedLoads = search.getRejectedAutoLoadCount();
-
-    bool resultsValid = valid && search.isPlanningCycleCompleted() &&
-                        search.getAutoLoadCount() == loadCount &&
-                        selectedLoads == loadCount && rejectedLoads == 0U &&
-                        nearValue(observedCommittedPower,
-                                  expectedCommittedPower, 0.5F) &&
-                        nearValue(observedRemainingPower,
-                                  P_available - expectedCommittedPower, 0.5F);
-
-    for (std::size_t i = 0U; resultsValid && i < loadCount; ++i) {
-        resultsValid = search.get_x_i(i) == 1U &&
-                       search.getRejectionReason_i(i) == BestFirstSearch::NONE &&
-                       std::isfinite(search.get_f_i(i));
-    }
-
-    return resultsValid;
+    reportCheck("Every one of the 120 candidates fits the budget and is selected", selectedCount == candidateCount);
+    reportCheck("Remaining power after selecting all 120 one-watt candidates is 0 W",
+                nearValue(search.getRemainingPowerWatts(), 0.0F));
+    reportCheck("Branch 0 and branch 1 committed power split 60 W / 60 W",
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_0), 60.0F) &&
+                nearValue(search.getBranchCommittedPowerWatts(BRANCH_1), 60.0F));
 }
 
-static std::int64_t medianMicroseconds(std::int64_t* values,
-                                       std::size_t count) {
-    if (values == nullptr || count == 0U) {
-        return 0;
-    }
+/**
+ * TEST 16 - getAdmittedLoad() RECONSTRUCTS TRUE BEST-FIRST ADMISSION ORDER
+ * addLoad() is called in an order deliberately opposite to what f(i) will
+ * rank: the candidate with the WORST (highest) score is added first, the
+ * best (lowest) score is added last. getLoad(i)/isLoadSelectedToBeOn(i)
+ * therefore report in addLoad() order (index 0 = LoadWorst), but
+ * getAdmittedLoad() must report in the true Best-First extraction order
+ * (LoadBest first) regardless — this is exactly the ordering a caller
+ * dispatching relay ON commands must use (see RelayCommandDispatcher).
+ */
+void testAdmittedLoadOrderMatchesBestFirstExtraction() {
+    printSection("TEST 16 - getAdmittedLoad() RECONSTRUCTS TRUE BEST-FIRST ORDER");
 
-    std::sort(values, values + count);
-    return values[count / 2U];
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0xB1};
+
+    BestFirstSearch search;
+    /* Priority alone drives ordering here (all other weights zero); higher priority -> lower h(i) -> extracted first. */
+    search.setSearchScoreWeights(makeWeights(0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 10U));
+    search.startSearch(makePlanningState(90.0F, 10.0F, 20.0F, 12.0F, 1000.0F, 1000.0F, 1000.0F, 1000.0F, 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 1000.0F);
+
+    /* Added worst-first (lowest priority = worst score = added first), deliberately reversed from admission order. */
+    Load loadWorst(Load::Id{mac, 1U}, "LoadWorst", LoadPower{1.0F, 1.0F}, 1U, LoadMode::Auto::ON);
+    Load loadMiddle(Load::Id{mac, 2U}, "LoadMiddle", LoadPower{1.0F, 1.0F}, 5U, LoadMode::Auto::ON);
+    Load loadBest(Load::Id{mac, 3U}, "LoadBest", LoadPower{1.0F, 1.0F}, 10U, LoadMode::Auto::ON);
+
+    search.addLoad(loadWorst, BRANCH_0, 0.0F);   // addLoad() index 0
+    search.addLoad(loadMiddle, BRANCH_0, 0.0F);  // addLoad() index 1
+    search.addLoad(loadBest, BRANCH_0, 0.0F);    // addLoad() index 2
+
+    reportCheck("Search runs to completion", search.run());
+
+    reportCheck("getLoad(0) still reflects addLoad() order (LoadWorst), not admission order",
+                search.getLoad(0U) == &loadWorst);
+
+    reportCheck("All three candidates were admitted", search.getNumberOfAdmittedLoads() == 3U);
+
+    reportCheck("getAdmittedLoad(0) is LoadBest (extracted first: highest priority -> smallest f(i))",
+                search.getAdmittedLoad(0U) == &loadBest);
+    reportCheck("getAdmittedLoad(1) is LoadMiddle (extracted second)",
+                search.getAdmittedLoad(1U) == &loadMiddle);
+    reportCheck("getAdmittedLoad(2) is LoadWorst (extracted last: lowest priority -> largest f(i))",
+                search.getAdmittedLoad(2U) == &loadWorst);
+
+    reportCheck("getAdmittedLoad() out of range returns nullptr", search.getAdmittedLoad(3U) == nullptr);
+
+    search.resetSearch();
+    reportCheck("resetSearch() clears the admission-order record too", search.getNumberOfAdmittedLoads() == 0U);
 }
 
-/** TEST 7 - real ESP32 timing and heap use with both classes in the path. */
-static void testEsp32ScalabilityAndExecutionTime() {
-    printSection("TEST 7 - ESP32 LOAD + BESTFIRSTSEARCH SCALABILITY");
-    std::printf("Registration time includes Load construction/validation.\n");
-    std::printf("Scheduler time measures BestFirstSearch::run() only.\n");
+/**
+ * TEST 17 - PUBLIC STATIC checkFeasibility() FOR PRE-ACTUATION SAFETY RE-CHECKS
+ * Exercises BestFirstSearch::checkFeasibility(FeasibilityInputs) directly,
+ * without running a search at all — this is exactly what a caller
+ * re-verifying feasibility immediately before sending an ON command needs
+ * (Section "Add The Documented Safety Re-Check Immediately Before Each ON
+ * Command"): the same Algorithm 4.4 guard, callable standalone against a
+ * freshly re-read electrical snapshot.
+ */
+void testStaticFeasibilityCheckForPreActuationRecheck() {
+    printSection("TEST 17 - STATIC checkFeasibility() FOR PRE-ACTUATION SAFETY RE-CHECKS");
 
-    constexpr std::size_t loadCounts[] = {10U, 100U, 200U, 500U, 1000U};
-    constexpr std::size_t numberOfLoadCounts =
-        sizeof(loadCounts) / sizeof(loadCounts[0]);
-    constexpr std::size_t warmUpRuns = 3U;
-    constexpr std::size_t measuredRuns = 21U;
+    auto makeFeasible = []() {
+        BestFirstSearch::FeasibilityInputs inputs{};
+        inputs.stateOfChargePercent = 80.0F;
+        inputs.minimumStateOfChargePercent = 20.0F;
+        inputs.candidateRunningPowerWatts = 5.0F;
+        inputs.candidatePeakPowerWatts = 8.0F;
+        inputs.remainingPowerWatts = 50.0F;
+        inputs.committedPowerWatts = 10.0F;
+        inputs.maximumBatteryPowerWatts = 200.0F;
+        inputs.batteryBusVoltageVolts = 12.0F;
+        inputs.maximumMainCurrentAmps = 50.0F;
+        inputs.branchCommittedPowerWatts = 0.0F;
+        inputs.branchMaximumCurrentAmps = 10.0F;
+        return inputs;
+    };
 
-    std::int64_t medianSetup[numberOfLoadCounts] = {};
-    std::int64_t medianRegistration[numberOfLoadCounts] = {};
-    std::int64_t medianScheduler[numberOfLoadCounts] = {};
-    std::int64_t medianTotal[numberOfLoadCounts] = {};
-    float observedCommitted[numberOfLoadCounts] = {};
-    float observedRemaining[numberOfLoadCounts] = {};
-    std::size_t selected[numberOfLoadCounts] = {};
-    std::size_t rejected[numberOfLoadCounts] = {};
-    std::size_t minimumFreeHeap[numberOfLoadCounts] = {};
-    bool scalePassed[numberOfLoadCounts] = {};
+    reportCheck("A fully feasible snapshot returns NONE",
+                BestFirstSearch::checkFeasibility(makeFeasible()) == BestFirstSearch::NONE);
 
-    for (std::size_t scale = 0U; scale < numberOfLoadCounts; ++scale) {
-        std::int64_t setupMicroseconds = 0;
-        std::int64_t registrationMicroseconds = 0;
-        std::int64_t schedulerMicroseconds = 0;
-        std::int64_t totalMicroseconds = 0;
-        std::size_t freeHeapDuringCycle = 0U;
-
-        bool allExecutionsPassed = true;
-        minimumFreeHeap[scale] = std::numeric_limits<std::size_t>::max();
-
-        for (std::size_t run = 0U; run < warmUpRuns; ++run) {
-            const bool runPassed = executeScalabilityCycle(
-                loadCounts[scale],
-                setupMicroseconds,
-                registrationMicroseconds,
-                schedulerMicroseconds,
-                totalMicroseconds,
-                observedCommitted[scale],
-                observedRemaining[scale],
-                selected[scale],
-                rejected[scale],
-                freeHeapDuringCycle);
-            allExecutionsPassed = allExecutionsPassed && runPassed;
-            minimumFreeHeap[scale] = std::min(
-                minimumFreeHeap[scale], freeHeapDuringCycle);
-            vTaskDelay(1U);
-        }
-
-        std::int64_t setupSamples[measuredRuns] = {};
-        std::int64_t registrationSamples[measuredRuns] = {};
-        std::int64_t schedulerSamples[measuredRuns] = {};
-        std::int64_t totalSamples[measuredRuns] = {};
-
-        for (std::size_t run = 0U; run < measuredRuns; ++run) {
-            const bool runPassed = executeScalabilityCycle(
-                loadCounts[scale],
-                setupMicroseconds,
-                registrationMicroseconds,
-                schedulerMicroseconds,
-                totalMicroseconds,
-                observedCommitted[scale],
-                observedRemaining[scale],
-                selected[scale],
-                rejected[scale],
-                freeHeapDuringCycle);
-            allExecutionsPassed = allExecutionsPassed && runPassed;
-            setupSamples[run] = setupMicroseconds;
-            registrationSamples[run] = registrationMicroseconds;
-            schedulerSamples[run] = schedulerMicroseconds;
-            totalSamples[run] = totalMicroseconds;
-            minimumFreeHeap[scale] = std::min(
-                minimumFreeHeap[scale], freeHeapDuringCycle);
-            vTaskDelay(1U);
-        }
-
-        medianSetup[scale] = medianMicroseconds(setupSamples, measuredRuns);
-        medianRegistration[scale] =
-            medianMicroseconds(registrationSamples, measuredRuns);
-        medianScheduler[scale] =
-            medianMicroseconds(schedulerSamples, measuredRuns);
-        medianTotal[scale] = medianMicroseconds(totalSamples, measuredRuns);
-        scalePassed[scale] = allExecutionsPassed;
+    {
+        BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
+        inputs.stateOfChargePercent = 20.0F; // == SoC_min
+        reportCheck("SoC <= SoC_min standalone -> LOW_BATTERY",
+                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::LOW_BATTERY);
+    }
+    {
+        BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
+        inputs.candidateRunningPowerWatts = 60.0F; // > remainingPowerWatts (50)
+        reportCheck("P_i > P_remaining standalone -> POWER_BUDGET_EXCEEDED",
+                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+    }
+    {
+        BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
+        inputs.committedPowerWatts = 195.0F; // + 8 peak > 200 maximumBatteryPowerWatts
+        reportCheck("P_committed + P_i_peak > P_battery,max standalone -> BATTERY_CURRENT_LIMIT",
+                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::BATTERY_CURRENT_LIMIT);
+    }
+    {
+        BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
+        inputs.maximumMainCurrentAmps = 1.0F; // (10+8)/12 = 1.5A > 1A
+        reportCheck("I_main,start > I_main,max standalone -> MAIN_LIMIT_EXCEEDED",
+                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::MAIN_LIMIT_EXCEEDED);
+    }
+    {
+        BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
+        inputs.branchMaximumCurrentAmps = 0.5F; // (0+8)/12 = 0.667A > 0.5A
+        reportCheck("I_branch,start > I_branch,max standalone -> BRANCH_LIMIT_EXCEEDED",
+                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::BRANCH_LIMIT_EXCEEDED);
     }
 
-    std::printf("\nPower and decision verification\n");
-    std::printf("%-7s %-11s %-12s %-12s %-12s %-12s %-9s %-9s %s\n",
-                "Loads", "P_avail", "Commit exp", "Commit obs", "Remain exp",
-                "Remain obs", "Selected", "Rejected", "Result");
-
-    for (std::size_t scale = 0U; scale < numberOfLoadCounts; ++scale) {
-        const float P_available = static_cast<float>(loadCounts[scale]) * 2.0F;
-        const float expectedCommitted =
-            expectedScalabilityCommittedPower(loadCounts[scale]);
-        const float expectedRemaining = P_available - expectedCommitted;
-        const bool powerPassed = scalePassed[scale] &&
-                                 nearValue(observedCommitted[scale],
-                                           expectedCommitted, 0.5F) &&
-                                 nearValue(observedRemaining[scale],
-                                           expectedRemaining, 0.5F) &&
-                                 selected[scale] == loadCounts[scale] &&
-                                 rejected[scale] == 0U;
-        std::printf("%-7zu %-11.2f %-12.2f %-12.2f %-12.2f %-12.2f %-9zu %-9zu %s\n",
-                    loadCounts[scale],
-                    P_available,
-                    expectedCommitted,
-                    observedCommitted[scale],
-                    expectedRemaining,
-                    observedRemaining[scale],
-                    selected[scale],
-                    rejected[scale],
-                    recordResult(powerPassed));
-    }
-
-    std::printf("\nESP32 timing and memory findings\n");
-    std::printf("Medians use %zu measured runs after %zu warm-up runs.\n\n",
-                measuredRuns, warmUpRuns);
-    std::printf("%-7s %-11s %-15s %-13s %-11s %-16s\n",
-                "Loads", "Setup us", "Registration us", "Scheduler us",
-                "Total us", "Min free heap B");
-
-    for (std::size_t scale = 0U; scale < numberOfLoadCounts; ++scale) {
-        std::printf("%-7zu %-11" PRId64 " %-15" PRId64 " %-13" PRId64
-                    " %-11" PRId64 " %-16zu\n",
-                    loadCounts[scale],
-                    medianSetup[scale],
-                    medianRegistration[scale],
-                    medianScheduler[scale],
-                    medianTotal[scale],
-                    minimumFreeHeap[scale]);
-    }
+    reportCheck("checkFeasibility() is callable with no search ever started (fully static)", true);
 }
 
-extern "C" void app_main(void) {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    vTaskDelay(pdMS_TO_TICKS(1500U));
+/**
+ * TEST 18 - CONFIGURED MODE IS NEVER MUTATED BY A BEST-FIRST DECISION
+ * Reproduces the exact orchestration pattern src/central/main.cpp's
+ * Optimisation Task must use after search.run(): write the admission
+ * result onto Load::setTargetRelayState(), never onto Load::setMode().
+ * An AUTO_OFF Load that gets selected must end this cycle with target=ON
+ * but configured mode still exactly AUTO_OFF; an AUTO_ON Load that gets
+ * rejected must end with target=OFF but configured mode still AUTO_ON.
+ */
+void testConfiguredModeNeverMutatedByBestFirstDecision() {
+    printSection("TEST 18 - CONFIGURED MODE IS NEVER MUTATED BY A BEST-FIRST DECISION");
 
-    esp_chip_info_t chipInfo{};
-    esp_chip_info(&chipInfo);
+    const Load::MacAddress mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0xC1};
 
-    std::printf("\nKILOWATTS LOAD + BESTFIRSTSEARCH ESP32 UNIT TEST REPORT\n");
+    BestFirstSearch search;
+    configureEqualWeights(search);
+    /* Generous budget: WaterPump (35W) fits, but nothing else competes for it, so it is admitted. */
+    search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 1000.0F, 1000.0F, 100.0F, 100.0F, 0.0F));
+    search.registerBranch(BRANCH_0, 0.0F, 1000.0F);
+
+    /* Configured AUTO_OFF, expected to be SELECTED this cycle. */
+    Load waterPump(Load::Id{mac, 19U}, "WaterPump", LoadPower{35.0F, 55.0F}, 4U, LoadMode::Auto::OFF);
+    search.addLoad(waterPump, BRANCH_0, 0.0F);
+
+    reportCheck("Search runs to completion", search.run());
+    reportCheck("WaterPump (35W, generous 100W budget) is admitted this cycle", search.isLoadSelectedToBeOn(0U));
+
+    /* Exactly the orchestration pattern central/main.cpp must use: */
+    waterPump.setLastBestFirstRejectionReason(search.getLoadSelectionRejectionReason(0U));
+    waterPump.setTargetRelayState(search.isLoadSelectedToBeOn(0U));
+
+    reportCheck("Configured mode remains exactly AUTO_OFF after being selected",
+                waterPump.getMode() == LoadMode::Auto::OFF);
+    reportCheck("isOn()/isOff() (which read configured mode) still report OFF",
+                waterPump.isOff() && !waterPump.isOn());
+    reportCheck("Target relay state is ON, reflecting this cycle's Best-First decision",
+                waterPump.getTargetRelayState());
+
+    /* Now the rejected direction: configured AUTO_ON, but budget forces rejection. */
+    BestFirstSearch tightSearch;
+    configureEqualWeights(tightSearch);
+    tightSearch.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 1000.0F, 1000.0F, 5.0F, 5.0F, 0.0F));
+    tightSearch.registerBranch(BRANCH_0, 0.0F, 1000.0F);
+
+    Load fan(Load::Id{mac, 17U}, "Fan", LoadPower{18.0F, 25.0F}, 6U, LoadMode::Auto::ON);
+    tightSearch.addLoad(fan, BRANCH_0, 0.0F);
+
+    reportCheck("Search runs to completion", tightSearch.run());
+    reportCheck("Fan (18W, only 5W budget) is rejected this cycle", !tightSearch.isLoadSelectedToBeOn(0U));
+
+    fan.setLastBestFirstRejectionReason(tightSearch.getLoadSelectionRejectionReason(0U));
+    fan.setTargetRelayState(tightSearch.isLoadSelectedToBeOn(0U));
+
+    reportCheck("Configured mode remains exactly AUTO_ON after being rejected", fan.getMode() == LoadMode::Auto::ON);
+    reportCheck("isOn()/isOff() (which read configured mode) still report ON", fan.isOn() && !fan.isOff());
+    reportCheck("Target relay state is OFF, reflecting this cycle's Best-First rejection", !fan.getTargetRelayState());
+    reportCheck("Rejection reason (POWER_BUDGET_EXCEEDED) was recorded",
+                fan.getLastBestFirstRejectionReason() == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+}
+
+} // namespace
+
+int main() {
+    std::printf("KILOWATTS LOAD + LOADFILTER + AVAILABLEPOWERMANAGER + BESTFIRSTSEARCH HOST TEST REPORT\n");
     std::printf("Author: Chalwe Silas\n");
     std::printf("Programme: Final-Year Computer Engineering\n");
     std::printf("Institution: The Copperbelt University\n");
-    std::printf("Tests: Load data model, Candidate Preparation, Algorithms 4.3-4.5\n\n");
-    std::printf("ESP-IDF version: %s\n", esp_get_idf_version());
-    std::printf("Chip model code: %d\n", static_cast<int>(chipInfo.model));
-    std::printf("CPU cores: %u\n", static_cast<unsigned int>(chipInfo.cores));
-    std::printf("Silicon revision: %u\n", static_cast<unsigned int>(chipInfo.revision));
-    std::printf("Free 8-bit heap before tests: %zu bytes\n",
-                heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    std::printf("Total PSRAM: %zu bytes\n",
-                heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
-    std::printf("Free PSRAM before tests: %zu bytes\n",
-                heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    std::printf("Targets the Chapter 4 lib/BestFirstSearch implementation (Sections 4.6.2-4.6.4).\n");
 
     testLoadDataModel();
-    testLoadToBestFirstIntegration();
-    testConstraintGuard();
-    testUserPriorityAllocation();
-    testIncrementalBranchConstraint();
-    testValidationAndEqualScores();
-    testEsp32ScalabilityAndExecutionTime();
+    testLoadFilterClassification();
+    testSearchScoreWeightValidation();
+    testElectricalPlanningStateValidation();
+    testRegisterBranchValidation();
+    testBranchIdentityIsMacPlusRelayPin();
+    testAddLoadValidation();
+    testChapter4WorkedExample();
+    testConstraintGuardRejectionReasons();
+    testSequentialAllocation();
+    testIncrementalBranchCurrent();
+    testScheduleFuturePenaltyAndPriorityIsUnchanged();
+    testAutoOnAndAutoOffAreEquivalentCandidates();
+    testLoadFilterAndAvailablePowerManagerIntegration();
+    testResetAndBoundsSafety();
+    testDynamicCandidateCount();
+    testAdmittedLoadOrderMatchesBestFirstExtraction();
+    testStaticFeasibilityCheckForPreActuationRecheck();
+    testConfiguredModeNeverMutatedByBestFirstDecision();
 
-    printSection("FINAL ESP32 TEST SUMMARY");
+    printSection("FINAL TEST SUMMARY");
     std::printf("Passed checks: %zu\n", passedChecks);
     std::printf("Failed checks: %zu\n", failedChecks);
-    std::printf("Free 8-bit heap after tests: %zu bytes\n",
-                heap_caps_get_free_size(MALLOC_CAP_8BIT));
-    std::printf("Minimum free 8-bit heap observed: %zu bytes\n",
-                heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
-    std::printf("Free PSRAM after tests: %zu bytes\n",
-                heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    std::printf("OVERALL RESULT: %s\n",
-                failedChecks == 0U ? "PASS" : "FAIL");
-    std::printf("Load + BestFirstSearch ESP32 unit/integration tests complete.\n");
+    std::printf("OVERALL RESULT: %s\n", failedChecks == 0U ? "PASS" : "FAIL");
+
+    return failedChecks == 0U ? 0 : 1;
 }

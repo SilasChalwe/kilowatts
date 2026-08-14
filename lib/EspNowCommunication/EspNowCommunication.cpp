@@ -20,6 +20,7 @@
 #include "esp_netif.h"
 #include "esp_random.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "nvs_flash.h"
 
 
@@ -213,6 +214,52 @@ bool EspNowCommunication::registerDirectDownstreamNode(
         nodeMacAddress,
         0,
         false,
+        hopCountToCentral
+    );
+}
+
+
+bool EspNowCommunication::registerDirectDownstreamNode(
+    const char* nodeName,
+    const MacAddress& nodeMacAddress,
+    std::int8_t signalStrengthDbm,
+    std::uint16_t hopCountToCentral
+)
+{
+    if (!initialized_ ||
+        !centralMacAddressKnown_ ||
+        hopCountToCentral_ == UNKNOWN_HOP_COUNT)
+    {
+        ESP_LOGW(
+            TAG,
+            "Cannot register direct downstream Node before this Node has a valid route to Central"
+        );
+
+        return false;
+    }
+
+    const std::uint16_t expectedHopCount =
+        static_cast<std::uint16_t>(
+            hopCountToCentral_ + 1U
+        );
+
+    if (hopCountToCentral != expectedHopCount)
+    {
+        ESP_LOGW(
+            TAG,
+            "Cannot register direct downstream Node: reported hop=%u expected=%u",
+            static_cast<unsigned int>(hopCountToCentral),
+            static_cast<unsigned int>(expectedHopCount)
+        );
+
+        return false;
+    }
+
+    return registerOrUpdateDirectDownstreamNode(
+        nodeName,
+        nodeMacAddress,
+        signalStrengthDbm,
+        true,
         hopCountToCentral
     );
 }
@@ -1123,6 +1170,28 @@ bool EspNowCommunication::initializeWiFi()
             TAG,
             "Default event loop initialization failed: %s",
             esp_err_to_name(result)
+        );
+
+        return false;
+    }
+
+    /*
+     * Without this, the Wi-Fi driver can still associate at the link
+     * layer (esp_wifi_connect() succeeds, WIFI_EVENT_STA_CONNECTED
+     * fires) but there is no netif for a DHCP client to attach to:
+     * IP_EVENT_STA_GOT_IP never fires, the station never gets an IP
+     * address, and every IP-layer operation (DNS, MQTT, NTP) fails
+     * regardless of how correct its own configuration is. This must be
+     * created exactly once, before esp_wifi_start(), for both roles —
+     * Central actually joins infrastructure Wi-Fi through this netif
+     * (see WiFiManager), Smart Nodes never associate with an AP so it
+     * simply stays unused for them, harmlessly.
+     */
+    if (esp_netif_create_default_wifi_sta() == nullptr)
+    {
+        ESP_LOGE(
+            TAG,
+            "esp_netif_create_default_wifi_sta() failed"
         );
 
         return false;

@@ -166,11 +166,55 @@ readonly CXX_COMPILER="${CXX:-g++}"
 command -v "$CXX_COMPILER" >/dev/null 2>&1 ||
     fail "C++ compiler '$CXX_COMPILER' was not found."
 
+# A test module may construct/call classes declared by sibling lib/
+# modules (for example an AvailablePowerManager test that also needs
+# real Load/LoadFilter objects). Plain g++ has no equivalent of
+# PlatformIO's own chain-mode Library Dependency Finder, so this walks
+# local #include "X.h" directives - starting from the test source and the
+# primary module's own headers - and pulls in any other lib/<X>
+# directory's .cpp files too, transitively, so those symbols link.
+declare -A RESOLVED_LIBRARY_DIRECTORIES=()
 declare -a LIBRARY_SOURCES=()
-while IFS= read -r -d '' source_file; do
-    LIBRARY_SOURCES+=("$source_file")
-done < <(find "$LIBRARY_DIRECTORY" -type f \
-    \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) -print0 | sort -z)
+declare -a INCLUDE_SCAN_QUEUE=()
+
+add_library_directory_sources() {
+    local directory="$1"
+    while IFS= read -r -d '' source_file; do
+        LIBRARY_SOURCES+=("$source_file")
+    done < <(find "$directory" -maxdepth 1 -type f \
+        \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) -print0 | sort -z)
+}
+
+resolve_library_directory() {
+    local directory="$1"
+
+    [[ -n "${RESOLVED_LIBRARY_DIRECTORIES[$directory]:-}" ]] && return 0
+    RESOLVED_LIBRARY_DIRECTORIES["$directory"]=1
+
+    add_library_directory_sources "$directory"
+
+    while IFS= read -r -d '' header_file; do
+        INCLUDE_SCAN_QUEUE+=("$header_file")
+    done < <(find "$directory" -maxdepth 1 -type f -name '*.h' -print0 | sort -z)
+}
+
+resolve_library_directory "$LIBRARY_DIRECTORY"
+INCLUDE_SCAN_QUEUE+=("$TEST_SOURCE")
+
+while (( ${#INCLUDE_SCAN_QUEUE[@]} > 0 )); do
+    scan_file="${INCLUDE_SCAN_QUEUE[0]}"
+    INCLUDE_SCAN_QUEUE=("${INCLUDE_SCAN_QUEUE[@]:1}")
+
+    [[ -f "$scan_file" ]] || continue
+
+    while IFS= read -r included_header; do
+        included_module="${included_header%.h}"
+        candidate_directory="$PROJECT_ROOT/lib/$included_module"
+
+        [[ -d "$candidate_directory" ]] && resolve_library_directory "$candidate_directory"
+    done < <(grep -ohE '#include[[:space:]]*"[A-Za-z0-9_]+\.h"' "$scan_file" |
+              sed -E 's/.*"([A-Za-z0-9_]+\.h)"/\1/')
+done
 
 (( ${#LIBRARY_SOURCES[@]} > 0 )) ||
     fail "No C++ implementation file was found in '$LIBRARY_DIRECTORY'."
