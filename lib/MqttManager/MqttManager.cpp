@@ -11,6 +11,7 @@
 
 #include "MqttManager.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -71,8 +72,56 @@ bool parseConfigCommandActionText(const char* text, ConfigCommandAction& action)
     if (std::strcmp(text, "COMMISSION_NODE") == 0) { action = ConfigCommandAction::COMMISSION_NODE; return true; }
     if (std::strcmp(text, "RENAME_NODE") == 0) { action = ConfigCommandAction::RENAME_NODE; return true; }
     if (std::strcmp(text, "DECOMMISSION_NODE") == 0) { action = ConfigCommandAction::DECOMMISSION_NODE; return true; }
+    if (std::strcmp(text, "CONFIGURE_LOAD") == 0) { action = ConfigCommandAction::CONFIGURE_LOAD; return true; }
+    if (std::strcmp(text, "CONFIGURE_BATTERY_SENSOR") == 0) { action = ConfigCommandAction::CONFIGURE_BATTERY_SENSOR; return true; }
 
     return false;
+}
+
+
+bool isUnsignedByteJsonNumber(const cJSON* item, std::uint8_t& value)
+{
+    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) ||
+        item->valuedouble < 0.0 || item->valuedouble > 255.0 ||
+        std::floor(item->valuedouble) != item->valuedouble) {
+        return false;
+    }
+    value = static_cast<std::uint8_t>(item->valuedouble);
+    return true;
+}
+
+
+bool isUnsignedIntJsonNumber(const cJSON* item, std::uint32_t& value)
+{
+    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) ||
+        item->valuedouble <= 0.0 || item->valuedouble > 4294967295.0 ||
+        std::floor(item->valuedouble) != item->valuedouble) {
+        return false;
+    }
+    value = static_cast<std::uint32_t>(item->valuedouble);
+    return true;
+}
+
+
+bool isUnsignedShortJsonNumber(const cJSON* item, std::uint16_t& value)
+{
+    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) ||
+        item->valuedouble < 0.0 || item->valuedouble > 65535.0 ||
+        std::floor(item->valuedouble) != item->valuedouble) {
+        return false;
+    }
+    value = static_cast<std::uint16_t>(item->valuedouble);
+    return true;
+}
+
+
+bool isFiniteJsonNumber(const cJSON* item, float& value)
+{
+    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble)) {
+        return false;
+    }
+    value = static_cast<float>(item->valuedouble);
+    return std::isfinite(value);
 }
 
 
@@ -85,6 +134,7 @@ bool parseSystemCommandActionText(const char* text, SystemCommandAction& action)
     if (std::strcmp(text, "REQUEST_OPTIMIZATION_CYCLE") == 0) { action = SystemCommandAction::REQUEST_OPTIMIZATION_CYCLE; return true; }
     if (std::strcmp(text, "FACTORY_RESET_CENTRAL") == 0) { action = SystemCommandAction::FACTORY_RESET_CENTRAL; return true; }
     if (std::strcmp(text, "FACTORY_RESET_NODE") == 0) { action = SystemCommandAction::FACTORY_RESET_NODE; return true; }
+    if (std::strcmp(text, "APPLY_SAFETY_CONFIG") == 0) { action = SystemCommandAction::APPLY_SAFETY_CONFIG; return true; }
 
     return false;
 }
@@ -406,34 +456,37 @@ void MqttManager::handleLoadCommandMessage(const char* data, std::size_t dataLen
     }
 
     LoadCommandRequest request{};
-    std::uint32_t commandId = 0U;
-
     const cJSON* commandIdField = cJSON_GetObjectItemCaseSensitive(root, "commandId");
-    if (cJSON_IsNumber(commandIdField)) {
-        commandId = static_cast<std::uint32_t>(commandIdField->valuedouble);
+    if (!isUnsignedIntJsonNumber(commandIdField, request.commandId)) {
+        ESP_LOGW(TAG, "Rejected commands/load message: missing/invalid commandId");
+        publishAcknowledgement(0U, "LOAD", AckStatus::REJECTED, "missing or invalid commandId", nullptr);
+        cJSON_Delete(root);
+        return;
     }
-    request.commandId = commandId;
+    const std::uint32_t commandId = request.commandId;
 
     const cJSON* nodeMacField = cJSON_GetObjectItemCaseSensitive(root, "nodeMac");
     const cJSON* relayPinField = cJSON_GetObjectItemCaseSensitive(root, "relayPin");
 
     if (!cJSON_IsString(nodeMacField) || !parseMacAddressText(nodeMacField->valuestring, request.nodeMacAddress) ||
-        !cJSON_IsNumber(relayPinField)) {
+        !isUnsignedByteJsonNumber(relayPinField, request.relayPin)) {
         ESP_LOGW(TAG, "Rejected commands/load message commandId=%u: missing/invalid nodeMac or relayPin",
                  static_cast<unsigned int>(commandId));
         publishAcknowledgement(commandId, "LOAD", AckStatus::REJECTED, "missing or invalid nodeMac/relayPin", nullptr);
         cJSON_Delete(root);
         return;
     }
-    request.relayPin = static_cast<std::uint8_t>(relayPinField->valuedouble);
-
     char targetText[18] = {};
     formatMacAddressText(targetText, sizeof(targetText), request.nodeMacAddress);
 
     const cJSON* priorityField = cJSON_GetObjectItemCaseSensitive(root, "priority");
-    if (cJSON_IsNumber(priorityField)) {
+    if (priorityField != nullptr) {
+        if (!isUnsignedShortJsonNumber(priorityField, request.priority)) {
+            publishAcknowledgement(commandId, "LOAD", AckStatus::REJECTED, "invalid priority", targetText);
+            cJSON_Delete(root);
+            return;
+        }
         request.hasPriority = true;
-        request.priority = static_cast<std::uint16_t>(priorityField->valuedouble);
     }
 
     const cJSON* modeField = cJSON_GetObjectItemCaseSensitive(root, "mode");
@@ -457,9 +510,17 @@ void MqttManager::handleLoadCommandMessage(const char* data, std::size_t dataLen
         const cJSON* hourField = cJSON_GetObjectItemCaseSensitive(scheduleField, "hour");
         const cJSON* minuteField = cJSON_GetObjectItemCaseSensitive(scheduleField, "minute");
 
-        const bool enabled = cJSON_IsBool(enabledField) && cJSON_IsTrue(enabledField);
-        const std::uint8_t hour = cJSON_IsNumber(hourField) ? static_cast<std::uint8_t>(hourField->valuedouble) : 0U;
-        const std::uint8_t minute = cJSON_IsNumber(minuteField) ? static_cast<std::uint8_t>(minuteField->valuedouble) : 0U;
+        std::uint8_t hour = 0U;
+        std::uint8_t minute = 0U;
+        if (!cJSON_IsBool(enabledField) ||
+            !isUnsignedByteJsonNumber(hourField, hour) ||
+            !isUnsignedByteJsonNumber(minuteField, minute)) {
+            publishAcknowledgement(commandId, "LOAD", AckStatus::REJECTED,
+                                   "invalid schedule", targetText);
+            cJSON_Delete(root);
+            return;
+        }
+        const bool enabled = cJSON_IsTrue(enabledField);
 
         if (enabled && (hour > 23U || minute > 59U)) {
             ESP_LOGW(TAG, "Rejected commands/load message commandId=%u: schedule hour/minute out of range",
@@ -499,8 +560,10 @@ void MqttManager::handleSystemCommandMessage(const char* data, std::size_t dataL
     SystemCommandRequest request{};
 
     const cJSON* commandIdField = cJSON_GetObjectItemCaseSensitive(root, "commandId");
-    if (cJSON_IsNumber(commandIdField)) {
-        request.commandId = static_cast<std::uint32_t>(commandIdField->valuedouble);
+    if (!isUnsignedIntJsonNumber(commandIdField, request.commandId)) {
+        cJSON_Delete(root);
+        publishAcknowledgement(0U, "SYSTEM", AckStatus::REJECTED, "missing or invalid commandId", nullptr);
+        return;
     }
 
     const cJSON* actionField = cJSON_GetObjectItemCaseSensitive(root, "action");
@@ -522,6 +585,29 @@ void MqttManager::handleSystemCommandMessage(const char* data, std::size_t dataL
     if (cJSON_IsString(targetNodeMacField) &&
         parseMacAddressText(targetNodeMacField->valuestring, request.targetNodeMacAddress)) {
         request.hasTargetNodeMacAddress = true;
+    }
+
+    if (request.action == SystemCommandAction::APPLY_SAFETY_CONFIG) {
+        const cJSON* safetyConfig = cJSON_GetObjectItemCaseSensitive(root, "safetyConfig");
+        if (!cJSON_IsObject(safetyConfig) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(safetyConfig, "minimumStateOfChargePercent"),
+                                request.minimumStateOfChargePercent) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(safetyConfig, "warningStateOfChargePercent"),
+                                request.warningStateOfChargePercent) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(safetyConfig, "targetRuntimeHours"),
+                                request.targetRuntimeHours) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(safetyConfig, "safetyFactor"),
+                                request.safetyFactor) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(safetyConfig, "maximumBatteryDischargeCurrentAmps"),
+                                request.maximumBatteryDischargeCurrentAmps) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(safetyConfig, "maximumMainCurrentAmps"),
+                                request.maximumMainCurrentAmps)) {
+            cJSON_Delete(root);
+            publishAcknowledgement(request.commandId, "SYSTEM", AckStatus::REJECTED,
+                                   "invalid safetyConfig", nullptr);
+            return;
+        }
+        request.hasSafetyPolicy = true;
     }
 
     cJSON_Delete(root);
@@ -552,13 +638,14 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
     }
 
     ConfigCommandRequest request{};
-    std::uint32_t commandId = 0U;
-
     const cJSON* commandIdField = cJSON_GetObjectItemCaseSensitive(root, "commandId");
-    if (cJSON_IsNumber(commandIdField)) {
-        commandId = static_cast<std::uint32_t>(commandIdField->valuedouble);
+    if (!isUnsignedIntJsonNumber(commandIdField, request.commandId)) {
+        ESP_LOGW(TAG, "Rejected commands/config message: missing/invalid commandId");
+        publishAcknowledgement(0U, "CONFIG", AckStatus::REJECTED, "missing or invalid commandId", nullptr);
+        cJSON_Delete(root);
+        return;
     }
-    request.commandId = commandId;
+    const std::uint32_t commandId = request.commandId;
 
     const cJSON* actionField = cJSON_GetObjectItemCaseSensitive(root, "action");
     ConfigCommandAction parsedAction = ConfigCommandAction::UNKNOWN;
@@ -589,7 +676,7 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
      * cJSON_Delete(root), which would otherwise leave commandTypeText
      * dangling.
      */
-    char commandTypeText[24] = {};
+    char commandTypeText[32] = {};
     {
         std::size_t i = 0U;
         for (; i < sizeof(commandTypeText) - 1U && actionField->valuestring[i] != '\0'; ++i) {
@@ -617,6 +704,97 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
         request.friendlyName[i] = '\0';
     }
 
+    if (request.action == ConfigCommandAction::CONFIGURE_LOAD) {
+        const cJSON* loadField = cJSON_GetObjectItemCaseSensitive(root, "load");
+        if (!cJSON_IsObject(loadField)) {
+            publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
+                                    "load object required", targetText);
+            cJSON_Delete(root);
+            return;
+        }
+
+        const cJSON* nameField = cJSON_GetObjectItemCaseSensitive(loadField, "name");
+        const cJSON* relayPinField = cJSON_GetObjectItemCaseSensitive(loadField, "relayPin");
+        const cJSON* relayActiveHighField = cJSON_GetObjectItemCaseSensitive(loadField, "relayActiveHigh");
+        const cJSON* modeField = cJSON_GetObjectItemCaseSensitive(loadField, "mode");
+        const cJSON* priorityField = cJSON_GetObjectItemCaseSensitive(loadField, "priority");
+        const cJSON* nominalVoltageField = cJSON_GetObjectItemCaseSensitive(loadField, "nominalVoltageVolts");
+        const cJSON* nominalCurrentField = cJSON_GetObjectItemCaseSensitive(loadField, "nominalCurrentAmps");
+        const cJSON* branchMaximumField = cJSON_GetObjectItemCaseSensitive(loadField, "branchMaximumCurrentAmps");
+        const cJSON* startupWattsField = cJSON_GetObjectItemCaseSensitive(loadField, "startupWatts");
+        const cJSON* scheduleField = cJSON_GetObjectItemCaseSensitive(loadField, "schedule");
+
+        if (!cJSON_IsString(nameField) || nameField->valuestring[0] == '\0' ||
+            std::strlen(nameField->valuestring) >= sizeof(request.loadName) ||
+            !isUnsignedByteJsonNumber(relayPinField, request.relayPin) ||
+            !cJSON_IsBool(relayActiveHighField) ||
+            !cJSON_IsString(modeField) || !parseLoadModeText(modeField->valuestring, request.mode) ||
+            !isUnsignedShortJsonNumber(priorityField, request.priority) ||
+            !isFiniteJsonNumber(nominalVoltageField, request.nominalVoltageVolts) ||
+            !isFiniteJsonNumber(nominalCurrentField, request.nominalCurrentAmps) ||
+            !isFiniteJsonNumber(branchMaximumField, request.branchMaximumCurrentAmps) ||
+            !isFiniteJsonNumber(startupWattsField, request.startupWatts) ||
+            !cJSON_IsObject(scheduleField)) {
+            publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
+                                    "invalid load configuration", targetText);
+            cJSON_Delete(root);
+            return;
+        }
+
+        const float plannedRunningWatts = request.nominalVoltageVolts * request.nominalCurrentAmps;
+        if (request.nominalVoltageVolts <= 0.0F || request.nominalCurrentAmps <= 0.0F ||
+            request.branchMaximumCurrentAmps <= 0.0F || !std::isfinite(plannedRunningWatts) ||
+            plannedRunningWatts <= 0.0F || request.startupWatts < plannedRunningWatts) {
+            publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
+                                    "invalid nominal load rating", targetText);
+            cJSON_Delete(root);
+            return;
+        }
+
+        const cJSON* scheduleEnabledField = cJSON_GetObjectItemCaseSensitive(scheduleField, "enabled");
+        const cJSON* scheduleHourField = cJSON_GetObjectItemCaseSensitive(scheduleField, "hour");
+        const cJSON* scheduleMinuteField = cJSON_GetObjectItemCaseSensitive(scheduleField, "minute");
+        std::uint8_t hour = 0U;
+        std::uint8_t minute = 0U;
+        if (!cJSON_IsBool(scheduleEnabledField) ||
+            !isUnsignedByteJsonNumber(scheduleHourField, hour) ||
+            !isUnsignedByteJsonNumber(scheduleMinuteField, minute) ||
+            (cJSON_IsTrue(scheduleEnabledField) && (hour > 23U || minute > 59U))) {
+            publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
+                                    "invalid load schedule", targetText);
+            cJSON_Delete(root);
+            return;
+        }
+
+        std::snprintf(request.loadName, sizeof(request.loadName), "%s", nameField->valuestring);
+        request.relayActiveHigh = cJSON_IsTrue(relayActiveHighField);
+        request.schedule = AutoSchedule{cJSON_IsTrue(scheduleEnabledField), hour, minute};
+        request.hasLoadConfiguration = true;
+    }
+
+    if (request.action == ConfigCommandAction::CONFIGURE_BATTERY_SENSOR) {
+        const cJSON* batteryField = cJSON_GetObjectItemCaseSensitive(root, "batterySensor");
+        if (!cJSON_IsObject(batteryField) ||
+            !isUnsignedByteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "i2cAddress"),
+                                      request.batteryI2cAddress) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "shuntResistanceOhms"),
+                                request.batteryShuntResistanceOhms) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "maximumExpectedCurrentAmps"),
+                                request.batteryMaximumExpectedCurrentAmps) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "emaAlpha"),
+                                request.batteryEmaAlpha) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "batteryCapacityAmpHours"),
+                                request.batteryCapacityAmpHours) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "initialStateOfChargePercent"),
+                                request.batteryInitialStateOfChargePercent)) {
+            publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
+                                    "invalid batterySensor configuration", targetText);
+            cJSON_Delete(root);
+            return;
+        }
+        request.hasBatterySensorConfiguration = true;
+    }
+
     cJSON_Delete(root);
 
     if (configCommandHandler_ == nullptr) {
@@ -627,7 +805,17 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
     }
 
     const LoadCommandResult result = configCommandHandler_(configCommandHandlerContext_, request);
-    publishAcknowledgement(commandId, commandTypeText, result.accepted ? AckStatus::ACCEPTED : AckStatus::REJECTED,
+    /*
+     * Battery commissioning and Central's authoritative decommission state
+     * are complete once their local NVS transactions succeed. Smart-node
+     * load and identity operations still have a separate ESP-NOW final ACK.
+     */
+    const bool completesLocally =
+        request.action == ConfigCommandAction::CONFIGURE_BATTERY_SENSOR ||
+        request.action == ConfigCommandAction::DECOMMISSION_NODE;
+    publishAcknowledgement(commandId, commandTypeText,
+                            result.accepted ? (completesLocally ? AckStatus::APPLIED : AckStatus::ACCEPTED)
+                                            : AckStatus::REJECTED,
                             result.reason, targetText);
 }
 
@@ -642,13 +830,14 @@ void MqttManager::handleDevelopmentCommandMessage(const char* data, std::size_t 
     }
 
     DevelopmentCommandRequest request{};
-    std::uint32_t commandId = 0U;
-
     const cJSON* commandIdField = cJSON_GetObjectItemCaseSensitive(root, "commandId");
-    if (cJSON_IsNumber(commandIdField)) {
-        commandId = static_cast<std::uint32_t>(commandIdField->valuedouble);
+    if (!isUnsignedIntJsonNumber(commandIdField, request.commandId)) {
+        ESP_LOGW(TAG, "Rejected commands/development message: missing/invalid commandId");
+        publishAcknowledgement(0U, "DEVELOPMENT", AckStatus::REJECTED, "missing or invalid commandId", nullptr);
+        cJSON_Delete(root);
+        return;
     }
-    request.commandId = commandId;
+    const std::uint32_t commandId = request.commandId;
 
     const cJSON* actionField = cJSON_GetObjectItemCaseSensitive(root, "action");
     DevelopmentCommandAction parsedAction = DevelopmentCommandAction::UNKNOWN;
@@ -685,7 +874,7 @@ void MqttManager::handleDevelopmentCommandMessage(const char* data, std::size_t 
     if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT ||
         request.action == DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE) {
         const cJSON* i2cAddressField = cJSON_GetObjectItemCaseSensitive(root, "i2cAddress");
-        if (!cJSON_IsNumber(i2cAddressField)) {
+        if (!isUnsignedByteJsonNumber(i2cAddressField, request.i2cAddress)) {
             ESP_LOGW(TAG, "Rejected commands/development message commandId=%u: missing i2cAddress",
                      static_cast<unsigned int>(commandId));
             publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED, "missing i2cAddress", targetText);
@@ -693,12 +882,11 @@ void MqttManager::handleDevelopmentCommandMessage(const char* data, std::size_t 
             return;
         }
         request.hasSensorInput = true;
-        request.i2cAddress = static_cast<std::uint8_t>(i2cAddressField->valuedouble);
-
         if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT) {
             const cJSON* voltageField = cJSON_GetObjectItemCaseSensitive(root, "voltageVolts");
             const cJSON* currentField = cJSON_GetObjectItemCaseSensitive(root, "currentAmps");
-            if (!cJSON_IsNumber(voltageField) || !cJSON_IsNumber(currentField)) {
+            if (!isFiniteJsonNumber(voltageField, request.voltageVolts) ||
+                !isFiniteJsonNumber(currentField, request.currentAmps)) {
                 ESP_LOGW(TAG, "Rejected commands/development message commandId=%u: missing voltageVolts/currentAmps",
                          static_cast<unsigned int>(commandId));
                 publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
@@ -706,8 +894,6 @@ void MqttManager::handleDevelopmentCommandMessage(const char* data, std::size_t 
                 cJSON_Delete(root);
                 return;
             }
-            request.voltageVolts = static_cast<float>(voltageField->valuedouble);
-            request.currentAmps = static_cast<float>(currentField->valuedouble);
         }
     }
 

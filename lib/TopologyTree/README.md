@@ -46,8 +46,10 @@ reports `targetOn: false`) versus **confirmed** state
 (`Load::getConfirmedRelayState()` plus `Load::isConfirmedRelayStateValid()`
 — the last hardware-confirmed physical truth, and whether that confirmation
 is still trustworthy) kept as three distinct fields, priority,
-running/startup power, the latest filtered measurement, schedule, health,
-and the last Best-First rejection reason. `mode` itself is never used as a
+running/startup power, installer-rated nominal voltage/current/power,
+schedule, health, and the last Best-First rejection reason. The nominal
+electrical fields are planning estimates, not live per-load measurements:
+the only INA219 is on Central's battery bus. `mode` itself is never used as a
 proxy for `targetOn` here — see `Load.h`'s own class-level documentation
 for why the two must stay independent.
 

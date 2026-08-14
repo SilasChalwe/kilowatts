@@ -45,7 +45,7 @@ namespace {
 constexpr const char* NVS_NAMESPACE = "kw_commission";
 constexpr const char* NVS_KEY_SCHEMA_VERSION = "schema";
 constexpr const char* NVS_KEY_RECORDS = "records";
-constexpr std::uint8_t CURRENT_SCHEMA_VERSION = 1U;
+constexpr std::uint8_t CURRENT_SCHEMA_VERSION = 2U;
 
 #pragma pack(push, 1)
 struct PersistedCommissioningRecord {
@@ -55,6 +55,8 @@ struct PersistedCommissioningRecord {
     char friendlyName[NodeCommissioningRegistry::FRIENDLY_NAME_BUFFER_SIZE];
     char firmwareVersion[NodeCommissioningRegistry::FIRMWARE_VERSION_BUFFER_SIZE];
     char chipModel[NodeCommissioningRegistry::CHIP_MODEL_BUFFER_SIZE];
+    std::uint8_t relayCapabilityCount;
+    std::uint8_t relayPins[NodeCommissioningRegistry::MAX_RELAY_GPIO_CAPABILITIES];
 };
 #pragma pack(pop)
 
@@ -108,6 +110,28 @@ bool NodeCommissioningRegistry::recordDiscovered(
     const MacAddress& macAddress, NodeRole role,
     const char* firmwareVersion, const char* chipModel, std::uint32_t nowMilliseconds)
 {
+    return recordDiscovered(macAddress, role, firmwareVersion, chipModel, nullptr, 0U, nowMilliseconds);
+}
+
+
+bool NodeCommissioningRegistry::recordDiscovered(
+    const MacAddress& macAddress, NodeRole role,
+    const char* firmwareVersion, const char* chipModel,
+    const std::uint8_t* relayPins, std::size_t relayCapabilityCount,
+    std::uint32_t nowMilliseconds)
+{
+    if (relayCapabilityCount > MAX_RELAY_GPIO_CAPABILITIES) {
+        relayCapabilityCount = MAX_RELAY_GPIO_CAPABILITIES;
+    }
+
+    const auto copyCapabilities = [relayPins, relayCapabilityCount](CommissioningRecord& record) {
+        record.relayCapabilityCount = static_cast<std::uint8_t>(relayCapabilityCount);
+        record.relayPins.fill(0U);
+        for (std::size_t i = 0U; relayPins != nullptr && i < relayCapabilityCount; ++i) {
+            record.relayPins[i] = relayPins[i];
+        }
+    };
+
     CommissioningRecord* existing = findMutable(macAddress);
 
     if (existing == nullptr) {
@@ -119,6 +143,7 @@ bool NodeCommissioningRegistry::recordDiscovered(
         record.pendingFriendlyName[0] = '\0';
         copyTruncated(record.firmwareVersion, FIRMWARE_VERSION_BUFFER_SIZE, firmwareVersion);
         copyTruncated(record.chipModel, CHIP_MODEL_BUFFER_SIZE, chipModel);
+        copyCapabilities(record);
         record.discoveredAtMilliseconds = nowMilliseconds;
         record.syncState = SyncState::SYNCED;
 
@@ -132,6 +157,7 @@ bool NodeCommissioningRegistry::recordDiscovered(
 
     copyTruncated(existing->firmwareVersion, FIRMWARE_VERSION_BUFFER_SIZE, firmwareVersion);
     copyTruncated(existing->chipModel, CHIP_MODEL_BUFFER_SIZE, chipModel);
+    copyCapabilities(*existing);
     existing->discoveredAtMilliseconds = nowMilliseconds;
 
     return false;
@@ -154,6 +180,8 @@ bool NodeCommissioningRegistry::registerSelf(
     record.pendingFriendlyName[0] = '\0';
     copyTruncated(record.firmwareVersion, FIRMWARE_VERSION_BUFFER_SIZE, firmwareVersion);
     copyTruncated(record.chipModel, CHIP_MODEL_BUFFER_SIZE, chipModel);
+    record.relayCapabilityCount = 0U;
+    record.relayPins.fill(0U);
     record.discoveredAtMilliseconds = nowMilliseconds;
     record.syncState = SyncState::SYNCED;
 
@@ -335,6 +363,16 @@ bool NodeCommissioningRegistry::loadPersisted()
         record.pendingFriendlyName[0] = '\0';
         copyTruncated(record.firmwareVersion, FIRMWARE_VERSION_BUFFER_SIZE, persisted.firmwareVersion);
         copyTruncated(record.chipModel, CHIP_MODEL_BUFFER_SIZE, persisted.chipModel);
+        if (persisted.relayCapabilityCount > MAX_RELAY_GPIO_CAPABILITIES) {
+            ESP_LOGW(TAG, "Discarding corrupt persisted commissioning record: invalid relay capability count %u",
+                     static_cast<unsigned int>(persisted.relayCapabilityCount));
+            return false;
+        }
+        record.relayCapabilityCount = persisted.relayCapabilityCount;
+        record.relayPins.fill(0U);
+        for (std::size_t pinIndex = 0U; pinIndex < record.relayCapabilityCount; ++pinIndex) {
+            record.relayPins[pinIndex] = persisted.relayPins[pinIndex];
+        }
         record.discoveredAtMilliseconds = 0U;
         record.syncState = SyncState::SYNCED;
 
@@ -377,6 +415,10 @@ bool NodeCommissioningRegistry::persist() const
         copyTruncated(persisted.friendlyName, sizeof(persisted.friendlyName), record.friendlyName);
         copyTruncated(persisted.firmwareVersion, sizeof(persisted.firmwareVersion), record.firmwareVersion);
         copyTruncated(persisted.chipModel, sizeof(persisted.chipModel), record.chipModel);
+        persisted.relayCapabilityCount = record.relayCapabilityCount;
+        for (std::size_t pinIndex = 0U; pinIndex < MAX_RELAY_GPIO_CAPABILITIES; ++pinIndex) {
+            persisted.relayPins[pinIndex] = record.relayPins[pinIndex];
+        }
         records.push_back(persisted);
     }
 

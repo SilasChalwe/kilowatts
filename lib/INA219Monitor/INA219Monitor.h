@@ -213,6 +213,15 @@ public:
     bool addSensor(const INA219SensorConfiguration& sensorConfiguration);
 
 
+    /**
+     * Removes a sensor that was provisionally registered during a failed
+     * hardware-configuration transaction. Calibration NVS data is kept so
+     * a later corrected configuration at the same physical address does
+     * not silently lose the installer-calibrated values.
+     */
+    bool removeSensor(std::uint8_t i2cAddress);
+
+
     /** Returns how many INA219 devices are currently registered. */
     std::size_t getNumberOfSensors() const;
 

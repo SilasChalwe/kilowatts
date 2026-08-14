@@ -6,14 +6,12 @@
  *
  * This file only instantiates real modules, creates the FreeRTOS
  * tasks/queues/synchronization that wire them together, and starts the
- * system — every real responsibility (sensing, filtering, relay
- * actuation, ESP-NOW transport, schedule evaluation, time) lives in the
+ * system — every real responsibility (relay actuation, ESP-NOW transport,
+ * schedule evaluation and time) lives in the
  * lib/ module that owns it.
  *
  * Pipeline implemented here (Section 4.6, "Smart Node" role):
  *
- *   Sensor Acquisition Task (~1s)
- *       INA219Monitor::readFilteredMeasurements() -> Load::setMeasurements()
  *   ESP-NOW Communication Task (event-driven + periodic report)
  *       builds/sends NodeReportPacket, learns/forwards other traffic,
  *       hands RELAY_COMMAND messages to the Relay Control Task's queue
@@ -21,20 +19,19 @@
  *       RelayController::setRelayState() -> readBackState() ->
  *       RelayCommandAcknowledgementPacket back to Central
  *   Watchdog/Diagnostics Task (~60s)
- *       link/sensor/relay health, re-discovers Central if the route was
+ *       link/relay health, re-discovers Central if the route was
  *       lost, sends a periodic IDENTITY_REPORT
  *
- * A freshly flashed/uncommissioned Node has zero Loads/Branches/sensors
+ * A freshly flashed/uncommissioned Node has zero Loads/Branches
  * (Section "New Smart Node Boot") until a COMMISSION_COMMAND from Central
  * assigns it a friendly name (see lib/NodeIdentityStore,
  * lib/CommissioningPackets) — handled inline inside the ESP-NOW
  * Communication Task's own receive dispatch, the same place RELAY_COMMAND
  * already is.
  *
- * nodeMutex protects thisSmartNode (the Node/Load objects), since the
- * Sensor Acquisition Task, the Relay Control Task and the ESP-NOW
- * Communication Task's report builder all read or write Load state
- * concurrently. identityMutex separately protects identityStore, written
+ * nodeMutex protects thisSmartNode (the Node/Load objects), since the Relay
+ * Control Task and the ESP-NOW Communication Task's report builder both
+ * read or write Load state concurrently. identityMutex separately protects identityStore, written
  * by the ESP-NOW Communication Task and read by both it and the Watchdog
  * Task.
  *
@@ -51,7 +48,7 @@
 #include "DevelopmentSession.h"
 #include "EspNowCommunication.h"
 #include "FirmwareVersion.h"
-#include "INA219Monitor.h"
+#include "HardwareConfigurationPackets.h"
 #include "Load.h"
 #include "Node.h"
 #include "NodeIdentityStore.h"
@@ -60,6 +57,7 @@
 #include "RadioConfig.h"
 #include "RelayController.h"
 #include "SmartNodeConfig.h"
+#include "SmartNodeConfigurationStore.h"
 
 #include <cstdio>
 #include <cstring>
@@ -74,19 +72,20 @@
 
 using namespace kilowatts;
 
+static_assert(sizeof(ConfigureLoadCommandPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
+              "ConfigureLoadCommandPacket is too large for one ESP-NOW message");
+static_assert(sizeof(ConfigureLoadAcknowledgementPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
+              "ConfigureLoadAcknowledgementPacket is too large for one ESP-NOW message");
+
 static const char *TAG = "SMART_MAIN";
 
 namespace {
 
-constexpr std::uint32_t SENSOR_ACQUISITION_PERIOD_MS = 1000U;
 constexpr std::uint32_t NODE_REPORT_PERIOD_MS = 2000U;
 constexpr std::uint32_t WATCHDOG_PERIOD_MS = 60000U;
 
 /** Section "Application-Level Node Report Ack": how long to wait for Central's NODE_REPORT_ACK before logging CENTRAL_ACK_TIMEOUT. */
 constexpr std::uint32_t NODE_REPORT_ACK_TIMEOUT_MS = 3000U;
-
-/** A Development Session sensor override may target an I2C address with no owning Load yet - see applySetSensorInput(). */
-constexpr std::uint8_t DEV_SENSOR_RELAY_PIN_SENTINEL = 0xFFU;
 
 /*
  * Section "Smart Node Must Not Block On Central": upstream discovery is
@@ -108,19 +107,19 @@ constexpr std::uint32_t UPSTREAM_DISCOVERY_ATTEMPT_TIMEOUT_MS = 500U;
  */
 EspNowCommunication communication(kilowatts::KILOWATTS_RADIO_CHANNEL);
 CurrentTimeProvider currentTimeProvider;
-INA219Monitor sensors;
 RelayController relays;
 ChipInfo chipInfo;
 NodeIdentityStore identityStore;
+SmartNodeConfigurationStore smartNodeConfigurationStore;
 
 /**
  * This Node's explicit runtime Development Session (Section "Development
  * Session Is Explicit") - always PRODUCTION on boot, never inferred from
- * missing hardware or a compile-time flag. Only a received
- * DEV_SESSION_COMMAND/DEV_SENSOR_INPUT_COMMAND (or the local engineering
- * console) ever calls start()/end()/setSensorOverride()/
- * clearSensorOverride(). Guarded by identityMutex, the same mutex already
- * used for this Node's other session-level state (identityStore).
+ * missing hardware or a compile-time flag. Smart Nodes have no individual
+ * current sensor in the final design, so a received DEV_SESSION_COMMAND can
+ * only start/end the session; battery sensor simulation remains Central-only.
+ * Guarded by identityMutex, the same mutex used for this Node's other
+ * session-level state (identityStore).
  */
 DevelopmentSession developmentSession;
 
@@ -144,20 +143,6 @@ struct RelayCommandQueueItem {
 
 
 /**
- * Initializes this Node's I2C bus - a genuine per-board hardware fact
- * (SmartNodeConfig::i2cBusConfiguration()), not installation
- * configuration. A freshly flashed/uncommissioned Node registers zero
- * Loads, zero sensors and zero relays (Section "New Smart Node Boot"):
- * Branches/Loads/sensors become a later phase's runtime-commissioned,
- * NVS-persisted concern, not something this file defines.
- */
-void initializeHardwareBus()
-{
-    sensors.initializeBus(SmartNodeConfig::i2cBusConfiguration());
-}
-
-
-/**
  * "Smart-AABBCC" from the last three MAC octets - used whenever this Node
  * has no commissioned friendly name (never commissioned yet, or just
  * decommissioned), so it always has *some* stable, honestly-derived name
@@ -174,38 +159,6 @@ void formatMacAddressText(char* buffer, std::size_t bufferSize, const EspNowComm
 {
     std::snprintf(buffer, bufferSize, "%02X:%02X:%02X:%02X:%02X:%02X",
                   macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5]);
-}
-
-
-/**
- * Sensor Acquisition Task (Section 4.6.1, ~1s): reads every configured
- * Load's INA219 through the filtered measurement path (real hardware or
- * an active Development Session override, both through the exact same
- * INA219Monitor interface — see lib/INA219Monitor, lib/DevelopmentSession)
- * and stores the result on that Load's own object, guarded by nodeMutex.
- */
-void sensorAcquisitionTask(void *parameter)
-{
-    (void)parameter;
-
-    while (true) {
-        if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
-            for (std::size_t i = 0U; i < thisSmartNode->getNumberOfLoads(); ++i) {
-                Load *load = thisSmartNode->getLoad(i);
-                if (load == nullptr) {
-                    continue;
-                }
-
-                LoadMeasurements filtered{};
-                if (sensors.readFilteredMeasurementsForRelayPin(load->getRelayPin(), filtered)) {
-                    load->setMeasurements(filtered);
-                }
-            }
-            xSemaphoreGive(nodeMutex);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(SENSOR_ACQUISITION_PERIOD_MS));
-    }
 }
 
 
@@ -329,23 +282,21 @@ NodeReportPacket buildNodeReportPacket(const EspNowCommunication::MacAddress& lo
             loadPacket.relayPin = load->getRelayPin();
             loadPacket.mode = static_cast<std::uint8_t>(load->getMode());
             loadPacket.priority = load->getPriority();
-            loadPacket.runningWatts = load->getPower().runningWatts;
             loadPacket.startupWatts = load->getPower().startupWatts;
 
             /*
-             * Branch configuration (I_branch,max) is a later phase's
-             * runtime-commissioned concern (GPIO/Branch CRUD) - there is
-             * currently no way for a Load to exist at all without it, so
-             * this loop never actually runs yet, but the field is kept at
-             * a safe 0.0F rather than removed, ready for that phase to
-             * populate it from real Branch configuration.
+             * One configured relay channel is one electrical branch in the
+             * current design. This value is persisted together with the
+             * channel and is therefore never fabricated from a UI default.
              */
-            loadPacket.branchMaximumCurrentAmps = 0.0F;
+            float branchMaximumCurrentAmps = 0.0F;
+            if (smartNodeConfigurationStore.branchMaximumCurrentAmps(load->getRelayPin(), branchMaximumCurrentAmps)) {
+                loadPacket.branchMaximumCurrentAmps = branchMaximumCurrentAmps;
+            }
 
-            const LoadMeasurements measurements = load->getMeasurements();
-            loadPacket.measuredVoltageVolts = measurements.voltageVolts;
-            loadPacket.measuredCurrentAmps = measurements.currentAmps;
-            loadPacket.measuredPowerWatts = measurements.powerWatts;
+            const LoadElectricalRatings ratings = load->getElectricalRatings();
+            loadPacket.nominalVoltageVolts = ratings.nominalVoltageVolts;
+            loadPacket.nominalCurrentAmps = ratings.nominalCurrentAmps;
 
             loadPacket.confirmedRelayState = load->getConfirmedRelayState() ? 1U : 0U;
             loadPacket.confirmedRelayStateValid = load->isConfirmedRelayStateValid() ? 1U : 0U;
@@ -387,6 +338,12 @@ void sendIdentityReport()
         xSemaphoreGive(identityMutex);
     }
     packet.lifecycleState = static_cast<std::uint8_t>(lifecycleState);
+    packet.relayCapabilityCount = static_cast<std::uint8_t>(
+        SmartNodeConfig::getVerifiedRelayPinCount() > MAX_RELAY_GPIO_CAPABILITIES
+            ? MAX_RELAY_GPIO_CAPABILITIES : SmartNodeConfig::getVerifiedRelayPinCount());
+    for (std::size_t index = 0U; index < packet.relayCapabilityCount; ++index) {
+        packet.relayPins[index] = SmartNodeConfig::getVerifiedRelayPin(index);
+    }
 
     const bool sent = communication.sendToCentral(EspNowCommunication::MessageType::IDENTITY_REPORT, packet);
     ESP_LOGI(TAG, "IDENTITY_REPORT name='%s' state=%s %s", communication.getLocalNodeName(),
@@ -402,14 +359,10 @@ struct DevCommandOutcome {
 
 /**
  * Applies a locally-targeted Development Session command (Section
- * "Development Session Is Explicit") — the only functions in this file
- * that ever call DevelopmentSession::start()/end()/setSensorOverride()/
- * clearSensorOverride() or INA219Monitor::setDevelopmentOverride()/
- * clearDevelopmentOverride(). Called from both the ESP-NOW receive
- * dispatch (a DEV_SESSION_COMMAND/DEV_SENSOR_INPUT_COMMAND Central relayed
- * here) and consoleTask() (the local engineering test console) — never a
- * second, divergent code path. Mirrors src/central/main.cpp's own
- * handleDevelopmentCommand() local-target branch.
+ * "Development Session Is Explicit") — Smart Nodes can start/end an explicit
+ * session, but may not simulate per-load electrical measurements because the
+ * only INA219 belongs to Central's battery bus. Called from both the ESP-NOW
+ * receive dispatch and consoleTask(), never through a divergent path.
  */
 DevCommandOutcome applyStartDevelopmentSession()
 {
@@ -439,55 +392,6 @@ DevCommandOutcome applyEndDevelopmentSession()
 }
 
 
-DevCommandOutcome applySetSensorInput(std::uint8_t i2cAddress, float voltageVolts, float currentAmps)
-{
-    DevCommandOutcome outcome{};
-
-    if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) != pdTRUE) {
-        std::snprintf(outcome.reason, sizeof(outcome.reason), "internal: could not acquire state lock");
-        return outcome;
-    }
-
-    if (!developmentSession.isActive()) {
-        std::snprintf(outcome.reason, sizeof(outcome.reason), "no active Development Session; call START_SESSION first");
-        xSemaphoreGive(identityMutex);
-        return outcome;
-    }
-
-    if (sensors.findSensorByI2CAddress(i2cAddress) == nullptr) {
-        sensors.addSensor(INA219Monitor::INA219SensorConfiguration{
-            i2cAddress, DEV_SENSOR_RELAY_PIN_SENTINEL, 0.005F, 60.0F, 0.2F
-        });
-        ESP_LOGW(TAG, "DEV_SENSOR_REGISTER: node=%s i2c=0x%02X (temporary, Development-Session-only registration)",
-                 communication.getLocalNodeName(), static_cast<unsigned int>(i2cAddress));
-    }
-
-    ESP_LOGW(TAG, "DEV_INPUT node=%s i2c=0x%02X V=%.3f I=%.3f", communication.getLocalNodeName(),
-             static_cast<unsigned int>(i2cAddress), static_cast<double>(voltageVolts), static_cast<double>(currentAmps));
-
-    const LoadMeasurements rawOverride{voltageVolts, currentAmps, voltageVolts * currentAmps};
-    outcome.success = sensors.setDevelopmentOverride(i2cAddress, rawOverride);
-    developmentSession.setSensorOverride(i2cAddress, voltageVolts, currentAmps);
-
-    xSemaphoreGive(identityMutex);
-
-    std::snprintf(outcome.reason, sizeof(outcome.reason), outcome.success ? "sensor input armed" : "failed to arm sensor override");
-    return outcome;
-}
-
-
-DevCommandOutcome applyClearSensorOverride(std::uint8_t i2cAddress)
-{
-    DevCommandOutcome outcome{};
-    if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
-        outcome.success = developmentSession.clearSensorOverride(i2cAddress) && sensors.clearDevelopmentOverride(i2cAddress);
-        xSemaphoreGive(identityMutex);
-    }
-    std::snprintf(outcome.reason, sizeof(outcome.reason), outcome.success ? "override cleared" : "no override was armed for this address");
-    return outcome;
-}
-
-
 /**
  * Factory reset (Section "Factory Reset"): establishes a safe physical
  * relay state, erases every installation-specific persisted record (a
@@ -504,7 +408,7 @@ DevCommandOutcome applyClearSensorOverride(std::uint8_t i2cAddress)
     ESP_LOGW(TAG, "FACTORY_RESET: establishing safe physical outputs before erasing NVS");
     relays.printDiagnosticReport();
 
-    ESP_LOGW(TAG, "FACTORY_RESET: erasing NVS (commissioning identity/name, INA219 calibration) - "
+    ESP_LOGW(TAG, "FACTORY_RESET: erasing NVS (commissioning identity/name, relay/load configuration) - "
                   "immutable hardware identity is unaffected");
     const esp_err_t eraseResult = nvs_flash_erase();
     if (eraseResult != ESP_OK) {
@@ -518,6 +422,72 @@ DevCommandOutcome applyClearSensorOverride(std::uint8_t i2cAddress)
     ESP_LOGW(TAG, "FACTORY_RESET: complete (NVS cleared, firmware unchanged). Rebooting into PRODUCTION + UNCOMMISSIONED.");
     vTaskDelay(pdMS_TO_TICKS(200U)); // let the log line above actually flush over UART before reset
     esp_restart();
+}
+
+
+HardwareConfigurationFailureReason applyConfigureLoadCommand(const ConfigureLoadCommandPacket& command)
+{
+    NodeLifecycleState lifecycleState = NodeLifecycleState::UNCOMMISSIONED;
+    if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) != pdTRUE) {
+        return HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED;
+    }
+    lifecycleState = identityStore.getLifecycleState();
+    xSemaphoreGive(identityMutex);
+
+    if (lifecycleState != NodeLifecycleState::COMMISSIONED &&
+        lifecycleState != NodeLifecycleState::OPERATIONAL) {
+        return HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED;
+    }
+    if (!SmartNodeConfig::isVerifiedRelayPin(command.relayPin)) {
+        return HardwareConfigurationFailureReason::UNSUPPORTED_RELAY_PIN;
+    }
+
+    SmartNodeConfigurationStore::LoadConfiguration configuration{};
+    std::memcpy(configuration.name, command.loadName, sizeof(configuration.name));
+    configuration.name[sizeof(configuration.name) - 1U] = '\0';
+    configuration.relayPin = command.relayPin;
+    configuration.relayActiveHigh = command.relayActiveHigh != 0U;
+    configuration.mode = static_cast<LoadMode::Value>(command.mode);
+    configuration.priority = command.priority;
+    configuration.nominalVoltageVolts = command.nominalVoltageVolts;
+    configuration.nominalCurrentAmps = command.nominalCurrentAmps;
+    configuration.branchMaximumCurrentAmps = command.branchMaximumCurrentAmps;
+    configuration.startupWatts = command.startupWatts;
+    configuration.schedule = AutoSchedule{command.scheduleEnabled != 0U, command.scheduleHour, command.scheduleMinute};
+
+    if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
+        return HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED;
+    }
+    HardwareConfigurationFailureReason failureReason = HardwareConfigurationFailureReason::NONE;
+    smartNodeConfigurationStore.configureNewLoad(configuration, relays, *thisSmartNode, failureReason);
+    xSemaphoreGive(nodeMutex);
+    return failureReason;
+}
+
+
+/**
+ * A persisted installation record is never allowed to bypass the current
+ * flashed board profile. This matters when a device is reflashed for a
+ * different ESP32 carrier: a GPIO that was once valid may now be camera,
+ * flash or boot hardware. The operator must verify the new profile and
+ * explicitly commission channels again instead of silently energising an
+ * old pin at boot.
+ */
+bool persistedRelayConfigurationMatchesBoardProfile()
+{
+    for (std::size_t index = 0U;
+         index < smartNodeConfigurationStore.getNumberOfConfigurations(); ++index) {
+        const SmartNodeConfigurationStore::LoadConfiguration* configuration =
+            smartNodeConfigurationStore.getConfiguration(index);
+        if (configuration != nullptr &&
+            !SmartNodeConfig::isVerifiedRelayPin(configuration->relayPin)) {
+            ESP_LOGE(TAG,
+                     "NVS_RESTORE: configured relay GPIO %u is not declared safe by this flashed board profile",
+                     static_cast<unsigned int>(configuration->relayPin));
+            return false;
+        }
+    }
+    return true;
 }
 
 
@@ -598,8 +568,13 @@ void espNowCommunicationTask(void *parameter)
                 char appliedName[EspNowCommunication::NODE_NAME_LENGTH] = {};
 
                 if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
+                    const NodeIdentityStore previousIdentity = identityStore;
                     accepted = identityStore.applyCommission(command.friendlyName);
-                    identityStore.persist();
+                    if (accepted && !identityStore.persist()) {
+                        /* A CommissionAck must never claim durable success when NVS failed. */
+                        identityStore = previousIdentity;
+                        accepted = false;
+                    }
                     resultingState = identityStore.getLifecycleState();
                     std::snprintf(appliedName, sizeof(appliedName), "%s", identityStore.getFriendlyName());
                     xSemaphoreGive(identityMutex);
@@ -627,25 +602,67 @@ void espNowCommunicationTask(void *parameter)
                 DecommissionCommandPacket command{};
                 std::memcpy(&command, received.message.payload.data(), sizeof(command));
 
-                if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
+                HardwareConfigurationFailureReason clearFailure =
+                    HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED;
+                bool localConfigurationCleared = false;
+                if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(500U)) == pdTRUE) {
+                    localConfigurationCleared = smartNodeConfigurationStore.clearAllConfigurations(
+                        relays, *thisSmartNode, clearFailure);
+                    xSemaphoreGive(nodeMutex);
+                }
+
+                bool identityPersisted = false;
+                if (localConfigurationCleared &&
+                    xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
+                    const NodeIdentityStore previousIdentity = identityStore;
                     identityStore.applyDecommission();
-                    identityStore.persist();
+                    if (identityStore.persist()) {
+                        identityPersisted = true;
+                    } else {
+                        /* Keep the truthful old identity if durable reset failed. */
+                        identityStore = previousIdentity;
+                    }
                     xSemaphoreGive(identityMutex);
                 }
 
                 char automaticName[EspNowCommunication::NODE_NAME_LENGTH] = {};
                 computeAutomaticNodeName(localMac, automaticName, sizeof(automaticName));
-                communication.setLocalNodeName(automaticName);
+                const bool accepted = localConfigurationCleared && identityPersisted;
+                if (accepted) {
+                    communication.setLocalNodeName(automaticName);
+                }
 
                 DecommissionAckPacket acknowledgement{};
                 acknowledgement.commandId = command.commandId;
-                acknowledgement.success = 1U;
+                acknowledgement.success = accepted ? 1U : 0U;
                 communication.sendToCentral(EspNowCommunication::MessageType::DECOMMISSION_ACK, acknowledgement);
 
-                ESP_LOGI(TAG, "Decommission command commandId=%u applied; name reset to '%s'",
-                         static_cast<unsigned int>(command.commandId), automaticName);
+                ESP_LOGI(TAG, "Decommission command commandId=%u %s (clearReason=%u)%s",
+                         static_cast<unsigned int>(command.commandId),
+                         accepted ? "APPLIED; name reset" : "REJECTED",
+                         static_cast<unsigned int>(clearFailure),
+                         accepted ? "" : "; local configuration or identity persistence failed");
 
                 sendIdentityReport();
+            } else if (destinationIsLocal &&
+                       received.message.header.messageType == EspNowCommunication::MessageType::CONFIGURE_LOAD_COMMAND &&
+                       received.message.header.payloadLength == sizeof(ConfigureLoadCommandPacket)) {
+
+                ConfigureLoadCommandPacket command{};
+                std::memcpy(&command, received.message.payload.data(), sizeof(command));
+
+                const HardwareConfigurationFailureReason reason = applyConfigureLoadCommand(command);
+                ConfigureLoadAcknowledgementPacket acknowledgement{};
+                acknowledgement.commandId = command.commandId;
+                acknowledgement.relayPin = command.relayPin;
+                acknowledgement.success = reason == HardwareConfigurationFailureReason::NONE ? 1U : 0U;
+                acknowledgement.failureReason = static_cast<std::uint8_t>(reason);
+
+                communication.sendToCentral(EspNowCommunication::MessageType::CONFIGURE_LOAD_ACK, acknowledgement);
+                ESP_LOGI(TAG, "Configure Load command commandId=%u pin=%u result=%s reason=%u",
+                         static_cast<unsigned int>(command.commandId), static_cast<unsigned int>(command.relayPin),
+                         acknowledgement.success != 0U ? "APPLIED" : "REJECTED",
+                         static_cast<unsigned int>(acknowledgement.failureReason));
             } else if (destinationIsLocal &&
                        received.message.header.messageType == EspNowCommunication::MessageType::NODE_REPORT_ACK &&
                        received.message.header.payloadLength == sizeof(NodeReportAcknowledgementPacket)) {
@@ -691,14 +708,11 @@ void espNowCommunicationTask(void *parameter)
 
                 DevSensorInputCommandPacket command{};
                 std::memcpy(&command, received.message.payload.data(), sizeof(command));
-
-                const DevCommandOutcome outcome = command.clearOverride != 0U
-                    ? applyClearSensorOverride(command.i2cAddress)
-                    : applySetSensorInput(command.i2cAddress, command.voltageVolts, command.currentAmps);
-
+                ESP_LOGW(TAG, "DEV_SENSOR_INPUT commandId=%u rejected: Smart Nodes have no INA219; battery sensor is Central-only",
+                         static_cast<unsigned int>(command.commandId));
                 DevAckPacket acknowledgement{};
                 acknowledgement.commandId = command.commandId;
-                acknowledgement.success = outcome.success ? 1U : 0U;
+                acknowledgement.success = 0U;
                 acknowledgement.resultingEnvironment = static_cast<std::uint8_t>(developmentSession.getEnvironment());
                 communication.sendToCentral(EspNowCommunication::MessageType::DEV_ACK, acknowledgement);
 
@@ -751,16 +765,16 @@ void espNowCommunicationTask(void *parameter)
             for (std::size_t i = 0U; i < packet.numberOfLoads && i < MAX_LOADS_PER_NODE_PACKET; ++i) {
                 const LoadReportPacket &loadPacket = packet.loads[i];
                 ESP_LOGI(TAG, "LOAD_TX seq=%u pin=%u name=%s mode=%u confirmed=%u confirmedValid=%s "
-                              "health=%u V=%.3f I=%.3f P=%.3f",
+                              "health=%u ratedV=%.3f ratedI=%.3f plannedP=%.3f",
                          static_cast<unsigned int>(reportSequenceId),
                          static_cast<unsigned int>(loadPacket.relayPin), loadPacket.name,
                          static_cast<unsigned int>(loadPacket.mode),
                          static_cast<unsigned int>(loadPacket.confirmedRelayState),
                          loadPacket.confirmedRelayStateValid != 0U ? "true" : "false",
                          static_cast<unsigned int>(loadPacket.availability),
-                         static_cast<double>(loadPacket.measuredVoltageVolts),
-                         static_cast<double>(loadPacket.measuredCurrentAmps),
-                         static_cast<double>(loadPacket.measuredPowerWatts));
+                         static_cast<double>(loadPacket.nominalVoltageVolts),
+                         static_cast<double>(loadPacket.nominalCurrentAmps),
+                         static_cast<double>(loadPacket.nominalVoltageVolts * loadPacket.nominalCurrentAmps));
             }
 
             const bool sent = communication.sendToCentral(EspNowCommunication::MessageType::NODE_REPORT, packet);
@@ -780,10 +794,9 @@ void espNowCommunicationTask(void *parameter)
 
 
 /**
- * Watchdog/Diagnostics Task (Section 4.6.1, ~60s): reports link/sensor/
- * relay health (Node Link Loss handling — this Node holds its last
- * commanded relay state and keeps sensing locally the whole time a route
- * to Central is unavailable). Discovery retry itself is owned entirely by
+ * Watchdog/Diagnostics Task (Section 4.6.1, ~60s): reports link/relay
+ * health (Node Link Loss handling — this Node holds its last commanded relay
+ * state while a route to Central is unavailable). Discovery retry itself is owned entirely by
  * espNowCommunicationTask (Section "Smart Node Must Not Block On
  * Central"); this task only reports the link's current status.
  */
@@ -796,7 +809,6 @@ void watchdogTask(void *parameter)
 
         ESP_LOGI(TAG, "================ WATCHDOG ================");
         ESP_LOGI(TAG, "Upstream route: %s", communication.hasUpstreamNode() ? "OK" : "LOST (retried automatically)");
-        sensors.printDiagnosticReport();
         relays.printDiagnosticReport();
         sendIdentityReport();
         ESP_LOGI(TAG, "===========================================");
@@ -822,12 +834,13 @@ void printSmartBootSummary(const EspNowCommunication::MacAddress& localMac)
     ESP_LOGI(TAG, "Firmware Version      : %s", KILOWATTS_FIRMWARE_VERSION);
     ESP_LOGI(TAG, "Commissioning State   : %s", toText(identityStore.getLifecycleState()));
     ESP_LOGI(TAG, "Node Name             : %s", communication.getLocalNodeName());
-    ESP_LOGI(TAG, "Local Sensors         : %u", static_cast<unsigned int>(sensors.getNumberOfSensors()));
+    ESP_LOGI(TAG, "Per-load sensors      : NONE (ratings only; battery INA219 is at Central)");
     ESP_LOGI(TAG, "Local Branches        : %u", static_cast<unsigned int>(loadCount));
     ESP_LOGI(TAG, "Local Loads           : %u", static_cast<unsigned int>(loadCount));
     ESP_LOGI(TAG, "Upstream Route        : %s", communication.hasUpstreamNode() ? "KNOWN" : "NONE YET");
     ESP_LOGI(TAG, "Development Session   : %s", developmentSession.isActive() ? "ACTIVE" : "INACTIVE");
-    ESP_LOGI(TAG, "Physical Actuation    : ENABLED");
+    ESP_LOGI(TAG, "Verified Relay GPIOs  : %u (only these can actuate)",
+             static_cast<unsigned int>(SmartNodeConfig::getVerifiedRelayPinCount()));
     ESP_LOGI(TAG, "======================================================");
 }
 
@@ -841,8 +854,7 @@ void printSmartBootSummary(const EspNowCommunication::MacAddress& localMac)
  * DEV_SENSOR_INPUT_COMMAND/FACTORY_RESET_COMMAND would call - never a
  * second, divergent code path. Not a production control surface.
  *
- * Commands: dev_start | dev_set <hexI2cAddress> <voltage> <current> |
- * dev_clear <hexI2cAddress> | dev_end | factory_reset
+ * Commands: dev_start | dev_end | factory_reset
  */
 void consoleTask(void *parameter)
 {
@@ -850,7 +862,7 @@ void consoleTask(void *parameter)
 
     char line[160];
     ESP_LOGI(TAG, "CONSOLE: engineering test console ready "
-                  "(dev_start | dev_set <hexI2c> <V> <I> | dev_clear <hexI2c> | dev_end | factory_reset)");
+                  "(dev_start | dev_end | factory_reset)");
 
     while (true) {
         if (std::fgets(line, sizeof(line), stdin) == nullptr) {
@@ -866,10 +878,6 @@ void consoleTask(void *parameter)
             continue;
         }
 
-        unsigned int i2cAddress = 0U;
-        float voltageVolts = 0.0F;
-        float currentAmps = 0.0F;
-
         if (std::strcmp(line, "dev_start") == 0) {
             const DevCommandOutcome outcome = applyStartDevelopmentSession();
             ESP_LOGI(TAG, "CONSOLE: dev_start -> accepted=%s reason=%s", outcome.success ? "Yes" : "No", outcome.reason);
@@ -877,17 +885,6 @@ void consoleTask(void *parameter)
         } else if (std::strcmp(line, "dev_end") == 0) {
             const DevCommandOutcome outcome = applyEndDevelopmentSession();
             ESP_LOGI(TAG, "CONSOLE: dev_end -> accepted=%s reason=%s", outcome.success ? "Yes" : "No", outcome.reason);
-
-        } else if (std::sscanf(line, "dev_set %x %f %f", &i2cAddress, &voltageVolts, &currentAmps) == 3) {
-            const DevCommandOutcome outcome =
-                applySetSensorInput(static_cast<std::uint8_t>(i2cAddress), voltageVolts, currentAmps);
-            ESP_LOGI(TAG, "CONSOLE: dev_set 0x%02X -> accepted=%s reason=%s",
-                     i2cAddress, outcome.success ? "Yes" : "No", outcome.reason);
-
-        } else if (std::sscanf(line, "dev_clear %x", &i2cAddress) == 1) {
-            const DevCommandOutcome outcome = applyClearSensorOverride(static_cast<std::uint8_t>(i2cAddress));
-            ESP_LOGI(TAG, "CONSOLE: dev_clear 0x%02X -> accepted=%s reason=%s",
-                     i2cAddress, outcome.success ? "Yes" : "No", outcome.reason);
 
         } else if (std::strcmp(line, "factory_reset") == 0) {
             ESP_LOGW(TAG, "CONSOLE: factory_reset requested - rebooting now");
@@ -939,44 +936,48 @@ extern "C" void app_main()
     ESP_LOGI(TAG, "This Smart Node name: %s state=%s", communication.getLocalNodeName(),
              toText(identityStore.getLifecycleState()));
 
-    /*
-     * Section "Uncommissioned Node Reports NONE": a freshly flashed/reset
-     * Node has zero registered sensors, so its honest sensor input source
-     * is NONE - never DEVELOPMENT, never fabricated. Development Session
-     * per-sensor MeasurementSource (see INA219Monitor::getLastMeasurementSource())
-     * only becomes meaningful once a sensor is actually registered, which
-     * only ever happens through commissioning or an explicit
-     * DEV_SENSOR_INPUT_COMMAND.
-     */
-    ESP_LOGI(TAG, "SENSOR_INPUT_SOURCE: %s (sensors configured=%u)",
-             sensors.getNumberOfSensors() == 0U ? "NONE" : "SEE PER-SENSOR MEASUREMENT SOURCE",
-             static_cast<unsigned int>(sensors.getNumberOfSensors()));
-
     nodeMutex = xSemaphoreCreateMutex();
     identityMutex = xSemaphoreCreateMutex();
     relayCommandQueue = xQueueCreate(8U, sizeof(RelayCommandQueueItem));
     thisSmartNode = new Node(localMac);
 
-    initializeHardwareBus();
+    const bool hardwareConfigurationRestored = smartNodeConfigurationStore.loadPersisted();
+    HardwareConfigurationFailureReason restoreFailure = HardwareConfigurationFailureReason::NONE;
+    const bool canRestoreHardware =
+        identityStore.getLifecycleState() == NodeLifecycleState::COMMISSIONED ||
+        identityStore.getLifecycleState() == NodeLifecycleState::OPERATIONAL;
+    if (hardwareConfigurationRestored && canRestoreHardware &&
+        persistedRelayConfigurationMatchesBoardProfile()) {
+        if (!smartNodeConfigurationStore.applyPersistedConfigurations(
+                relays, *thisSmartNode, restoreFailure)) {
+            ESP_LOGE(TAG, "NVS_RESTORE: Smart Node hardware configuration could not be applied (reason=%u)",
+                     static_cast<unsigned int>(restoreFailure));
+        }
+    } else if (hardwareConfigurationRestored) {
+        ESP_LOGW(TAG, "NVS_RESTORE: retaining hardware configuration without applying it while Node is uncommissioned or the board profile is not verified");
+    }
+    ESP_LOGI(TAG, "NVS_RESTORE: hardwareConfiguration=%s configuredLoads=%u",
+             hardwareConfigurationRestored ? "RESTORED" : "ABSENT",
+             static_cast<unsigned int>(smartNodeConfigurationStore.getNumberOfConfigurations()));
+    ESP_LOGI(TAG, "LOAD_POWER_SOURCE: installer ratings only (no per-load INA219 on Smart Nodes)");
     sendIdentityReport();
 
     /*
      * Section "Smart Node Must Not Block On Central": local functionality
-     * (sensing, relay control, watchdog) starts immediately and
+     * (relay control and watchdog) starts immediately and
      * unconditionally — it never waits for a successful upstream ESP-NOW
      * discovery first. Discovery itself is retried asynchronously inside
      * espNowCommunicationTask() once it starts running, without blocking
-     * any other task; if Central stays unreachable, sensing/relay/
+     * any other task; if Central stays unreachable, relay/
      * watchdog simply keep running on their own with the last safe relay
      * state held.
      */
-    xTaskCreate(sensorAcquisitionTask, "sensor_acq", 4096U, nullptr, 5U, nullptr);
     xTaskCreate(relayControlTask, "relay_ctrl", 4096U, nullptr, 6U, nullptr);
     xTaskCreate(espNowCommunicationTask, "espnow_app", 4096U, nullptr, 5U, nullptr);
     xTaskCreate(watchdogTask, "watchdog", 3072U, nullptr, 2U, nullptr);
     xTaskCreate(consoleTask, "console", 4096U, nullptr, 3U, nullptr);
 
-    ESP_LOGI(TAG, "%s is ready: sensing, relay control and ESP-NOW tasks running", communication.getLocalNodeName());
+    ESP_LOGI(TAG, "%s is ready: relay control and ESP-NOW tasks running", communication.getLocalNodeName());
     printSmartBootSummary(localMac);
 }
 

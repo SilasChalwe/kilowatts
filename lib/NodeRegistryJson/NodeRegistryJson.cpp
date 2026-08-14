@@ -44,6 +44,18 @@ void appendEscapedJsonString(std::string& out, const char* value)
     out.push_back('"');
 }
 
+void appendRelayCapabilitiesJson(std::string& out, const NodeCommissioningRegistry::CommissioningRecord& record)
+{
+    out += "[";
+    for (std::size_t index = 0U; index < record.relayCapabilityCount; ++index) {
+        if (index > 0U) {
+            out += ",";
+        }
+        out += std::to_string(static_cast<unsigned int>(record.relayPins[index]));
+    }
+    out += "]";
+}
+
 } // namespace
 
 
@@ -106,6 +118,8 @@ std::string NodeRegistryJson::buildStateNodesJson(
         appendEscapedJsonString(json, record->firmwareVersion);
         json += ",\"chipModel\":";
         appendEscapedJsonString(json, record->chipModel);
+        json += ",\"relayCapabilities\":";
+        appendRelayCapabilitiesJson(json, *record);
 
         const CentralNodeRegistry::PlanningNode* planningNode =
             centralNodeRegistry.findNodeByMacAddress(record->macAddress);
@@ -164,7 +178,13 @@ std::string NodeRegistryJson::buildConfigNodesJson(
         json += toText(record->lifecycleState);
         json += "\",\"syncState\":\"";
         json += syncStateText(record->syncState);
-        json += "\"}";
+        json += "\",\"firmwareVersion\":";
+        appendEscapedJsonString(json, record->firmwareVersion);
+        json += ",\"chipModel\":";
+        appendEscapedJsonString(json, record->chipModel);
+        json += ",\"relayCapabilities\":";
+        appendRelayCapabilitiesJson(json, *record);
+        json += "}";
     }
 
     json += "]}";

@@ -41,11 +41,16 @@ Load fan(
 - **`LoadPower`** — the *configured* running/startup wattage used for
   planning (`startupWatts` must never be lower than `runningWatts`;
   `setPower()` rejects a violation).
-- **`LoadMeasurements`** — the *live* voltage/current/power most recently
-  measured for this Load (see `INA219Monitor`). `setMeasurements()`
-  rejects a non-finite or negative value rather than silently storing it.
-  `LoadMeasurements` and `LoadPower` are deliberately separate: a live
-  reading never overwrites the configured running/startup wattage.
+- **`LoadElectricalRatings`** — installer/nameplate voltage and current
+  used to derive the configured running wattage for planning. In the final
+  Kilowatts hardware design, Smart Nodes use this pair because the only
+  INA219 is on Central's battery bus. These values are estimates, not live
+  per-load consumption.
+- **`LoadMeasurements`** — a generic optional live voltage/current/power
+  record retained for hardware variants that actually measure individual
+  loads. `setMeasurements()` rejects a non-finite or negative value rather
+  than silently storing it. The current Smart-Node reporting path does not
+  populate it, so UI code must not display it as live data.
 - **`AutoSchedule`** — an optional preferred running time (`hour`,
   `minute`) for an Auto Load only; `setSchedule()` rejects the call when
   the Load is Fixed, and `setMode()` clears any schedule the moment a

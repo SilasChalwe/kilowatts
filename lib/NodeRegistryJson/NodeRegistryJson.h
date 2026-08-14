@@ -64,7 +64,8 @@ public:
     /**
      * Builds the retained kilowatts/v1/config/nodes JSON payload:
      * commissioned identity only (mac, role, name, lifecycleState,
-     * syncState) — no route/online/telemetry.
+     * syncState, firmwareVersion, chipModel and relay capabilities) — no
+     * route/online/telemetry.
      */
     static std::string buildConfigNodesJson(
         const NodeCommissioningRegistry& commissioningRegistry,

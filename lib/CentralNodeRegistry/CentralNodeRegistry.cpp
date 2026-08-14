@@ -30,6 +30,48 @@
 
 namespace kilowatts {
 
+namespace {
+
+std::size_t boundedStringLength(const char* value, std::size_t capacity)
+{
+    std::size_t length = 0U;
+    while (length < capacity && value[length] != '\0') {
+        ++length;
+    }
+    return length;
+}
+
+
+bool isValidMode(std::uint8_t rawMode)
+{
+    return rawMode == static_cast<std::uint8_t>(LoadMode::Fixed::OFF) ||
+           rawMode == static_cast<std::uint8_t>(LoadMode::Fixed::ON) ||
+           rawMode == static_cast<std::uint8_t>(LoadMode::Auto::OFF) ||
+           rawMode == static_cast<std::uint8_t>(LoadMode::Auto::ON);
+}
+
+
+bool isValidLoadReport(const LoadReportPacket& loadPacket)
+{
+    const std::size_t nameLength = boundedStringLength(loadPacket.name, sizeof(loadPacket.name));
+    const float plannedRunningWatts = loadPacket.nominalVoltageVolts * loadPacket.nominalCurrentAmps;
+
+    return nameLength > 0U && nameLength < sizeof(loadPacket.name) &&
+           isValidMode(loadPacket.mode) &&
+           loadPacket.priority <= 10U &&
+           (!loadPacket.scheduleEnabled ||
+            (loadPacket.scheduleHour <= 23U && loadPacket.scheduleMinute <= 59U)) &&
+           std::isfinite(loadPacket.nominalVoltageVolts) && loadPacket.nominalVoltageVolts > 0.0F &&
+           std::isfinite(loadPacket.nominalCurrentAmps) && loadPacket.nominalCurrentAmps > 0.0F &&
+           std::isfinite(plannedRunningWatts) && plannedRunningWatts > 0.0F &&
+           std::isfinite(loadPacket.startupWatts) && loadPacket.startupWatts >= plannedRunningWatts &&
+           std::isfinite(loadPacket.branchMaximumCurrentAmps) &&
+           loadPacket.branchMaximumCurrentAmps > 0.0F &&
+           loadPacket.availability <= static_cast<std::uint8_t>(LoadHealth::UNAVAILABLE);
+}
+
+} // namespace
+
 
 #ifdef ESP_PLATFORM
 static const char *TAG = "CENTRAL_NODE_REGISTRY";
@@ -80,6 +122,21 @@ void CentralNodeRegistry::addLocalCentralNode(
 
 void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::uint32_t nowMilliseconds)
 {
+    /*
+     * The fields reserve space for a future paged report protocol, but the
+     * current Smart and Central implementations support exactly one page.
+     * Rejecting an unsupported partial report prevents it from silently
+     * overwriting or pruning an otherwise valid planning topology.
+     */
+    if (packet.pageIndex != 0U || packet.totalPages != 1U) {
+#ifdef ESP_PLATFORM
+        ESP_LOGW(TAG, "Ignoring unsupported multi-page Node report page=%u total=%u",
+                 static_cast<unsigned int>(packet.pageIndex),
+                 static_cast<unsigned int>(packet.totalPages));
+#endif
+        return;
+    }
+
     PlanningNode *planningNode = findMutablePlanningNode(packet.nodeMacAddress);
 
     if (planningNode == nullptr) {
@@ -95,13 +152,25 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
         planningNode = &planningNodes_.back();
     }
 
-    planningNode->nodeName = packet.nodeName;
+    planningNode->nodeName = std::string(
+        packet.nodeName,
+        boundedStringLength(packet.nodeName, sizeof(packet.nodeName)));
     planningNode->nextHopToCentralMacAddress = packet.upstreamNodeMacAddress;
     planningNode->hopCountToCentral = packet.hopCountToCentral;
     planningNode->lastSeenMilliseconds = nowMilliseconds;
 
     for (std::size_t i = 0; i < packet.numberOfLoads && i < MAX_LOADS_PER_NODE_PACKET; ++i) {
         const LoadReportPacket& loadPacket = packet.loads[i];
+        if (!isValidLoadReport(loadPacket)) {
+#ifdef ESP_PLATFORM
+            ESP_LOGW(TAG, "Ignoring invalid Load report at index %u from Node %s",
+                     static_cast<unsigned int>(i), planningNode->nodeName.c_str());
+#endif
+            continue;
+        }
+
+        const float plannedRunningWatts =
+            loadPacket.nominalVoltageVolts * loadPacket.nominalCurrentAmps;
 
         /*
          * The same physical Load (this Node's MAC address + this relay
@@ -115,7 +184,10 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
             const bool added = planningNode->node.addLoad(Load(
                 Load::Id{packet.nodeMacAddress, loadPacket.relayPin},
                 loadPacket.name,
-                LoadPower{loadPacket.runningWatts, loadPacket.startupWatts},
+                LoadPower{
+                    plannedRunningWatts,
+                    loadPacket.startupWatts
+                },
                 loadPacket.priority,
                 static_cast<LoadMode::Value>(loadPacket.mode)
             ));
@@ -132,7 +204,10 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
         } else {
             existingLoad->setName(loadPacket.name);
             existingLoad->setMode(static_cast<LoadMode::Value>(loadPacket.mode));
-            existingLoad->setPower({loadPacket.runningWatts, loadPacket.startupWatts});
+            existingLoad->setPower({
+                plannedRunningWatts,
+                loadPacket.startupWatts
+            });
             existingLoad->setPriority(loadPacket.priority);
         }
 
@@ -151,10 +226,14 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
             loadPacket.scheduleMinute
         });
 
-        existingLoad->setMeasurements(LoadMeasurements{
-            loadPacket.measuredVoltageVolts,
-            loadPacket.measuredCurrentAmps,
-            loadPacket.measuredPowerWatts
+        /*
+         * Smart Nodes report installer/nameplate ratings, not per-load live
+         * readings. Preserve LoadMeasurements for actual sensor data only;
+         * the sole INA219 lives on Central's battery bus.
+         */
+        existingLoad->setElectricalRatings(LoadElectricalRatings{
+            loadPacket.nominalVoltageVolts,
+            loadPacket.nominalCurrentAmps
         });
 
         /*
@@ -199,16 +278,16 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
      * Load/Branch was removed on that Node, or - the case this phase
      * makes routine - a freshly (re)commissioned Node now legitimately
      * reports fewer Loads, down to zero, than it ever did before). Only
-     * safe when packet is a complete, single-page report: this project
-     * does not yet implement multi-page reassembly (see
-     * NodeReportPackets.h), so every real report today already satisfies
-     * this, and pruning against an incomplete page would otherwise wrongly
-     * delete Loads that simply live on a page not yet received.
+     * safe for a complete, single-page report. applyNodeReport() rejects
+     * any unsupported page before reaching this point, so pruning cannot
+     * delete Loads merely because a future partial report arrived.
      */
     if (packet.pageIndex == 0U && packet.totalPages == 1U) {
         std::vector<std::uint8_t> relayPinsStillReported;
         for (std::size_t i = 0; i < packet.numberOfLoads && i < MAX_LOADS_PER_NODE_PACKET; ++i) {
-            relayPinsStillReported.push_back(packet.loads[i].relayPin);
+            if (isValidLoadReport(packet.loads[i])) {
+                relayPinsStillReported.push_back(packet.loads[i].relayPin);
+            }
         }
 
         std::vector<std::uint8_t> relayPinsToRemove;

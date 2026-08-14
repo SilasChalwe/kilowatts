@@ -57,6 +57,36 @@ const MacAddress OTHER_MAC = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0x02};
 const MacAddress CENTRAL_MAC = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0x03};
 
 /**
+ * TEST 1A - BOARD CAPABILITY INVENTORY
+ *
+ * The installer portal must receive only the GPIOs the flashed Smart Node
+ * declared safe. This is a discovery fact and must refresh if a Node is
+ * reflashed with a corrected board profile.
+ */
+void testRelayCapabilities() {
+    printSection("TEST 1A - RELAY GPIO CAPABILITY INVENTORY");
+
+    NodeCommissioningRegistry registry;
+    const std::uint8_t firstProfile[] = {16U, 17U};
+    registry.recordDiscovered(SMART_MAC, NodeRole::SMART, "0.2.1", "esp32:2core",
+                              firstProfile, 2U, 1000U);
+
+    const NodeCommissioningRegistry::CommissioningRecord* first = registry.findByMac(SMART_MAC);
+    reportCheck("Discovery stores the number of declared safe relay GPIOs",
+                first != nullptr && first->relayCapabilityCount == 2U);
+    reportCheck("Discovery stores each declared safe relay GPIO in order",
+                first != nullptr && first->relayPins[0] == 16U && first->relayPins[1] == 17U);
+
+    const std::uint8_t correctedProfile[] = {18U};
+    registry.recordDiscovered(SMART_MAC, NodeRole::SMART, "0.2.2", "esp32:2core",
+                              correctedProfile, 1U, 2000U);
+    const NodeCommissioningRegistry::CommissioningRecord* refreshed = registry.findByMac(SMART_MAC);
+    reportCheck("A fresh identity report replaces stale relay capabilities",
+                refreshed != nullptr && refreshed->relayCapabilityCount == 1U &&
+                refreshed->relayPins[0] == 18U && refreshed->relayPins[1] == 0U);
+}
+
+/**
  * TEST 1 - DISCOVERY CREATES/REFRESHES A RECORD
  */
 void testDiscovery() {
@@ -262,6 +292,7 @@ int main() {
     std::printf("Institution: The Copperbelt University\n");
 
     testDiscovery();
+    testRelayCapabilities();
     testRegisterSelf();
     testFirstCommissioningRoundTrip();
     testFailedCommissioningRollsBack();

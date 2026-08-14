@@ -22,14 +22,11 @@
  * classic ESP32 has no Wi-Fi 6 radio) caps one physical message at
  * ESP_NOW_MAX_DATA_LEN = 250 bytes, so EspNowCommunication::MAX_PAYLOAD_SIZE
  * is a hard ceiling on every struct below (enforced by the static_asserts
- * at the bottom of this file). MAX_LOADS_PER_NODE_PACKET = 3 is exactly the
- * number of demonstration Loads the current physical Smart Node reports
- * (see include/SmartNodeConfig.h), and was sized so that report fits in a
- * single ESP-NOW message with headroom to spare. A future Node with more
- * Loads than fit in one message pages across several NodeReportPacket
- * messages sharing the same reportSequenceId (see pageIndex/totalPages
- * below) rather than the domain being limited to whatever fits in one
- * radio frame.
+ * at the bottom of this file). MAX_LOADS_PER_NODE_PACKET = 3 is the current
+ * configured-load limit and fits a complete report in one ESP-NOW message
+ * with headroom to spare. `pageIndex`/`totalPages` are reserved wire fields;
+ * the deployed Central and Smart firmware accept and emit only page 0 of 1
+ * until a future release implements complete multi-page reassembly.
  *
  * @author Chalwe Silas
  * @programme Final-Year Computer Engineering
@@ -51,10 +48,10 @@ namespace kilowatts {
 
 
 /**
- * One Node report page is kept small enough to fit inside one ESP-NOW
- * message (see the file-level comment above). A Node whose real Load
- * count exceeds this sends its report across multiple pages instead of
- * being limited to this many Loads in total.
+ * One complete Node report is kept small enough to fit inside one ESP-NOW
+ * message (see the file-level comment above). The current firmware supports
+ * at most this many configured Loads per Smart Node; it must not emit a
+ * partial/multi-page report until Central-side reassembly exists.
  */
 static constexpr std::size_t MAX_LOADS_PER_NODE_PACKET = 3U;
 
@@ -100,22 +97,23 @@ enum class LoadAvailability : std::uint8_t {
  * LoadReportPacket::relayPin} without this packet repeating the Node MAC
  * per Load.
  *
- * measuredVoltageVolts/measuredCurrentAmps/measuredPowerWatts are this
- * Load's latest *filtered* (EMA) INA219 measurement — see
- * lib/INA219Monitor — not the configured running/startup planning power
- * carried in runningWatts/startupWatts.
+ * nominalVoltageVolts/nominalCurrentAmps are installer-entered/nameplate
+ * ratings. Central derives planned running power as V × A; no duplicate
+ * power field travels over ESP-NOW. These facts are intentionally separate
+ * from a live sensor reading: the final hardware design has one INA219 at
+ * Central's battery bus and no per-load INA219 modules on Smart Nodes. The
+ * optimiser and UI must label the derived value as an estimate rather than
+ * live consumption.
  */
 struct LoadReportPacket {
     char name[16];
     std::uint8_t relayPin;
     std::uint8_t mode;
     std::uint16_t priority;
-    float runningWatts;
     float startupWatts;
     float branchMaximumCurrentAmps;
-    float measuredVoltageVolts;
-    float measuredCurrentAmps;
-    float measuredPowerWatts;
+    float nominalVoltageVolts;
+    float nominalCurrentAmps;
     std::uint8_t confirmedRelayState;   // 0 = OFF, 1 = ON (last GPIO read-back)
     std::uint8_t confirmedRelayStateValid; // Load::isConfirmedRelayStateValid(): 1 = trustworthy, 0 = unknown
     std::uint8_t scheduleEnabled;       // AutoSchedule::enabled
@@ -126,19 +124,16 @@ struct LoadReportPacket {
 
 
 /**
- * Wire layout for one Node's report, possibly one page of several.
+ * Wire layout for one complete Node report.
  *
  * upstreamNodeMacAddress is this Node's Next Hop to Central: the immediate
  * ESP32 it sends toward when a message needs to travel further toward
  * Central. It is not necessarily Central's own MAC address.
  *
- * reportSequenceId/pageIndex/totalPages let a Node's complete report span
- * more than one physical ESP-NOW message: every page of the same report
- * cycle carries the same reportSequenceId, pageIndex counts up from 0, and
- * totalPages is the page count the receiver should expect before treating
- * that reportSequenceId as fully received. With MAX_LOADS_PER_NODE_PACKET
- * Loads or fewer (the normal case for the current hardware), a report is
- * always exactly one page: pageIndex = 0, totalPages = 1.
+ * `pageIndex`/`totalPages` are reserved for a future protocol revision.
+ * The current implementation requires pageIndex = 0 and totalPages = 1;
+ * Central rejects any other values rather than applying an incomplete
+ * report.
  */
 struct NodeReportPacket {
     char nodeName[20];

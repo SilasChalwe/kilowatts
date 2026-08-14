@@ -28,10 +28,13 @@ Central, and a past event is not a current fact.
 `NodeCommissioningRegistry` (identity/lifecycle) joined with
 `CentralNodeRegistry` (route/online, `state/nodes` only) — see that
 module's own README for the state-vs-configuration split between the two
-topics. `commands/config` carries the commissioning-lifecycle operations
-this phase implements (`COMMISSION_NODE`, `RENAME_NODE`,
-`DECOMMISSION_NODE`); GPIO/I2C/Branch/Load configuration commands belong
-to later phases.
+topics. `commands/config` carries commissioning lifecycle operations
+(`COMMISSION_NODE`, `RENAME_NODE`, `DECOMMISSION_NODE`) and installer
+configuration (`CONFIGURE_LOAD`, `CONFIGURE_BATTERY_SENSOR`). Smart-node
+loads have no per-load INA219: the installer supplies nominal
+voltage/current, a branch limit and startup watts; Central derives the
+conservative planned running power. The only INA219 is commissioned
+separately on Central's battery bus.
 
 ## Responsibility
 
@@ -74,16 +77,14 @@ on `acks`:
 ```
 
 `status` is one of `ACCEPTED`/`APPLIED`/`REJECTED`/`FAILED` (see
-`AckStatus`) rather than a bare boolean, since a commissioning command's
-outcome genuinely has two phases: `handleConfigCommand()` publishes
-`ACCEPTED`/`REJECTED` synchronously (was the command valid and
-successfully dispatched toward the target Node), then a **second** ack for
-the same `commandId` follows once the Node's own `COMMISSION_ACK`/
-`DECOMMISSION_ACK` actually arrives over ESP-NOW, reporting `APPLIED`/
-`FAILED` — see `src/central/main.cpp`'s `espNowCommunicationTask()`. A
-`LOAD`/`SYSTEM` command has no such second phase (it applies synchronously
-within the handler itself), so its one ack is always `APPLIED`/`REJECTED`
-directly. `target` is JSON `null` when not applicable to that command.
+`AckStatus`) rather than a bare boolean. `COMMISSION_NODE`, `RENAME_NODE`
+and `CONFIGURE_LOAD` first publish `ACCEPTED`/`REJECTED`, then a **second**
+ack for the same `commandId` once the addressed Smart Node confirms over
+ESP-NOW. `CONFIGURE_BATTERY_SENSOR` and `DECOMMISSION_NODE` are complete
+once Central durably applies its local state, so their command ack is
+directly `APPLIED`/`REJECTED`; a later decommission reset ACK is diagnostic
+evidence about the Node itself. `LOAD`/`SYSTEM` commands also apply
+synchronously. `target` is JSON `null` when not applicable to that command.
 
 `publishEvent()` publishes one object to `events` — `eventType` (e.g.
 `"NODE_DISCOVERED"`, `"NODE_COMMISSIONED"`, `"NODE_OFFLINE"`), `target`

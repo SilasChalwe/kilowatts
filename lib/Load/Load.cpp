@@ -23,7 +23,8 @@ Load::Load(
     const std::string& name,
     LoadPower power,
     std::uint16_t priority,
-    LoadMode::Value mode
+    LoadMode::Value mode,
+    LoadElectricalRatings electricalRatings
 )
     : id_(id),
       name_(name),
@@ -34,11 +35,13 @@ Load::Load(
       health_(LoadHealth::AVAILABLE),
       lastBestFirstRejectionReason_(0U),
       power_{0.0F, 0.0F},
+      electricalRatings_{0.0F, 0.0F},
       priority_(priority),
       mode_(mode),
       schedule_{false, 0U, 0U}
 {
     setPower(power);
+    setElectricalRatings(electricalRatings);
 }
 
 
@@ -210,6 +213,34 @@ bool Load::setPower(LoadPower power)
 LoadPower Load::getPower() const
 {
     return power_;
+}
+
+
+bool Load::setElectricalRatings(LoadElectricalRatings electricalRatings)
+{
+    if (!std::isfinite(electricalRatings.nominalVoltageVolts) ||
+        !std::isfinite(electricalRatings.nominalCurrentAmps) ||
+        electricalRatings.nominalVoltageVolts < 0.0F ||
+        electricalRatings.nominalCurrentAmps < 0.0F) {
+        return false;
+    }
+
+    const bool bothUnset = electricalRatings.nominalVoltageVolts == 0.0F &&
+                           electricalRatings.nominalCurrentAmps == 0.0F;
+    const bool bothSet = electricalRatings.nominalVoltageVolts > 0.0F &&
+                         electricalRatings.nominalCurrentAmps > 0.0F;
+    if (!bothUnset && !bothSet) {
+        return false;
+    }
+
+    electricalRatings_ = electricalRatings;
+    return true;
+}
+
+
+LoadElectricalRatings Load::getElectricalRatings() const
+{
+    return electricalRatings_;
 }
 
 

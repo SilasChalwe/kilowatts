@@ -133,7 +133,8 @@ enum class SystemCommandAction : std::uint8_t {
     UNKNOWN = 0U,
     REQUEST_OPTIMIZATION_CYCLE = 1U,
     FACTORY_RESET_CENTRAL = 2U,
-    FACTORY_RESET_NODE = 3U
+    FACTORY_RESET_NODE = 3U,
+    APPLY_SAFETY_CONFIG = 4U
 };
 
 
@@ -150,6 +151,15 @@ struct SystemCommandRequest {
     char confirmText[32];
     Load::MacAddress targetNodeMacAddress;
     bool hasTargetNodeMacAddress;
+
+    /** Meaningful only for APPLY_SAFETY_CONFIG. */
+    bool hasSafetyPolicy;
+    float minimumStateOfChargePercent;
+    float warningStateOfChargePercent;
+    float targetRuntimeHours;
+    float safetyFactor;
+    float maximumBatteryDischargeCurrentAmps;
+    float maximumMainCurrentAmps;
 };
 
 
@@ -158,15 +168,18 @@ using SystemCommandHandler = LoadCommandResult (*)(void* context, const SystemCo
 
 /**
  * kilowatts/v1/commands/config supports the commissioning-lifecycle
- * operations this phase implements. GPIO/I2C/Branch/Load configuration
- * commands (SCAN_I2C, CREATE_BRANCH, ...) belong to later phases and are
- * not part of this enum yet.
+ * operations and runtime Smart-Node load commissioning. A load is never
+ * inferred from a relay pin: the complete relay, branch and installer-verified
+ * electrical rating facts must be supplied together by the installer portal.
+ * The only INA219 belongs to Central's separately commissioned battery bus.
  */
 enum class ConfigCommandAction : std::uint8_t {
     UNKNOWN = 0U,
     COMMISSION_NODE = 1U,
     RENAME_NODE = 2U,
-    DECOMMISSION_NODE = 3U
+    DECOMMISSION_NODE = 3U,
+    CONFIGURE_LOAD = 4U,
+    CONFIGURE_BATTERY_SENSOR = 5U
 };
 
 
@@ -182,16 +195,37 @@ struct ConfigCommandRequest {
 
     bool hasFriendlyName;
     char friendlyName[20];   // matches NodeCommissioningRegistry::FRIENDLY_NAME_BUFFER_SIZE / CommissionCommandPacket::friendlyName
+
+    /** Meaningful only for CONFIGURE_LOAD. */
+    bool hasLoadConfiguration;
+    char loadName[16];
+    std::uint8_t relayPin;
+    bool relayActiveHigh;
+    LoadMode::Value mode;
+    std::uint16_t priority;
+    float nominalVoltageVolts;
+    float nominalCurrentAmps;
+    float branchMaximumCurrentAmps;
+    float startupWatts;
+    AutoSchedule schedule;
+
+    /** Meaningful only for CONFIGURE_BATTERY_SENSOR (target is Central's MAC). */
+    bool hasBatterySensorConfiguration;
+    std::uint8_t batteryI2cAddress;
+    float batteryShuntResistanceOhms;
+    float batteryMaximumExpectedCurrentAmps;
+    float batteryEmaAlpha;
+    float batteryCapacityAmpHours;
+    float batteryInitialStateOfChargePercent;
 };
 
 
 /**
  * The handler's own return only reflects Central's immediate, local
- * outcome (was the command valid and, for COMMISSION_NODE/RENAME_NODE,
- * successfully dispatched toward the target Node) — see this header's
- * own file comment for how a commissioning command's later APPLIED/FAILED
- * outcome is published separately once the Node's own ESP-NOW
- * acknowledgement arrives.
+ * outcome. CONFIGURE_BATTERY_SENSOR and DECOMMISSION_NODE complete locally
+ * once Central has durably applied them; COMMISSION_NODE, RENAME_NODE and
+ * CONFIGURE_LOAD publish a later APPLIED/FAILED outcome only after the
+ * addressed Smart Node confirms over ESP-NOW.
  */
 using ConfigCommandHandler = LoadCommandResult (*)(void* context, const ConfigCommandRequest& request);
 

@@ -94,6 +94,7 @@ fabricating durable storage.
 
 This class does not perform ESP-NOW communication itself (`EspNowCommunication`,
 `CommissioningPackets`), does not decide *when* a commissioning/decommission
-command should be sent (`src/central/main.cpp`), does not know about GPIO/I2C/
-Branches/Loads (later phases), and does not calculate route/Hop Count/RSSI
+command should be sent (`src/central/main.cpp`), does not own GPIO, battery
+I2C, Branches or Loads (SmartNodeConfigurationStore clears a Node's local
+load configuration during confirmed decommission), and does not calculate route/Hop Count/RSSI
 or hold real `Node`/`Load` domain objects (`CentralNodeRegistry`).

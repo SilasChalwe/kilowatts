@@ -32,6 +32,7 @@
 #include <cstdio>
 
 using kilowatts::Load;
+using kilowatts::LoadElectricalRatings;
 using kilowatts::LoadHealth;
 using kilowatts::LoadMode;
 using kilowatts::LoadPower;
@@ -221,6 +222,32 @@ void testWireConfirmationValidityGatesWhetherConfirmedStateIsApplied() {
     reportCheck("...and remains valid", fan.isConfirmedRelayStateValid());
 }
 
+/**
+ * TEST 6 - INSTALLER RATINGS ARE DISTINCT FROM LIVE MEASUREMENTS
+ *
+ * The one-sensor design plans each Smart-node load from the installer
+ * voltage/current pair. That pair must accept only a complete, finite,
+ * positive rating (or the explicit legacy zero/zero absence), and must not
+ * be confused with the generic LoadMeasurements API.
+ */
+void testInstallerElectricalRatings() {
+    printSection("TEST 6 - INSTALLER ELECTRICAL RATINGS");
+
+    Load pump(Load::Id{DEMO_MAC, 21U}, "Pump", LoadPower{72.0F, 120.0F},
+              6U, LoadMode::Auto::OFF);
+
+    reportCheck("A complete nominal voltage/current pair is accepted",
+                pump.setElectricalRatings(LoadElectricalRatings{24.0F, 3.0F}));
+    const LoadElectricalRatings ratings = pump.getElectricalRatings();
+    reportCheck("The accepted installer ratings are retained exactly",
+                ratings.nominalVoltageVolts == 24.0F && ratings.nominalCurrentAmps == 3.0F);
+    reportCheck("A partial voltage/current rating is rejected",
+                !pump.setElectricalRatings(LoadElectricalRatings{24.0F, 0.0F}));
+    reportCheck("A rejected partial rating leaves the previous complete rating unchanged",
+                pump.getElectricalRatings().nominalVoltageVolts == 24.0F &&
+                pump.getElectricalRatings().nominalCurrentAmps == 3.0F);
+}
+
 } // namespace
 
 
@@ -230,6 +257,7 @@ int main() {
     testFailedCommandPreservesPreviousConfirmedState();
     testTargetStateIndependentOfConfiguredMode();
     testWireConfirmationValidityGatesWhetherConfirmedStateIsApplied();
+    testInstallerElectricalRatings();
 
     std::printf("\n======================================================================\n");
     std::printf("RESULTS: %zu passed, %zu failed\n", passedChecks, failedChecks);

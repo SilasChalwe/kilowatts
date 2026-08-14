@@ -100,7 +100,7 @@ const char* TopologyTree::rejectionReasonText(std::uint8_t reason)
 void TopologyTree::appendLoadJson(std::string& out, const Load& load)
 {
     const LoadPower power = load.getPower();
-    const LoadMeasurements measurements = load.getMeasurements();
+    const LoadElectricalRatings ratings = load.getElectricalRatings();
     const AutoSchedule schedule = load.getSchedule();
 
     out += "{";
@@ -120,11 +120,11 @@ void TopologyTree::appendLoadJson(std::string& out, const Load& load)
     out += load.isConfirmedRelayStateValid() ? "true" : "false";
     out += ",\"priority\":";
     out += std::to_string(static_cast<unsigned int>(load.getPriority()));
-    out += ",\"runningWatts\":" + std::to_string(static_cast<double>(power.runningWatts));
     out += ",\"startupWatts\":" + std::to_string(static_cast<double>(power.startupWatts));
-    out += ",\"measuredVoltageVolts\":" + std::to_string(static_cast<double>(measurements.voltageVolts));
-    out += ",\"measuredCurrentAmps\":" + std::to_string(static_cast<double>(measurements.currentAmps));
-    out += ",\"measuredPowerWatts\":" + std::to_string(static_cast<double>(measurements.powerWatts));
+    out += ",\"nominalVoltageVolts\":" + std::to_string(static_cast<double>(ratings.nominalVoltageVolts));
+    out += ",\"nominalCurrentAmps\":" + std::to_string(static_cast<double>(ratings.nominalCurrentAmps));
+    out += ",\"nominalPowerWatts\":" + std::to_string(static_cast<double>(power.runningWatts));
+    out += ",\"perLoadMeasurementAvailable\":false";
     out += ",\"scheduleEnabled\":";
     out += schedule.enabled ? "true" : "false";
     out += ",\"scheduleHour\":" + std::to_string(static_cast<unsigned int>(schedule.hour));
