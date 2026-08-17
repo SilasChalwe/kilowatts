@@ -57,7 +57,7 @@
 #include "RadioConfig.h"
 #include "RelayController.h"
 #include "SmartNodeConfig.h"
-#include "SmartNodeConfigurationStore.h"
+#include "NodeLoadHardwareStore.h"
 
 #include <cstdio>
 #include <cstring>
@@ -110,7 +110,7 @@ CurrentTimeProvider currentTimeProvider;
 RelayController relays;
 ChipInfo chipInfo;
 NodeIdentityStore identityStore;
-SmartNodeConfigurationStore smartNodeConfigurationStore;
+NodeLoadHardwareStore smartNodeConfigurationStore;
 
 /**
  * This Node's explicit runtime Development Session (Section "Development
@@ -345,6 +345,14 @@ void sendIdentityReport()
         packet.relayPins[index] = SmartNodeConfig::getVerifiedRelayPin(index);
     }
 
+    packet.freeHeapBytes = chipInfo.getFreeHeapBytes();
+    packet.minFreeHeapBytes = chipInfo.getMinFreeHeapBytes();
+    packet.flashSizeBytes = chipInfo.getFlashSizeBytes();
+    packet.psramSizeBytes = chipInfo.getPsramSizeBytes();
+    packet.siliconRevision = static_cast<std::uint16_t>(chipInfo.getSiliconRevision());
+    packet.cpuCores = static_cast<std::uint8_t>(chipInfo.getCpuCores());
+    chipInfo.getResetReasonText(packet.resetReason, sizeof(packet.resetReason));
+
     const bool sent = communication.sendToCentral(EspNowCommunication::MessageType::IDENTITY_REPORT, packet);
     ESP_LOGI(TAG, "IDENTITY_REPORT name='%s' state=%s %s", communication.getLocalNodeName(),
              toText(lifecycleState), sent ? "SENT" : "FAILED (no upstream route yet)");
@@ -442,7 +450,7 @@ HardwareConfigurationFailureReason applyConfigureLoadCommand(const ConfigureLoad
         return HardwareConfigurationFailureReason::UNSUPPORTED_RELAY_PIN;
     }
 
-    SmartNodeConfigurationStore::LoadConfiguration configuration{};
+    NodeLoadHardwareStore::LoadConfiguration configuration{};
     std::memcpy(configuration.name, command.loadName, sizeof(configuration.name));
     configuration.name[sizeof(configuration.name) - 1U] = '\0';
     configuration.relayPin = command.relayPin;
@@ -477,7 +485,7 @@ bool persistedRelayConfigurationMatchesBoardProfile()
 {
     for (std::size_t index = 0U;
          index < smartNodeConfigurationStore.getNumberOfConfigurations(); ++index) {
-        const SmartNodeConfigurationStore::LoadConfiguration* configuration =
+        const NodeLoadHardwareStore::LoadConfiguration* configuration =
             smartNodeConfigurationStore.getConfiguration(index);
         if (configuration != nullptr &&
             !SmartNodeConfig::isVerifiedRelayPin(configuration->relayPin)) {

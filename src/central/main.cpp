@@ -74,6 +74,7 @@
 #include "Node.h"
 #include "NodeCommissioningRegistry.h"
 #include "NodeLifecycle.h"
+#include "NodeLoadHardwareStore.h"
 #include "NodeReportPackets.h"
 #include "NodeRegistryJson.h"
 #include "PowerBudgetCalculator.h"
@@ -82,7 +83,9 @@
 #include "RelayController.h"
 #include "SystemStateJson.h"
 #include "TopologyTree.h"
+#include "WiFiCredentialsStore.h"
 #include "WiFiManager.h"
+#include "WiFiProvisioningPortal.h"
 
 #include <algorithm>
 #include <cmath>
@@ -120,6 +123,17 @@ namespace {
 EspNowCommunication communication(kilowatts::KILOWATTS_RADIO_CHANNEL);
 CurrentTimeProvider currentTimeProvider;
 WiFiManager wifiManager(kilowatts::KILOWATTS_RADIO_CHANNEL);
+WiFiCredentialsStore wifiCredentialsStore;
+WiFiProvisioningPortal wifiProvisioningPortal;
+
+/*
+ * How many consecutive failed WiFiManager reconnect attempts are tolerated
+ * before the self-hosted setup Access Point comes up (see watchdogTask()).
+ * Deliberately more than one transient failure (a neighbour's AP briefly
+ * busy, a missed scan window) so the portal only appears once it is clear
+ * the configured credentials genuinely cannot associate.
+ */
+constexpr std::uint32_t WIFI_PROVISIONING_TRIGGER_ATTEMPT_COUNT = 3U;
 MqttManager mqttManager(CentralNodeConfig::MQTT_TOPIC_NAMESPACE, CentralNodeConfig::MQTT_DEVICE_ID,
                          CentralNodeConfig::MQTT_SCHEMA_VERSION);
 
@@ -132,6 +146,20 @@ CentralNodeRegistry registry;
 RelayCommandDispatcher relayCommandDispatcher;
 LoadScheduleEvaluator scheduleEvaluator;
 ChipInfo chipInfo;
+
+/**
+ * Central's own local Node, owning whatever Loads are directly wired to
+ * Central's own relay pins (distinct from the Loads Central learns about
+ * remotely from Smart Nodes over ESP-NOW). Node has no default
+ * constructor (a Node's MAC is fixed at construction), so this starts
+ * with a placeholder all-zero MAC and is replaced with the real one in
+ * configureLocalHardware() the moment the real local MAC is known -
+ * exactly once, at boot, before anything else can reference it.
+ */
+Node centralNode(EspNowCommunication::MacAddress{});
+
+/** Persists Central's own local Load/relay hardware configuration - see NodeLoadHardwareStore's own README. */
+NodeLoadHardwareStore centralLoadHardwareStore;
 
 /**
  * Central's authoritative identity/lifecycle record for every Node it
@@ -360,26 +388,85 @@ bool sameBatterySensorConfiguration(
            std::fabs(first.maximumExpectedCurrentAmps - second.maximumExpectedCurrentAmps) <= EPSILON &&
            std::fabs(first.emaAlpha - second.emaAlpha) <= EPSILON &&
            std::fabs(first.batteryCapacityAmpHours - second.batteryCapacityAmpHours) <= EPSILON &&
-           std::fabs(first.initialStateOfChargePercent - second.initialStateOfChargePercent) <= EPSILON;
+           std::fabs(first.initialStateOfChargePercent - second.initialStateOfChargePercent) <= EPSILON &&
+           std::fabs(first.nominalVoltageVolts - second.nominalVoltageVolts) <= EPSILON;
 }
 
 
 /**
- * Initializes Central's own I2C bus and registers Central's own
- * (currently Load-less) local Node. A freshly flashed/uncommissioned
- * Central has zero local Loads/Branches (Section "New Central Boot") and
- * zero configured sensors, including its own battery-bus INA219 (Section
- * "Remove Automatic Development Battery Input") — batterySensorConfigured
- * stays false until an installer command registers and verifies one for
- * real. This file no longer defines any local Load or battery sensor address
- * here.
+ * Initializes Central's own I2C bus and registers Central's own local
+ * Node, restoring any local Loads an installer has previously configured
+ * on Central's own relay pins (see NodeLoadHardwareStore). A freshly
+ * flashed/uncommissioned Central has zero local Loads/Branches (Section
+ * "New Central Boot") and zero configured sensors, including its own
+ * battery-bus INA219 (Section "Remove Automatic Development Battery
+ * Input") — batterySensorConfigured stays false until an installer
+ * command registers and verifies one for real.
  */
 void configureLocalHardware(const EspNowCommunication::MacAddress& localMac)
 {
     sensors.initializeBus(CentralNodeConfig::i2cBusConfiguration());
 
-    const Node centralNode(localMac);
+    centralNode = Node(localMac);
+
+    /*
+     * Same board-safety contract as Smart Node's own
+     * persistedRelayConfigurationMatchesBoardProfile(): a persisted relay
+     * pin from a previous flash must never be trusted blindly if this
+     * image's board profile no longer declares it safe.
+     * commissioningRegistry.registerSelf() has not run yet at this point
+     * in boot, so this checks CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS
+     * directly rather than going through nodeDeclaresRelayPin()/a
+     * commissioning record.
+     */
+    const bool hardwareConfigurationRestored = centralLoadHardwareStore.loadPersisted();
+    bool boardProfileMatches = true;
+    for (std::size_t index = 0U; index < centralLoadHardwareStore.getNumberOfConfigurations(); ++index) {
+        const NodeLoadHardwareStore::LoadConfiguration* configuration = centralLoadHardwareStore.getConfiguration(index);
+        if (configuration == nullptr) {
+            continue;
+        }
+        bool declared = false;
+        for (const std::uint8_t pin : CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS) {
+            if (pin == configuration->relayPin) {
+                declared = true;
+                break;
+            }
+        }
+        if (!declared) {
+            ESP_LOGE(TAG,
+                     "NVS_RESTORE: configured local relay GPIO %u is not declared safe by this flashed board profile",
+                     static_cast<unsigned int>(configuration->relayPin));
+            boardProfileMatches = false;
+            break;
+        }
+    }
+
+    if (hardwareConfigurationRestored && boardProfileMatches) {
+        HardwareConfigurationFailureReason restoreFailureReason = HardwareConfigurationFailureReason::NONE;
+        if (!centralLoadHardwareStore.applyPersistedConfigurations(relays, centralNode, restoreFailureReason)) {
+            ESP_LOGE(TAG, "Failed to restore Central's persisted local Load configuration: %s",
+                     hardwareConfigurationFailureText(restoreFailureReason));
+        }
+    } else if (hardwareConfigurationRestored) {
+        ESP_LOGW(TAG, "NVS_RESTORE: retaining Central local Load configuration without applying it "
+                      "- board profile is not verified");
+    }
+
     registry.addLocalCentralNode(CentralNodeConfig::CENTRAL_NODE_NAME, centralNode, 0U);
+
+    /*
+     * addLocalCentralNode() must run first (setLocalCentralBranchMaximumCurrentAmps()
+     * is rejected otherwise) - without this loop, a restored local Load's
+     * I_branch,max would stay unknown to BestFirstSearch until an
+     * installer reconfigured it again after every reboot.
+     */
+    for (std::size_t index = 0U; index < centralLoadHardwareStore.getNumberOfConfigurations(); ++index) {
+        const NodeLoadHardwareStore::LoadConfiguration* configuration = centralLoadHardwareStore.getConfiguration(index);
+        if (configuration != nullptr && centralNode.getLoadByRelayPin(configuration->relayPin) != nullptr) {
+            registry.setLocalCentralBranchMaximumCurrentAmps(configuration->relayPin, configuration->branchMaximumCurrentAmps);
+        }
+    }
 }
 
 
@@ -402,16 +489,35 @@ CentralConfigurationStore::SafetyPolicy effectiveSafetyPolicy()
 }
 
 
+/**
+ * The installer-entered nameplate voltage (see CentralConfigurationStore's
+ * CONFIGURE_BATTERY_SENSOR command) whenever a battery sensor has been
+ * commissioned; CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS is only
+ * ever used before that, on a never-commissioned device, or wherever a
+ * live voltage reading is temporarily unavailable/invalid. Firmware never
+ * assumes a fixed nameplate voltage for a real, commissioned battery.
+ */
+float configuredOrDefaultNominalVoltageVolts()
+{
+    const CentralConfigurationStore::BatterySensorConfiguration& batterySensor =
+        centralConfigurationStore.getConfiguration().batterySensor;
+    return batterySensor.configured ? batterySensor.nominalVoltageVolts : CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS;
+}
+
+
 PowerBudgetCalculator::Inputs configuredPowerBudgetInputs(
     float stateOfChargePercent, float batteryBusVoltageVolts,
     const CentralConfigurationStore::SafetyPolicy& policy)
 {
+    const CentralConfigurationStore::BatterySensorConfiguration& batterySensor =
+        centralConfigurationStore.getConfiguration().batterySensor;
+
     PowerBudgetCalculator::Inputs inputs{};
     inputs.stateOfChargePercent = stateOfChargePercent;
     inputs.minimumStateOfChargePercent = policy.minimumStateOfChargePercent;
-    inputs.nominalBatteryVoltageVolts = CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS;
-    inputs.batteryCapacityAmpHours = centralConfigurationStore.getConfiguration().batterySensor.configured
-        ? centralConfigurationStore.getConfiguration().batterySensor.batteryCapacityAmpHours
+    inputs.nominalBatteryVoltageVolts = configuredOrDefaultNominalVoltageVolts();
+    inputs.batteryCapacityAmpHours = batterySensor.configured
+        ? batterySensor.batteryCapacityAmpHours
         : CentralNodeConfig::BATTERY_CAPACITY_AMP_HOURS;
     inputs.targetRuntimeHours = policy.targetRuntimeHours;
     inputs.batteryBusVoltageVolts = batteryBusVoltageVolts;
@@ -796,6 +902,34 @@ void applyFixedLoadTargets(LoadFilter& loadFilter, float availablePowerWatts, st
 }
 
 
+/*
+ * MqttManager::begin()'s own documented contract (see MqttManager.h) is
+ * that the caller starts it only once Wi-Fi actually has an IP address -
+ * starting it unconditionally at boot made it dial a broker over a
+ * network that was not there yet (repeated esp-tls/getaddrinfo failures
+ * while Wi-Fi was still disconnected or the setup Access Point was up).
+ * This is therefore a one-shot trigger, checked every optimisation cycle:
+ * the moment WiFiManager first reports a real IP, MQTT starts exactly
+ * once for the rest of this boot. esp-mqtt handles its own reconnection
+ * internally afterwards, so no equivalent stop/restart is needed if
+ * Wi-Fi later drops and comes back.
+ */
+void checkMqttStartTrigger()
+{
+    static bool mqttStarted = false;
+
+    if (!mqttStarted && wifiManager.isConnected()) {
+        mqttStarted = true;
+        ESP_LOGI(TAG, "MQTT_START: Wi-Fi connected; starting MQTT client");
+        if (!mqttManager.begin(MqttManager::Credentials{
+                Secrets::MQTT_BROKER_HOST, Secrets::MQTT_BROKER_PORT, Secrets::MQTT_BROKER_USE_TLS,
+                Secrets::MQTT_USERNAME, Secrets::MQTT_PASSWORD})) {
+            ESP_LOGW(TAG, "MQTT did not start; continuing with local-only control");
+        }
+    }
+}
+
+
 /**
  * Optimisation Task (Section 4.6.1, nominal period 5s, also woken
  * immediately by optimizationTriggerSemaphore): the complete planning
@@ -968,99 +1102,125 @@ void runOptimizationCycle()
     /* Fixed Loads are never Best-First Search candidates; their target (including critical protection) is decided independently. */
     applyFixedLoadTargets(loadFilter, availablePowerWattsForPlanning, nowMilliseconds);
 
-    BestFirstSearch search;
-    search.setSearchScoreWeights(CentralNodeConfig::bestFirstSearchWeights());
+    /*
+     * Best-First Search has nothing to search over when there are zero
+     * Auto Load candidates (Fixed Loads are never BFS candidates - their
+     * targets were already decided above by applyFixedLoadTargets()), so
+     * it is not even constructed in that case: constructing it alone logs
+     * unconditionally (BestFirstSearch's constructor), which would
+     * otherwise print a full "created / weights / search started /
+     * running / completed" sequence every single optimisation cycle for
+     * no reason on a system with no Auto Loads configured yet.
+     * remainingPowerWattsForState/powerConsumedByActiveLoadsWatts default to
+     * exactly what a search that started but never admitted anything
+     * would report anyway (P_remaining = the full Auto-load budget,
+     * P_committed = Fixed-only power) so downstream state/logging stays
+     * correct either way.
+     */
+    const std::size_t autoCandidateLoadCount = loadFilter.getNumberOfAutoCandidateLoads();
+    float remainingPowerWattsForState = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
+    float powerConsumedByActiveLoadsWatts = availablePowerManager.getFixedOnRunningPowerWatts();
 
-    BestFirstSearch::ElectricalPlanningState planningState{};
-    planningState.stateOfChargePercent = stateOfChargePercent;
-    planningState.minimumStateOfChargePercent = safetyPolicy.minimumStateOfChargePercent;
-    planningState.warningStateOfChargePercent = safetyPolicy.warningStateOfChargePercent;
-    planningState.batteryBusVoltageVolts = batteryVoltageVolts > 0.0F ? batteryVoltageVolts : CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS;
-    planningState.maximumBatteryPowerWatts = maximumBatteryPowerWattsForPlanning;
-    planningState.maximumMainCurrentAmps = safetyPolicy.maximumMainCurrentAmps;
-    planningState.totalAvailablePowerWatts = availablePowerManager.getTotalAvailablePowerWatts();
-    planningState.powerAvailableForAutoLoadsWatts = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
-    planningState.initialCommittedPowerWatts = availablePowerManager.getFixedOnRunningPowerWatts();
+    if (autoCandidateLoadCount == 0U) {
+        ESP_LOGI(TAG, "Best-First Search skipped this cycle: no Auto Load candidates configured");
+    } else {
+        BestFirstSearch search;
+        search.setSearchScoreWeights(CentralNodeConfig::bestFirstSearchWeights());
 
-    const bool searchStarted = search.startSearch(planningState);
+        BestFirstSearch::ElectricalPlanningState planningState{};
+        planningState.stateOfChargePercent = stateOfChargePercent;
+        planningState.minimumStateOfChargePercent = safetyPolicy.minimumStateOfChargePercent;
+        planningState.warningStateOfChargePercent = safetyPolicy.warningStateOfChargePercent;
+        planningState.batteryBusVoltageVolts = batteryVoltageVolts > 0.0F ? batteryVoltageVolts : configuredOrDefaultNominalVoltageVolts();
+        planningState.maximumBatteryPowerWatts = maximumBatteryPowerWattsForPlanning;
+        planningState.maximumMainCurrentAmps = safetyPolicy.maximumMainCurrentAmps;
+        planningState.totalAvailablePowerWatts = availablePowerManager.getTotalAvailablePowerWatts();
+        planningState.powerAvailableForAutoLoadsWatts = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
+        planningState.initialCommittedPowerWatts = availablePowerManager.getFixedOnRunningPowerWatts();
 
-    if (searchStarted) {
-        for (std::size_t i = 0U; i < loadFilter.getNumberOfAutoCandidateLoads(); ++i) {
-            const Load *autoLoad = loadFilter.getAutoCandidateLoad(i);
-            if (autoLoad == nullptr) {
-                continue;
+        const bool searchStarted = search.startSearch(planningState);
+
+        if (searchStarted) {
+            for (std::size_t i = 0U; i < loadFilter.getNumberOfAutoCandidateLoads(); ++i) {
+                const Load *autoLoad = loadFilter.getAutoCandidateLoad(i);
+                if (autoLoad == nullptr) {
+                    continue;
+                }
+
+                if (!isLoadEligibleForNewCommandsThisCycle(*autoLoad, nowMilliseconds)) {
+                    /* Sections 7 & 8: a stale/offline Node or a faulted/unavailable Load is never a new BFS candidate. */
+                    continue;
+                }
+
+                const BestFirstSearch::BranchId branchId{autoLoad->getMacAddress(), autoLoad->getRelayPin()};
+
+                float branchMaximumCurrentAmps = 0.0F;
+                registry.findBranchMaximumCurrentAmps(autoLoad->getMacAddress(), autoLoad->getRelayPin(), branchMaximumCurrentAmps);
+
+                search.registerBranch(branchId, 0.0F, branchMaximumCurrentAmps);
+
+                LoadScheduleEvaluation evaluation{};
+                float schedulePenalty = 0.0F;
+                if (scheduleEvaluator.evaluateSchedule(*autoLoad, currentTimeProvider, evaluation)) {
+                    schedulePenalty = evaluation.futureSchedulePenalty;
+                }
+
+                search.addLoad(*autoLoad, branchId, schedulePenalty);
             }
 
-            if (!isLoadEligibleForNewCommandsThisCycle(*autoLoad, nowMilliseconds)) {
-                /* Sections 7 & 8: a stale/offline Node or a faulted/unavailable Load is never a new BFS candidate. */
-                continue;
+            search.run();
+
+            for (std::size_t i = 0U; i < search.getNumberOfLoadsAdded(); ++i) {
+                const Load *searchedLoad = search.getLoad(i);
+                if (searchedLoad == nullptr) {
+                    continue;
+                }
+
+                Load *mutableLoad = registry.findMutableLoad(searchedLoad->getMacAddress(), searchedLoad->getRelayPin());
+                if (mutableLoad == nullptr) {
+                    continue;
+                }
+
+                const bool selected = search.isLoadSelectedToBeOn(i);
+                mutableLoad->setLastBestFirstRejectionReason(search.getLoadSelectionRejectionReason(i));
+
+                /*
+                 * Records the Best-First decision as this cycle's *target*
+                 * relay state only (Section "Fix Configured Load Mode Vs
+                 * Algorithm Target State") — an Auto Load's configured
+                 * AUTO_ON/AUTO_OFF mode (getMode()) is a user/system setting
+                 * that Best-First Search's per-cycle selection/rejection must
+                 * never overwrite.
+                 */
+                mutableLoad->setTargetRelayState(selected);
             }
-
-            const BestFirstSearch::BranchId branchId{autoLoad->getMacAddress(), autoLoad->getRelayPin()};
-
-            float branchMaximumCurrentAmps = 0.0F;
-            registry.findBranchMaximumCurrentAmps(autoLoad->getMacAddress(), autoLoad->getRelayPin(), branchMaximumCurrentAmps);
-
-            search.registerBranch(branchId, 0.0F, branchMaximumCurrentAmps);
-
-            LoadScheduleEvaluation evaluation{};
-            float schedulePenalty = 0.0F;
-            if (scheduleEvaluator.evaluateSchedule(*autoLoad, currentTimeProvider, evaluation)) {
-                schedulePenalty = evaluation.futureSchedulePenalty;
-            }
-
-            search.addLoad(*autoLoad, branchId, schedulePenalty);
-        }
-
-        search.run();
-
-        for (std::size_t i = 0U; i < search.getNumberOfLoadsAdded(); ++i) {
-            const Load *searchedLoad = search.getLoad(i);
-            if (searchedLoad == nullptr) {
-                continue;
-            }
-
-            Load *mutableLoad = registry.findMutableLoad(searchedLoad->getMacAddress(), searchedLoad->getRelayPin());
-            if (mutableLoad == nullptr) {
-                continue;
-            }
-
-            const bool selected = search.isLoadSelectedToBeOn(i);
-            mutableLoad->setLastBestFirstRejectionReason(search.getLoadSelectionRejectionReason(i));
 
             /*
-             * Records the Best-First decision as this cycle's *target*
-             * relay state only (Section "Fix Configured Load Mode Vs
-             * Algorithm Target State") — an Auto Load's configured
-             * AUTO_ON/AUTO_OFF mode (getMode()) is a user/system setting
-             * that Best-First Search's per-cycle selection/rejection must
-             * never overwrite.
+             * Section "Preserve The Exact Best-First ON Order": admitted Auto
+             * Loads' ON commands must be dispatched in exactly the order
+             * run() extracted them from OPEN — getAdmittedLoad() is the only
+             * source of that order; reconstructing it from registry/Node/MAC
+             * traversal order would silently discard it.
              */
-            mutableLoad->setTargetRelayState(selected);
-        }
+            for (std::size_t k = 0U; k < search.getNumberOfAdmittedLoads(); ++k) {
+                const Load *admittedLoad = search.getAdmittedLoad(k);
+                if (admittedLoad == nullptr || !isLoadEligibleForNewCommandsThisCycle(*admittedLoad, nowMilliseconds)) {
+                    continue;
+                }
 
-        /*
-         * Section "Preserve The Exact Best-First ON Order": admitted Auto
-         * Loads' ON commands must be dispatched in exactly the order
-         * run() extracted them from OPEN — getAdmittedLoad() is the only
-         * source of that order; reconstructing it from registry/Node/MAC
-         * traversal order would silently discard it.
-         */
-        for (std::size_t k = 0U; k < search.getNumberOfAdmittedLoads(); ++k) {
-            const Load *admittedLoad = search.getAdmittedLoad(k);
-            if (admittedLoad == nullptr || !isLoadEligibleForNewCommandsThisCycle(*admittedLoad, nowMilliseconds)) {
-                continue;
+                admittedLoadIds.push_back(AdmittedTarget{admittedLoad->getMacAddress(), admittedLoad->getRelayPin()});
+
+                targets.push_back(RelayCommandDispatcher::RelayTarget{
+                    admittedLoad->getMacAddress(), admittedLoad->getRelayPin(), true,
+                    admittedLoad->getConfirmedRelayState(), admittedLoad->isConfirmedRelayStateValid()
+                });
             }
 
-            admittedLoadIds.push_back(AdmittedTarget{admittedLoad->getMacAddress(), admittedLoad->getRelayPin()});
-
-            targets.push_back(RelayCommandDispatcher::RelayTarget{
-                admittedLoad->getMacAddress(), admittedLoad->getRelayPin(), true,
-                admittedLoad->getConfirmedRelayState(), admittedLoad->isConfirmedRelayStateValid()
-            });
+            remainingPowerWattsForState = search.getRemainingPowerWatts();
+            powerConsumedByActiveLoadsWatts = search.getCommittedPowerWatts();
+        } else {
+            ESP_LOGW(TAG, "Best-First Search did not start this cycle (invalid planning state)");
         }
-    } else {
-        ESP_LOGW(TAG, "Best-First Search did not start this cycle (invalid planning state)");
     }
 
     /*
@@ -1207,7 +1367,7 @@ void runOptimizationCycle()
             candidateRunningWatts = load->getPower().runningWatts;
 
             const float liveVoltageVolts = latestBatteryMeasurements.voltageVolts > 0.0F
-                ? latestBatteryMeasurements.voltageVolts : CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS;
+                ? latestBatteryMeasurements.voltageVolts : configuredOrDefaultNominalVoltageVolts();
 
             float branchMaximumCurrentAmps = 0.0F;
             registry.findBranchMaximumCurrentAmps(target.nodeMacAddress, target.relayPin, branchMaximumCurrentAmps);
@@ -1272,8 +1432,8 @@ void runOptimizationCycle()
         systemState.availablePowerWatts = availablePowerManager.getTotalAvailablePowerWatts();
         systemState.fixedOnRunningPowerWatts = availablePowerManager.getFixedOnRunningPowerWatts();
         systemState.powerAvailableForAutoLoadsWatts = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
-        systemState.remainingPowerWatts = search.getRemainingPowerWatts();
-        systemState.committedPowerWatts = search.getCommittedPowerWatts();
+        systemState.remainingPowerWatts = remainingPowerWattsForState;
+        systemState.committedPowerWatts = powerConsumedByActiveLoadsWatts;
         systemState.wifiConnected = wifiManager.isConnected();
         systemState.wifiStateText = wifiStateText(wifiManager.getState());
         systemState.mqttConnected = mqttManager.isConnected();
@@ -1293,7 +1453,7 @@ void runOptimizationCycle()
 
         const std::string systemJson = SystemStateJson::build(systemState, CentralNodeConfig::MQTT_SCHEMA_VERSION);
         const std::string treeJson = TopologyTree::buildTreeJson(
-            registry, CentralNodeConfig::MQTT_SCHEMA_VERSION,
+            registry, commissioningRegistry, CentralNodeConfig::MQTT_SCHEMA_VERSION,
             nowMilliseconds, /* onlineTimeoutMilliseconds */ CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS);
         const std::string loadsJson = TopologyTree::buildLoadsJson(registry, CentralNodeConfig::MQTT_SCHEMA_VERSION);
         const std::string stateNodesJson = NodeRegistryJson::buildStateNodesJson(
@@ -1318,11 +1478,22 @@ void runOptimizationCycle()
         }
     }
 
-    ESP_LOGI(TAG, "Optimisation cycle complete: SoC=%.1f%% Pavailable=%.1fW Premaining=%.1fW Pcommitted=%.1fW",
+    if (batterySensorConfigured) {
+        ESP_LOGI(TAG, "Battery: V=%.2fV I=%.2fA P=%.1fW SoC=%.1f%% (source=%s)",
+                 static_cast<double>(batteryVoltageVolts), static_cast<double>(batteryCurrentAmps),
+                 static_cast<double>(batteryVoltageVolts * batteryCurrentAmps),
+                 static_cast<double>(stateOfChargePercent), toText(batteryStateOfCharge.getSource()));
+    } else {
+        ESP_LOGI(TAG, "Battery: NOT CONFIGURED - no INA219 sensor commissioned for the battery bus yet");
+    }
+
+    ESP_LOGI(TAG, "Optimisation cycle complete: SoC=%.1f%% Pavailable=%.1fW Premaining=%.1fW "
+                  "PowerConsumedByActiveLoads=%.1fW PowerConsumedByFixedLoads=%.1fW",
              static_cast<double>(stateOfChargePercent),
              static_cast<double>(availablePowerManager.getTotalAvailablePowerWatts()),
-             static_cast<double>(search.getRemainingPowerWatts()),
-             static_cast<double>(search.getCommittedPowerWatts()));
+             static_cast<double>(remainingPowerWattsForState),
+             static_cast<double>(powerConsumedByActiveLoadsWatts),
+             static_cast<double>(availablePowerManager.getFixedOnRunningPowerWatts()));
 }
 
 
@@ -1332,6 +1503,7 @@ void optimizationTask(void *parameter)
 
     while (true) {
         xSemaphoreTake(optimizationTriggerSemaphore, pdMS_TO_TICKS(CentralNodeConfig::OPTIMIZATION_PERIOD_MILLISECONDS));
+        checkMqttStartTrigger();
         runOptimizationCycle();
     }
 }
@@ -1508,6 +1680,17 @@ void espNowCommunicationTask(void *parameter)
                 isNewNode = commissioningRegistry.recordDiscovered(
                     originMac, static_cast<NodeRole>(packet.role), packet.firmwareVersion, packet.chipModel,
                     packet.relayPins.data(), packet.relayCapabilityCount, nowMilliseconds);
+
+                NodeCommissioningRegistry::Diagnostics diagnostics{};
+                diagnostics.freeHeapBytes = packet.freeHeapBytes;
+                diagnostics.minFreeHeapBytes = packet.minFreeHeapBytes;
+                diagnostics.flashSizeBytes = packet.flashSizeBytes;
+                diagnostics.psramSizeBytes = packet.psramSizeBytes;
+                diagnostics.siliconRevision = packet.siliconRevision;
+                diagnostics.cpuCores = packet.cpuCores;
+                std::snprintf(diagnostics.resetReason, sizeof(diagnostics.resetReason), "%s", packet.resetReason);
+                commissioningRegistry.updateDiagnostics(originMac, diagnostics);
+
                 xSemaphoreGive(stateMutex);
             }
 
@@ -1687,6 +1870,36 @@ void espNowCommunicationTask(void *parameter)
 }
 
 
+/*
+ * Section "Wi-Fi Self-Provisioning": once WiFiManager has failed to
+ * associate WIFI_PROVISIONING_TRIGGER_ATTEMPT_COUNT times in a row, the
+ * installer-provisioned credentials (WiFiCredentialsStore) are treated as
+ * genuinely unreachable rather than a transient miss, and the self-hosted
+ * setup Access Point comes up so an installer can provision a working
+ * SSID/password from a phone. Brought back down the moment WiFiManager
+ * reports a real IP again - it never stays active concurrently with a
+ * working station connection. A RADIO_CHANNEL_MISMATCH is a different,
+ * AP-side problem (the configured SSID is broadcasting on the wrong
+ * channel) that reprovisioning cannot fix, so it deliberately does not
+ * trigger the portal.
+ */
+void checkWiFiProvisioningTrigger()
+{
+    const bool stuckDisconnected =
+        wifiManager.getState() == WiFiConnectionState::DISCONNECTED &&
+        wifiManager.getReconnectAttemptCount() >= WIFI_PROVISIONING_TRIGGER_ATTEMPT_COUNT;
+
+    if (stuckDisconnected && !wifiProvisioningPortal.isActive()) {
+        ESP_LOGW(TAG, "WIFI_PROVISIONING: %u failed reconnect attempts; starting self-hosted setup Access Point",
+                 static_cast<unsigned int>(wifiManager.getReconnectAttemptCount()));
+        wifiProvisioningPortal.begin(kilowatts::KILOWATTS_RADIO_CHANNEL);
+    } else if (wifiManager.isConnected() && wifiProvisioningPortal.isActive()) {
+        ESP_LOGI(TAG, "WIFI_PROVISIONING: station connected; stopping the setup Access Point");
+        wifiProvisioningPortal.end();
+    }
+}
+
+
 void watchdogTask(void *parameter)
 {
     (void)parameter;
@@ -1702,6 +1915,7 @@ void watchdogTask(void *parameter)
         mqttManager.printDiagnosticReport();
         sensors.printDiagnosticReport();
         relays.printDiagnosticReport();
+        checkWiFiProvisioningTrigger();
         ESP_LOGI(TAG, "===========================================");
     }
 }
@@ -2044,6 +2258,25 @@ LoadCommandResult handleDevelopmentCommand(void *context, const DevelopmentComma
 
     xSemaphoreGive(stateMutex);
 
+    /*
+     * A mode change (Production <-> Development) is otherwise only
+     * visible on the next state/system publish, up to
+     * OPTIMIZATION_PERIOD_MILLISECONDS later - publish it as its own
+     * event too so a dashboard can flag it immediately rather than
+     * waiting for the next periodic snapshot. Sensor-override actions
+     * (SET_SENSOR_INPUT/CLEAR_SENSOR_OVERRIDE) are already logged
+     * verbosely to serial on every call and are not the mode change
+     * itself, so they do not get their own event here.
+     */
+    if (success && (request.action == DevelopmentCommandAction::START_SESSION ||
+                     request.action == DevelopmentCommandAction::END_SESSION)) {
+        char targetText[18] = {};
+        formatMacAddressText(targetText, sizeof(targetText), localMac);
+        mqttManager.publishEvent(
+            request.action == DevelopmentCommandAction::START_SESSION ? "DEV_SESSION_STARTED" : "DEV_SESSION_ENDED",
+            targetText, nullptr);
+    }
+
     result.accepted = success;
     return result;
 }
@@ -2247,6 +2480,7 @@ LoadCommandResult handleConfigCommand(void *context, const ConfigCommandRequest 
             request.batteryEmaAlpha,
             request.batteryCapacityAmpHours,
             request.batteryInitialStateOfChargePercent,
+            request.batteryNominalVoltageVolts,
         };
         if (!CentralConfigurationStore::isValidBatterySensor(configuration)) {
             std::snprintf(result.reason, sizeof(result.reason), "invalid battery sensor configuration");
@@ -2258,7 +2492,7 @@ LoadCommandResult handleConfigCommand(void *context, const ConfigCommandRequest 
             centralConfigurationStore.getConfiguration().batterySensor;
         if (previous.configured && !sameBatterySensorConfiguration(previous, configuration)) {
             std::snprintf(result.reason, sizeof(result.reason),
-                          "battery hardware settings cannot be changed after commissioning; factory-reset and recommission if the wiring changed");
+                          "battery hardware settings locked after commissioning; factory-reset to rewire");
             xSemaphoreGive(stateMutex);
             return result;
         }
@@ -2319,6 +2553,58 @@ LoadCommandResult handleConfigCommand(void *context, const ConfigCommandRequest 
         if (!request.hasLoadConfiguration) {
             std::snprintf(result.reason, sizeof(result.reason), "load configuration required");
             xSemaphoreGive(stateMutex);
+            return result;
+        }
+
+        /*
+         * Central's own directly-wired Loads never go over ESP-NOW - this
+         * completes synchronously, unlike the Smart Node path below which
+         * only dispatches a command and waits for a later
+         * CONFIGURE_LOAD_ACK. nodeDeclaresRelayPin() reuses Central's own
+         * commissioning record (registered with its own VERIFIED_RELAY_GPIO_PINS
+         * capability list, see registerSelf() in app_main()) so an
+         * installer cannot target a GPIO this board never declared safe.
+         */
+        if (request.nodeMacAddress == localMac) {
+            const NodeCommissioningRegistry::CommissioningRecord* centralRecord =
+                commissioningRegistry.findByMac(localMac);
+            if (centralRecord == nullptr || !nodeDeclaresRelayPin(*centralRecord, request.relayPin)) {
+                std::snprintf(result.reason, sizeof(result.reason),
+                              "relay GPIO is not declared safe by Central's own board profile");
+                xSemaphoreGive(stateMutex);
+                return result;
+            }
+
+            NodeLoadHardwareStore::LoadConfiguration configuration{};
+            std::snprintf(configuration.name, sizeof(configuration.name), "%s", request.loadName);
+            configuration.relayPin = request.relayPin;
+            configuration.relayActiveHigh = request.relayActiveHigh;
+            configuration.mode = request.mode;
+            configuration.priority = request.priority;
+            configuration.nominalVoltageVolts = request.nominalVoltageVolts;
+            configuration.nominalCurrentAmps = request.nominalCurrentAmps;
+            configuration.branchMaximumCurrentAmps = request.branchMaximumCurrentAmps;
+            configuration.startupWatts = request.startupWatts;
+            configuration.schedule = request.schedule;
+
+            HardwareConfigurationFailureReason failureReason = HardwareConfigurationFailureReason::NONE;
+            const bool configured =
+                centralLoadHardwareStore.configureNewLoad(configuration, relays, centralNode, failureReason);
+
+            if (configured) {
+                registry.setLocalCentralBranchMaximumCurrentAmps(request.relayPin, request.branchMaximumCurrentAmps);
+                registry.addLocalCentralNode(CentralNodeConfig::CENTRAL_NODE_NAME, centralNode,
+                                              static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())));
+            }
+
+            xSemaphoreGive(stateMutex);
+            if (configured) {
+                xSemaphoreGive(optimizationTriggerSemaphore);
+            }
+
+            result.accepted = configured;
+            std::snprintf(result.reason, sizeof(result.reason),
+                          configured ? "applied" : hardwareConfigurationFailureText(failureReason));
             return result;
         }
 
@@ -2530,28 +2816,71 @@ extern "C" void app_main()
     chipInfo.getChipModelText(chipModelText, sizeof(chipModelText));
     if (commissioningRegistry.registerSelf(localMac, NodeRole::CENTRAL, CentralNodeConfig::CENTRAL_NODE_NAME,
                                             KILOWATTS_FIRMWARE_VERSION, chipModelText,
+                                            CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS.data(),
+                                            CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS.size(),
                                             static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())))) {
         commissioningRegistry.persist();
     }
 
     /*
-     * Wi-Fi/MQTT are best-effort: their absence must never prevent local
-     * sensing, Best-First Search, ESP-NOW or relay control from working.
+     * Central never sends itself an IdentityReportPacket over ESP-NOW, so
+     * unlike a Smart Node its Diagnostics is only ever a boot-time
+     * snapshot here - never refreshed again for the life of this boot.
+     * Good enough for a first version; a genuinely live reading would need
+     * a periodic self-refresh alongside the ~2s state publish cycle.
      */
-    if (!wifiManager.begin(WiFiManager::Credentials{
-            Secrets::WIFI_SSID, Secrets::WIFI_PASSWORD, CentralNodeConfig::WIFI_STATION_HOSTNAME})) {
-        ESP_LOGW(TAG, "Wi-Fi did not start; continuing with local-only control");
+    {
+        NodeCommissioningRegistry::Diagnostics selfDiagnostics{};
+        selfDiagnostics.freeHeapBytes = chipInfo.getFreeHeapBytes();
+        selfDiagnostics.minFreeHeapBytes = chipInfo.getMinFreeHeapBytes();
+        selfDiagnostics.flashSizeBytes = chipInfo.getFlashSizeBytes();
+        selfDiagnostics.psramSizeBytes = chipInfo.getPsramSizeBytes();
+        selfDiagnostics.siliconRevision = static_cast<std::uint16_t>(chipInfo.getSiliconRevision());
+        selfDiagnostics.cpuCores = static_cast<std::uint8_t>(chipInfo.getCpuCores());
+        chipInfo.getResetReasonText(selfDiagnostics.resetReason, sizeof(selfDiagnostics.resetReason));
+        commissioningRegistry.updateDiagnostics(localMac, selfDiagnostics);
     }
 
+    /*
+     * Wi-Fi/MQTT are best-effort: their absence must never prevent local
+     * sensing, Best-First Search, ESP-NOW or relay control from working.
+     *
+     * A never-provisioned device does not know any site's Wi-Fi and must
+     * not guess: it skips WiFiManager entirely and comes straight up as
+     * WiFiProvisioningPortal's self-hosted setup Access Point so an
+     * installer can supply a real SSID/password from a phone.
+     * KilowattsSecrets.h no longer carries a compiled-in Wi-Fi
+     * SSID/password fallback for this reason. Once an installer has
+     * provisioned real credentials (WiFiCredentialsStore), every
+     * subsequent boot uses those with WiFiManager as normal; watchdogTask's
+     * checkWiFiProvisioningTrigger() brings the portal back if those
+     * provisioned credentials later stop working.
+     */
+    WiFiCredentialsStore::Credentials activeWiFiCredentials{};
+    if (wifiCredentialsStore.load(activeWiFiCredentials)) {
+        ESP_LOGI(TAG, "WIFI_CREDENTIALS: using installer-provisioned SSID '%s'", activeWiFiCredentials.ssid);
+        if (!wifiManager.begin(WiFiManager::Credentials{
+                activeWiFiCredentials.ssid, activeWiFiCredentials.password, CentralNodeConfig::WIFI_STATION_HOSTNAME})) {
+            ESP_LOGW(TAG, "Wi-Fi did not start; continuing with local-only control");
+        }
+    } else {
+        ESP_LOGI(TAG, "WIFI_CREDENTIALS: none provisioned yet; starting self-hosted setup Access Point");
+        if (!wifiProvisioningPortal.begin(kilowatts::KILOWATTS_RADIO_CHANNEL)) {
+            ESP_LOGW(TAG, "Setup Access Point did not start; continuing with local-only control");
+        }
+    }
+
+    /*
+     * MQTT itself is not started here - checkMqttStartTrigger() (called
+     * from optimizationTask()) starts it the moment Wi-Fi first reports a
+     * real IP address, per MqttManager::begin()'s own documented contract.
+     * Command handlers are registered up front regardless, so nothing is
+     * missed once the client does start.
+     */
     mqttManager.setLoadCommandHandler(&handleLoadCommand, nullptr);
     mqttManager.setSystemCommandHandler(&handleSystemCommand, nullptr);
     mqttManager.setConfigCommandHandler(&handleConfigCommand, nullptr);
     mqttManager.setDevelopmentCommandHandler(&handleDevelopmentCommand, nullptr);
-    if (!mqttManager.begin(MqttManager::Credentials{
-            Secrets::MQTT_BROKER_HOST, Secrets::MQTT_BROKER_PORT, Secrets::MQTT_BROKER_USE_TLS,
-            Secrets::MQTT_USERNAME, Secrets::MQTT_PASSWORD})) {
-        ESP_LOGW(TAG, "MQTT did not start; continuing with local-only control");
-    }
 
     xTaskCreate(sensorAcquisitionTask, "sensor_acq", 4096U, nullptr, 5U, nullptr);
     xTaskCreate(espNowCommunicationTask, "espnow_app", 4096U, nullptr, 5U, nullptr);

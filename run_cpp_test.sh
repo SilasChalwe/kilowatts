@@ -166,39 +166,60 @@ readonly CXX_COMPILER="${CXX:-g++}"
 command -v "$CXX_COMPILER" >/dev/null 2>&1 ||
     fail "C++ compiler '$CXX_COMPILER' was not found."
 
-# A test module may construct/call classes declared by sibling lib/
-# modules (for example an AvailablePowerManager test that also needs
-# real Load/LoadFilter objects). Plain g++ has no equivalent of
-# PlatformIO's own chain-mode Library Dependency Finder, so this walks
-# local #include "X.h" directives - starting from the test source and the
-# primary module's own headers - and pulls in any other lib/<X>
-# directory's .cpp files too, transitively, so those symbols link.
-declare -A RESOLVED_LIBRARY_DIRECTORIES=()
+# lib/ groups classes into shared domain folders (e.g. NodeManager holds
+# many single-responsibility classes, some further nested under
+# NodeManager/Central or NodeManager/Smart by which firmware role owns
+# them) rather than one class per folder, so this cannot simply compile
+# every .cpp sitting in a matched folder - that would sweep in unrelated
+# ESP32-only siblings (e.g. an EspNowCommunication.cpp needing esp_now.h)
+# that the test never actually needed. Instead it resolves dependencies
+# per header file: starting from the test source, every local
+# #include "X.h" is located anywhere under lib/ (however deeply nested),
+# its sibling X.cpp (if any) is compiled, and both are scanned in turn -
+# transitively pulling in exactly the classes actually referenced, same
+# as PlatformIO's own chain-mode Library Dependency Finder does for the
+# real ESP32 build.
+declare -A RESOLVED_SOURCE_FILES=()
+declare -A RESOLVED_HEADER_NAMES=()
+declare -A ADDED_INCLUDE_DIRECTORIES=()
 declare -a LIBRARY_SOURCES=()
 declare -a INCLUDE_SCAN_QUEUE=()
+declare -a INCLUDE_FLAGS=()
 
-add_library_directory_sources() {
+add_include_directory() {
     local directory="$1"
-    while IFS= read -r -d '' source_file; do
-        LIBRARY_SOURCES+=("$source_file")
-    done < <(find "$directory" -maxdepth 1 -type f \
-        \( -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' \) -print0 | sort -z)
+    if [[ -z "${ADDED_INCLUDE_DIRECTORIES[$directory]:-}" ]]; then
+        ADDED_INCLUDE_DIRECTORIES["$directory"]=1
+        INCLUDE_FLAGS+=("-I$directory")
+    fi
 }
 
-resolve_library_directory() {
-    local directory="$1"
+resolve_included_header() {
+    local header_name="$1"
+    local header_path header_dir base ext candidate
 
-    [[ -n "${RESOLVED_LIBRARY_DIRECTORIES[$directory]:-}" ]] && return 0
-    RESOLVED_LIBRARY_DIRECTORIES["$directory"]=1
+    [[ -n "${RESOLVED_HEADER_NAMES[$header_name]:-}" ]] && return 0
+    RESOLVED_HEADER_NAMES["$header_name"]=1
 
-    add_library_directory_sources "$directory"
+    header_path="$(find "$PROJECT_ROOT/lib" -type f -name "$header_name" -print -quit)"
+    [[ -n "$header_path" ]] || return 0
 
-    while IFS= read -r -d '' header_file; do
-        INCLUDE_SCAN_QUEUE+=("$header_file")
-    done < <(find "$directory" -maxdepth 1 -type f -name '*.h' -print0 | sort -z)
+    header_dir="$(dirname -- "$header_path")"
+    add_include_directory "$header_dir"
+
+    base="${header_name%.h}"
+    for ext in cpp cc cxx; do
+        candidate="$header_dir/$base.$ext"
+        if [[ -f "$candidate" && -z "${RESOLVED_SOURCE_FILES[$candidate]:-}" ]]; then
+            RESOLVED_SOURCE_FILES["$candidate"]=1
+            LIBRARY_SOURCES+=("$candidate")
+            INCLUDE_SCAN_QUEUE+=("$candidate")
+        fi
+    done
+
+    INCLUDE_SCAN_QUEUE+=("$header_path")
 }
 
-resolve_library_directory "$LIBRARY_DIRECTORY"
 INCLUDE_SCAN_QUEUE+=("$TEST_SOURCE")
 
 while (( ${#INCLUDE_SCAN_QUEUE[@]} > 0 )); do
@@ -208,26 +229,18 @@ while (( ${#INCLUDE_SCAN_QUEUE[@]} > 0 )); do
     [[ -f "$scan_file" ]] || continue
 
     while IFS= read -r included_header; do
-        included_module="${included_header%.h}"
-        candidate_directory="$PROJECT_ROOT/lib/$included_module"
-
-        [[ -d "$candidate_directory" ]] && resolve_library_directory "$candidate_directory"
+        resolve_included_header "$included_header"
     done < <(grep -ohE '#include[[:space:]]*"[A-Za-z0-9_]+\.h"' "$scan_file" |
               sed -E 's/.*"([A-Za-z0-9_]+\.h)"/\1/')
 done
 
 (( ${#LIBRARY_SOURCES[@]} > 0 )) ||
-    fail "No C++ implementation file was found in '$LIBRARY_DIRECTORY'."
+    fail "No C++ implementation file under 'lib/' matched any header included from '$TEST_SOURCE'."
 
-declare -a INCLUDE_FLAGS=("-I$LIBRARY_DIRECTORY")
-[[ -d "$PROJECT_ROOT/include" ]] && INCLUDE_FLAGS+=("-I$PROJECT_ROOT/include")
-[[ -d "$LIBRARY_DIRECTORY/include" ]] && INCLUDE_FLAGS+=("-I$LIBRARY_DIRECTORY/include")
-
-while IFS= read -r -d '' other_lib; do
-    if [[ "$other_lib" != "$LIBRARY_DIRECTORY" ]]; then
-        INCLUDE_FLAGS+=("-I$other_lib")
-    fi
-done < <(find "$PROJECT_ROOT/lib" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+add_include_directory "$LIBRARY_DIRECTORY"
+add_include_directory "$TEST_DIRECTORY"
+[[ -d "$PROJECT_ROOT/include" ]] && add_include_directory "$PROJECT_ROOT/include"
+[[ -d "$LIBRARY_DIRECTORY/include" ]] && add_include_directory "$LIBRARY_DIRECTORY/include"
 
 declare -a COMPILER_FLAGS=(
     -std=c++17

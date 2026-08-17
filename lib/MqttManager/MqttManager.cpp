@@ -768,7 +768,8 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
 
         std::snprintf(request.loadName, sizeof(request.loadName), "%s", nameField->valuestring);
         request.relayActiveHigh = cJSON_IsTrue(relayActiveHighField);
-        request.schedule = AutoSchedule{cJSON_IsTrue(scheduleEnabledField), hour, minute};
+        const bool scheduleEnabled = cJSON_IsTrue(scheduleEnabledField);
+        request.schedule = AutoSchedule{scheduleEnabled, hour, minute};
         request.hasLoadConfiguration = true;
     }
 
@@ -786,7 +787,9 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
             !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "batteryCapacityAmpHours"),
                                 request.batteryCapacityAmpHours) ||
             !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "initialStateOfChargePercent"),
-                                request.batteryInitialStateOfChargePercent)) {
+                                request.batteryInitialStateOfChargePercent) ||
+            !isFiniteJsonNumber(cJSON_GetObjectItemCaseSensitive(batteryField, "nominalVoltageVolts"),
+                                request.batteryNominalVoltageVolts)) {
             publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
                                     "invalid batterySensor configuration", targetText);
             cJSON_Delete(root);

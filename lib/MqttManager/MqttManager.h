@@ -217,6 +217,8 @@ struct ConfigCommandRequest {
     float batteryEmaAlpha;
     float batteryCapacityAmpHours;
     float batteryInitialStateOfChargePercent;
+    /** Installer-entered nameplate voltage (e.g. 12/24/48V) - never assumed by firmware. */
+    float batteryNominalVoltageVolts;
 };
 
 

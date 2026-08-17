@@ -141,7 +141,7 @@ bool WiFiManager::verifyChannelAndConnect()
     esp_err_t result = esp_wifi_scan_start(&scanConfig, true);
     if (result != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi scan for SSID '%s' failed to start: %s", credentials_.ssid, esp_err_to_name(result));
-        state_.store(WiFiConnectionState::DISCONNECTED);
+        onStationDisconnected(nullptr);
         return false;
     }
 
@@ -201,7 +201,7 @@ bool WiFiManager::verifyChannelAndConnect()
     result = esp_wifi_set_config(WIFI_IF_STA, &wifiConfig);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_config() failed: %s", esp_err_to_name(result));
-        state_.store(WiFiConnectionState::DISCONNECTED);
+        onStationDisconnected(nullptr);
         return false;
     }
 

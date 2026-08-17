@@ -1,10 +1,29 @@
 # WiFiManager
 
-Central Node infrastructure Wi-Fi station connectivity, used only so
-`MqttManager` and `CurrentTimeProvider`'s Automatic (NTP) mode can reach
-the internet. Smart Nodes never construct this class — they have no
-Wi-Fi/MQTT session of their own (see `EspNowCommunication`'s README);
-only the Central Node bridges local ESP-NOW to the wider network.
+Everything the Central Node needs for infrastructure Wi-Fi lives in this
+one library, as three separate single-responsibility classes sharing a
+folder rather than one merged class:
+
+- **`WiFiManager`** — station connectivity itself (this file's original
+  subject; see below).
+- **`WiFiCredentialsStore`** — persists an installer-provisioned
+  SSID/password to NVS, so a site's real Wi-Fi survives reboots and
+  factory-reset-free re-flashing. Knows nothing about *when* to load/save
+  or about station connectivity itself.
+- **`WiFiProvisioningPortal`** — the self-hosted "Kilowatts-Setup-XXXX"
+  Access Point and captive-portal HTTP form an installer uses to submit
+  that SSID/password from a phone when no credentials are provisioned yet
+  or the provisioned ones stop working. Does not manage station
+  connectivity and does not decide when to start/stop — `src/central/main.cpp`
+  owns that policy (immediately at boot with no provisioned credentials;
+  via `checkWiFiProvisioningTrigger()` in the watchdog task after repeated
+  reconnect failures once credentials are provisioned but stop working).
+
+Used only so `MqttManager` and `CurrentTimeProvider`'s Automatic (NTP)
+mode can reach the internet. Smart Nodes never construct any of these
+classes — they have no Wi-Fi/MQTT session of their own (see
+`EspNowCommunication`'s README); only the Central Node bridges local
+ESP-NOW to the wider network.
 
 ## Radio channel coexistence
 
@@ -35,9 +54,23 @@ reconfigured onto `KILOWATTS_RADIO_CHANNEL`.
 
 ## Usage
 
+There is no compiled-in factory-default SSID/password — a never-provisioned
+device does not know any site's Wi-Fi. `src/central/main.cpp` boots
+straight into `WiFiProvisioningPortal` when `WiFiCredentialsStore::load()`
+finds nothing, and only calls `WiFiManager::begin()` once real credentials
+exist:
+
 ```cpp
 WiFiManager wifi(kilowatts::KILOWATTS_RADIO_CHANNEL);
-wifi.begin(WiFiManager::Credentials{Secrets::WIFI_SSID, Secrets::WIFI_PASSWORD});
+WiFiCredentialsStore credentialsStore;
+WiFiProvisioningPortal portal;
+
+WiFiCredentialsStore::Credentials credentials{};
+if (credentialsStore.load(credentials)) {
+    wifi.begin(WiFiManager::Credentials{credentials.ssid, credentials.password, hostname});
+} else {
+    portal.begin(kilowatts::KILOWATTS_RADIO_CHANNEL);
+}
 
 if (wifi.isConnected()) {
     // safe to start MqttManager / rely on CurrentTimeProvider's Automatic mode
@@ -59,11 +92,17 @@ mismatch is never assumed to be a transient failure that will fix itself.
 MQTT (`MqttManager` owns the broker connection), does not perform NTP
 itself (`CurrentTimeProvider` uses ESP-IDF's SNTP client once an IP
 address exists), and knows nothing about Loads, Best-First Search, or
-relays. Wi-Fi/MQTT credentials live in `include/KilowattsSecrets.h`
-(gitignored; see `KilowattsSecrets.h.example`) — never in this module.
+relays. Wi-Fi credentials are never compiled in — they only ever come
+from `WiFiCredentialsStore` (NVS, populated by `WiFiProvisioningPortal`).
+MQTT broker credentials still live in `include/KilowattsSecrets.h`
+(gitignored; see `KilowattsSecrets.h.example`), which is unrelated to
+Wi-Fi station credentials.
 
 ## Host build
 
-This module requires the real ESP-IDF Wi-Fi/event stack and is therefore
-ESP32-target-only, like `EspNowCommunication` and `ChipInfo` — it has no
-host build split and no host-native test.
+`WiFiManager` and `WiFiProvisioningPortal` require the real ESP-IDF
+Wi-Fi/event/HTTP-server stack and are therefore ESP32-target-only, like
+`EspNowCommunication` and `ChipInfo` — no host build split, no
+host-native test. `WiFiCredentialsStore`'s NVS persistence is likewise
+ESP32-only, matching `CurrentTimeProvider` and `INA219Monitor`'s
+calibration storage split.

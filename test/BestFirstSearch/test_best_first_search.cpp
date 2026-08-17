@@ -32,6 +32,7 @@
 #include "BestFirstSearch.h"
 #include "Load.h"
 #include "LoadFilter.h"
+#include "PowerBudgetCalculator.h"
 
 #include <cmath>
 #include <cstdint>
@@ -45,6 +46,7 @@ using kilowatts::Load;
 using kilowatts::LoadFilter;
 using kilowatts::LoadMode;
 using kilowatts::LoadPower;
+using kilowatts::PowerBudgetCalculator;
 
 namespace {
 
@@ -1142,6 +1144,373 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
                 fan.getLastBestFirstRejectionReason() == BestFirstSearch::POWER_BUDGET_EXCEEDED);
 }
 
+/*
+ * TEST 19 - REALISTIC MULTI-NODE INSTALLATION ACROSS VARYING BATTERY
+ * CAPACITY AND STATE OF CHARGE
+ *
+ * Everything above hand-derives one scoring/rejection case at a time
+ * directly from the Chapter 4 equations. This test instead builds one
+ * fixed, realistic 20-Load installation - 5 Loads owned by Central, 5 by
+ * one Smart Node, 10 by a second Smart Node, a mix of Fixed/Auto modes,
+ * wattages from 2W to 1500W, and two Loads with a non-zero future-schedule
+ * penalty - and runs the *entire* pipeline a real optimisation cycle uses
+ * (PowerBudgetCalculator -> AvailablePowerManager -> BestFirstSearch) across
+ * every combination of battery capacity (20/100/1000 Ah) and State of
+ * Charge (25/50/75/100%), 12 scenarios in total.
+ *
+ * For every scenario it prints a complete, readable report - starting
+ * battery capacity/energy, Fixed-only remaining budget, then every single
+ * Load's configured (initial) state next to Best-First's this-cycle
+ * (new) state and rejection reason, then the final committed/remaining
+ * power - and asserts the invariants that must hold no matter how the
+ * battery scenario changes: every Fixed Load's configured mode is
+ * completely unaffected by the battery scenario, no admitted Load ever
+ * exceeds the budget it was admitted under, and a strictly larger
+ * capacity/SoC combination never admits *less* total power than a
+ * strictly smaller one.
+ */
+namespace {
+
+struct LoadSpec {
+    const char* name;
+    Load::MacAddress owner;
+    std::uint8_t relayPin;
+    float runningWatts;
+    float startupWatts;
+    std::uint16_t priority;
+    LoadMode::Value mode;
+    /** r_i supplied directly to addLoad(), standing in for what LoadScheduleEvaluator would have computed (see file header). */
+    float schedulePenalty;
+};
+
+const char* loadModeText(LoadMode::Value mode) {
+    if (mode == LoadMode::Fixed::ON) return "FIXED_ON";
+    if (mode == LoadMode::Fixed::OFF) return "FIXED_OFF";
+    if (mode == LoadMode::Auto::ON) return "AUTO_ON";
+    return "AUTO_OFF";
+}
+
+const char* rejectionReasonText(std::uint8_t reason) {
+    switch (reason) {
+        case BestFirstSearch::NONE: return "-";
+        case BestFirstSearch::LOW_BATTERY: return "LOW_BATTERY";
+        case BestFirstSearch::POWER_BUDGET_EXCEEDED: return "POWER_BUDGET_EXCEEDED";
+        case BestFirstSearch::BATTERY_CURRENT_LIMIT: return "BATTERY_CURRENT_LIMIT";
+        case BestFirstSearch::MAIN_LIMIT_EXCEEDED: return "MAIN_LIMIT_EXCEEDED";
+        case BestFirstSearch::BRANCH_LIMIT_EXCEEDED: return "BRANCH_LIMIT_EXCEEDED";
+        default: return "UNKNOWN";
+    }
+}
+
+/**
+ * What this exact installation would draw with no power-budget
+ * coordination at all - every Load simply left running at its own
+ * currently-configured state (Fixed-ON Loads, plus every Auto Load
+ * currently AUTO_ON), the way a plain relay board with manual switches
+ * and no Central intelligence would behave. AUTO_OFF Loads are excluded
+ * here too, same as they would be with no coordinator: nothing turns a
+ * Load on that its own switch position says is off.
+ */
+float naiveConfiguredOnDemandWatts(const std::vector<LoadSpec>& specs) {
+    float total = 0.0F;
+    for (const LoadSpec& spec : specs) {
+        if (spec.mode == LoadMode::Fixed::ON || spec.mode == LoadMode::Auto::ON) {
+            total += spec.runningWatts;
+        }
+    }
+    return total;
+}
+
+/*
+ * 4 owners (Central + 3 Smart Nodes), 5 Loads each, at least 4 of every
+ * owner's 5 Loads are Auto candidates (the only kind Best-First actually
+ * scores) - only one Fixed Load per owner, so no owner's Loads are ever
+ * entirely decided before Best-First even runs.
+ */
+std::vector<LoadSpec> buildRealisticInstallation() {
+    const Load::MacAddress central = {0xA4, 0xCF, 0x12, 0x0E, 0x32, 0xC0};
+    const Load::MacAddress nodeA   = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xB8}; // "Living Room" Smart Node
+    const Load::MacAddress nodeB   = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xC2}; // "Garden" Smart Node
+    const Load::MacAddress nodeC   = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xD3}; // "Workshop" Smart Node
+
+    return {
+        // -- Central: 5 Loads (4 Auto + 1 Fixed) --
+        {"Central Status Light",   central, 10U,   2.0F,   2.0F,  1U, LoadMode::Fixed::ON, 0.0F},
+        {"Central Cooling Fan",    central, 11U,  15.0F,  25.0F,  5U, LoadMode::Auto::ON,  0.0F},
+        {"Central Aux Charger",    central, 12U,  25.0F,  25.0F,  7U, LoadMode::Auto::ON,  0.0F},
+        {"Central Backup Pump",    central, 13U,  40.0F,  60.0F,  6U, LoadMode::Auto::OFF, 0.5F}, // schedule not yet due
+        {"Central Monitor Display",central, 14U,  10.0F,  10.0F,  4U, LoadMode::Auto::ON,  0.0F},
+
+        // -- Node A ("Living Room"): 5 Loads (4 Auto + 1 Fixed) --
+        {"Kitchen Fridge",        nodeA,   16U,  60.0F, 150.0F,  1U, LoadMode::Fixed::ON, 0.0F},
+        {"Living Room Lights",    nodeA,   17U,  18.0F,  18.0F,  4U, LoadMode::Auto::ON,  0.0F},
+        {"Living Room TV",        nodeA,   18U,  90.0F, 100.0F,  6U, LoadMode::Auto::ON,  0.0F},
+        {"Kitchen Kettle",        nodeA,   19U, 800.0F, 900.0F,  9U, LoadMode::Auto::OFF, 0.0F},
+        {"Living Room Fan",       nodeA,   20U,  30.0F,  45.0F,  3U, LoadMode::Auto::ON,  0.0F},
+
+        // -- Node B ("Garden"): 5 Loads (4 Auto + 1 Fixed) --
+        {"Garage Door Opener",    nodeB,   22U,   5.0F,   5.0F,  2U, LoadMode::Fixed::OFF, 0.0F},
+        {"Bedroom Lights",        nodeB,   23U,  12.0F,  12.0F,  4U, LoadMode::Auto::ON,   0.0F},
+        {"Bedroom AC",            nodeB,   24U, 350.0F, 450.0F,  8U, LoadMode::Auto::ON,   0.0F},
+        {"Garage Lights",         nodeB,   25U,  20.0F,  20.0F,  5U, LoadMode::Auto::ON,   0.0F},
+        {"Water Heater",          nodeB,   26U, 500.0F, 550.0F, 10U, LoadMode::Auto::OFF,  0.8F}, // schedule not yet due
+
+        // -- Node C ("Workshop"): 5 Loads (4 Auto + 1 Fixed) --
+        {"Sump Pump",             nodeC,   28U,  90.0F, 200.0F,  1U, LoadMode::Fixed::ON, 0.0F},
+        {"Washing Machine",       nodeC,   29U, 400.0F, 600.0F,  7U, LoadMode::Auto::OFF, 0.0F},
+        {"Pool Pump",             nodeC,   30U, 250.0F, 300.0F,  6U, LoadMode::Auto::ON,  0.0F},
+        {"Outdoor Lights",        nodeC,   31U,  15.0F,  15.0F,  3U, LoadMode::Auto::ON,  0.0F},
+        {"EV Charger",            nodeC,   32U,1500.0F,1500.0F, 10U, LoadMode::Auto::OFF, 0.0F},
+    };
+}
+
+void runInstallationScenario(const std::vector<LoadSpec>& specs, float batteryCapacityAmpHours,
+                              float stateOfChargePercent, float& totalCommittedPowerOut) {
+    constexpr float MINIMUM_SOC_PERCENT = 20.0F;
+    constexpr float WARNING_SOC_PERCENT = 40.0F;
+    constexpr float NOMINAL_VOLTAGE_VOLTS = 12.0F;
+    constexpr float TARGET_RUNTIME_HOURS = 4.0F;
+    constexpr float MAX_BATTERY_DISCHARGE_CURRENT_AMPS = 40.0F;
+    constexpr float MAX_MAIN_CURRENT_AMPS = 30.0F;
+    constexpr float SAFETY_FACTOR = 0.9F;
+    constexpr float GENEROUS_BRANCH_MAX_CURRENT_AMPS = 20.0F;
+
+    std::printf("\n----------------------------------------------------------------------\n");
+    std::printf("SCENARIO: batteryCapacity=%.0f Ah  SoC=%.0f%%\n", batteryCapacityAmpHours, stateOfChargePercent);
+    std::printf("----------------------------------------------------------------------\n");
+
+    PowerBudgetCalculator::Inputs budgetInputs{};
+    budgetInputs.stateOfChargePercent = stateOfChargePercent;
+    budgetInputs.minimumStateOfChargePercent = MINIMUM_SOC_PERCENT;
+    budgetInputs.nominalBatteryVoltageVolts = NOMINAL_VOLTAGE_VOLTS;
+    budgetInputs.batteryCapacityAmpHours = batteryCapacityAmpHours;
+    budgetInputs.targetRuntimeHours = TARGET_RUNTIME_HOURS;
+    budgetInputs.batteryBusVoltageVolts = NOMINAL_VOLTAGE_VOLTS;
+    budgetInputs.maximumBatteryDischargeCurrentAmps = MAX_BATTERY_DISCHARGE_CURRENT_AMPS;
+    budgetInputs.maximumMainCurrentAmps = MAX_MAIN_CURRENT_AMPS;
+    budgetInputs.safetyFactor = SAFETY_FACTOR;
+
+    PowerBudgetCalculator budget;
+    const bool budgetCalculated = budget.calculate(budgetInputs);
+    reportCheck("PowerBudgetCalculator accepts this scenario's inputs", budgetCalculated);
+    if (!budgetCalculated) {
+        totalCommittedPowerOut = 0.0F;
+        return;
+    }
+
+    const float ratedEnergyWh = budget.getRatedEnergyWattHours();
+    const float usableEnergyWh = budget.getUsableEnergyWattHours();
+    const float totalAvailablePowerWatts = budget.getAvailablePowerWatts();
+    std::printf("  Battery: E_rated=%.1f Wh  E_usable=%.1f Wh  P_available=%.1f W\n",
+                ratedEnergyWh, usableEnergyWh, totalAvailablePowerWatts);
+
+    /* Build fresh Load objects for this scenario - BestFirstSearch keeps its own references alive only for this run(). */
+    std::vector<Load> loads;
+    loads.reserve(specs.size());
+    for (const LoadSpec& spec : specs) {
+        loads.emplace_back(Load::Id{spec.owner, spec.relayPin}, spec.name,
+                            LoadPower{spec.runningWatts, spec.startupWatts}, spec.priority, spec.mode);
+    }
+
+    LoadFilter loadFilter;
+    for (const Load& load : loads) {
+        reportCheck("LoadFilter accepts every Load in the installation", loadFilter.addLoad(load));
+    }
+
+    AvailablePowerManager availablePowerManager;
+    reportCheck("AvailablePowerManager accepts this scenario's P_available",
+                availablePowerManager.calculateAvailablePower(totalAvailablePowerWatts, loadFilter));
+
+    const float fixedOnPowerWatts = availablePowerManager.getFixedOnRunningPowerWatts();
+    const float powerForAutoLoadsWatts = availablePowerManager.getPowerAvailableForAutoLoadsWatts();
+    std::printf("  Fixed ON Loads commit %.1f W, leaving %.1f W for Auto Loads before Best-First runs\n",
+                fixedOnPowerWatts, powerForAutoLoadsWatts);
+
+    BestFirstSearch search;
+    reportCheck("Search score weights configured", configureEqualWeights(search));
+    const bool searchStarted = search.startSearch(makePlanningState(
+        stateOfChargePercent, MINIMUM_SOC_PERCENT, WARNING_SOC_PERCENT, NOMINAL_VOLTAGE_VOLTS,
+        budget.getMaximumBatteryPowerWatts(), MAX_MAIN_CURRENT_AMPS,
+        totalAvailablePowerWatts, powerForAutoLoadsWatts, fixedOnPowerWatts));
+    reportCheck("Search starts for every SoC/capacity combination in range", searchStarted);
+    if (!searchStarted) {
+        totalCommittedPowerOut = 0.0F;
+        return;
+    }
+
+    /*
+     * Auto candidates come from loadFilter.getAutoCandidateLoad() - the
+     * same accessor src/central/main.cpp's runOptimizationCycle() actually
+     * calls - never re-derived here by asking each Load isAuto() directly.
+     * That is the one piece of this pipeline actually under test alongside
+     * BestFirstSearch itself: if LoadFilter's own classification ever
+     * disagreed with a Load's raw mode, going through the real accessor is
+     * what would catch it.
+     *
+     * autoLoadSpecIndices[searchIndex] == i is the only source of truth
+     * mapping a search position back to its LoadSpec - a failed addLoad()
+     * (e.g. an out-of-range schedule penalty) must not silently shift
+     * every later index, so it is only recorded on success.
+     */
+    std::vector<std::size_t> autoLoadSpecIndices;
+    for (std::size_t candidateIndex = 0U; candidateIndex < loadFilter.getNumberOfAutoCandidateLoads(); ++candidateIndex) {
+        const Load* candidate = loadFilter.getAutoCandidateLoad(candidateIndex);
+        reportCheck("Every Auto candidate LoadFilter returns is non-null", candidate != nullptr);
+        if (candidate == nullptr) continue;
+
+        std::size_t specIndex = specs.size();
+        for (std::size_t i = 0U; i < specs.size(); ++i) {
+            if (specs[i].owner == candidate->getMacAddress() && specs[i].relayPin == candidate->getRelayPin()) {
+                specIndex = i;
+                break;
+            }
+        }
+        reportCheck("Every Auto candidate LoadFilter returns matches one of the installation's own Loads",
+                    specIndex < specs.size());
+        if (specIndex >= specs.size()) continue;
+
+        const BestFirstSearch::BranchId branchId{specs[specIndex].owner, specs[specIndex].relayPin};
+        reportCheck("Branch registered for every Auto candidate",
+                    search.registerBranch(branchId, 0.0F, GENEROUS_BRANCH_MAX_CURRENT_AMPS));
+        const bool added = search.addLoad(*candidate, branchId, specs[specIndex].schedulePenalty);
+        reportCheck("Auto candidate added to the search", added);
+        if (added) {
+            autoLoadSpecIndices.push_back(specIndex);
+        }
+    }
+
+    reportCheck("Search runs to completion", search.run());
+
+    std::printf("  %-24s %-9s %-10s %-9s %-24s\n", "Load", "Owner", "Initial", "New", "Reason (if rejected)");
+    float totalCommittedThisScenario = fixedOnPowerWatts;
+    for (std::size_t i = 0U; i < loads.size(); ++i) {
+        const char* owner = specs[i].owner == specs[0].owner ? "Central"
+                            : (specs[i].owner == specs[5].owner ? "NodeA"
+                               : (specs[i].owner == specs[10].owner ? "NodeB" : "NodeC"));
+        const char* initialState = loadModeText(specs[i].mode);
+
+        if (!loads[i].isAuto()) {
+            std::printf("  %-24s %-9s %-10s %-9s %-24s\n", specs[i].name, owner, initialState, initialState, "-");
+            continue;
+        }
+
+        std::size_t searchIndex = 0U;
+        bool foundInSearch = false;
+        for (std::size_t k = 0U; k < autoLoadSpecIndices.size(); ++k) {
+            if (autoLoadSpecIndices[k] == i) {
+                searchIndex = k;
+                foundInSearch = true;
+                break;
+            }
+        }
+
+        if (!foundInSearch) {
+            /* addLoad() rejected this candidate outright (see the checks above) - never evaluated, not the same as OFF. */
+            std::printf("  %-24s %-9s %-10s %-9s %-24s\n", specs[i].name, owner, initialState,
+                        "N/A", "addLoad() rejected");
+            reportCheck("Configured mode is never mutated by the Best-First decision",
+                        loads[i].getMode() == specs[i].mode);
+            continue;
+        }
+
+        const bool selected = search.isLoadSelectedToBeOn(searchIndex);
+        const std::uint8_t reason = search.getLoadSelectionRejectionReason(searchIndex);
+        std::printf("  %-24s %-9s %-10s %-9s %-24s\n", specs[i].name, owner, initialState,
+                    selected ? "ON" : "OFF", rejectionReasonText(reason));
+        if (selected) {
+            totalCommittedThisScenario += specs[i].runningWatts;
+        }
+
+        reportCheck("Configured mode is never mutated by the Best-First decision",
+                    loads[i].getMode() == specs[i].mode);
+    }
+
+    std::printf("  P_remaining=%.1f W  P_committed=%.1f W (Fixed %.1f W + admitted Auto)\n",
+                search.getRemainingPowerWatts(), search.getCommittedPowerWatts(), fixedOnPowerWatts);
+
+    /*
+     * BestFirstSearch does not own Fixed Load safety - a Fixed-ON Load
+     * commits its power regardless of budget (Section "Fixed Loads are
+     * never Best-First Search candidates"; shedding an over-budget Fixed
+     * Load is src/central/main.cpp's separate critical-protection logic,
+     * outside this library). So P_committed can legitimately exceed
+     * P_available when Fixed Loads alone already do, at low battery
+     * capacity/SoC (see this installation's 152W of Fixed-ON Loads). What
+     * BestFirstSearch does own is the Auto-load allocation: it must never
+     * admit more Auto power than powerForAutoLoadsWatts, the budget left
+     * over after Fixed Loads.
+     */
+    reportCheck("Admitted Auto power never exceeds the budget left after Fixed Loads",
+                search.getCommittedPowerWatts() - fixedOnPowerWatts <= powerForAutoLoadsWatts + 0.001F);
+    reportCheck("Best-First's own P_committed matches this report's independently-summed total",
+                nearValue(search.getCommittedPowerWatts(), totalCommittedThisScenario, 0.01F));
+
+    /*
+     * Battery runtime comparison: how long E_usable actually lasts running
+     * only what Best-First admitted, versus what it would have lasted
+     * running this installation's naive "every switch left in its current
+     * position" demand instead - both computed the same way (Wh / W), no
+     * assumed duty cycle, no invented numbers. TARGET_RUNTIME_HOURS
+     * (T_target) is the same constant PowerBudgetCalculator itself used to
+     * derive P_runtime (Equation 4.11) for this scenario's P_available, so
+     * comparing against it is comparing against the system's own design
+     * goal, not an arbitrary window.
+     */
+    const float naiveDemandWatts = naiveConfiguredOnDemandWatts(specs);
+    const float naiveRuntimeHours = naiveDemandWatts > 0.0F ? usableEnergyWh / naiveDemandWatts : 0.0F;
+    const float admittedRuntimeHours =
+        totalCommittedThisScenario > 0.0F ? usableEnergyWh / totalCommittedThisScenario : 0.0F;
+    std::printf("  Battery runtime: naive (no coordination, %.1f W) lasts %.2f h; "
+                "Best-First (%.1f W) lasts %.2f h (T_target=%.1f h)\n",
+                naiveDemandWatts, naiveRuntimeHours, totalCommittedThisScenario, admittedRuntimeHours,
+                TARGET_RUNTIME_HOURS);
+    reportCheck("Runtime figures are computed, not fabricated: naive runtime x naive demand reproduces E_usable",
+                naiveDemandWatts <= 0.0F || nearValue(naiveRuntimeHours * naiveDemandWatts, usableEnergyWh, 0.05F));
+
+    totalCommittedPowerOut = totalCommittedThisScenario;
+}
+
+void testRealisticMultiNodeInstallationAcrossBatteryScenarios() {
+    printSection("TEST 19 - REALISTIC 20-LOAD, 3-NODE INSTALLATION ACROSS BATTERY CAPACITY x SOC");
+
+    const std::vector<LoadSpec> installation = buildRealisticInstallation();
+    reportCheck("Installation has exactly 20 Loads (5 Central + 5 NodeA + 10 NodeB)",
+                installation.size() == 20U);
+
+    const float capacities[] = {20.0F, 100.0F, 1000.0F};
+    const float statesOfCharge[] = {25.0F, 50.0F, 75.0F, 100.0F};
+
+    /*
+     * previousCommitted tracks the last scenario's total committed power in
+     * (capacity, SoC) iteration order - both loops go from smallest to
+     * largest, so a strictly larger capacity or SoC must never admit
+     * strictly less total power than a strictly smaller one on the same
+     * fixed installation, since the budget can only grow.
+     */
+    float previousCommittedForCapacity = -1.0F;
+    for (float capacity : capacities) {
+        float previousCommittedForSoc = -1.0F;
+        for (float soc : statesOfCharge) {
+            float committedThisScenario = 0.0F;
+            runInstallationScenario(installation, capacity, soc, committedThisScenario);
+
+            if (previousCommittedForSoc >= 0.0F) {
+                reportCheck("Higher SoC at the same capacity never admits less total power",
+                            committedThisScenario >= previousCommittedForSoc - 0.01F);
+            }
+            previousCommittedForSoc = committedThisScenario;
+        }
+
+        if (previousCommittedForCapacity >= 0.0F) {
+            reportCheck("Higher capacity at the same (highest) SoC never admits less total power",
+                        previousCommittedForSoc >= previousCommittedForCapacity - 0.01F);
+        }
+        previousCommittedForCapacity = previousCommittedForSoc;
+    }
+}
+
+} // namespace (realistic multi-node scenario)
+
 } // namespace
 
 int main() {
@@ -1170,6 +1539,7 @@ int main() {
     testAdmittedLoadOrderMatchesBestFirstExtraction();
     testStaticFeasibilityCheckForPreActuationRecheck();
     testConfiguredModeNeverMutatedByBestFirstDecision();
+    testRealisticMultiNodeInstallationAcrossBatteryScenarios();
 
     printSection("FINAL TEST SUMMARY");
     std::printf("Passed checks: %zu\n", passedChecks);

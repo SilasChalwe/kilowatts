@@ -171,7 +171,7 @@ bool BestFirstSearch::startSearch(
     if (searchStateValid) {
         ESP_LOGI(
             TAG,
-            "Search started: SoC=%.1f%% Ptotal=%.3fW Pauto=%.3fW Pcommitted=%.3fW B=%.3f",
+            "Search started: SoC=%.1f%% Ptotal=%.3fW Pauto=%.3fW PowerConsumedByActiveLoads=%.3fW B=%.3f",
             planningState_.stateOfChargePercent,
             planningState_.totalAvailablePowerWatts,
             remainingPowerWatts_,
@@ -512,7 +512,7 @@ bool BestFirstSearch::run()
 #ifdef ESP_PLATFORM
     ESP_LOGI(
         TAG,
-        "Best-First Search completed: candidates=%u Premaining=%.3fW Pcommitted=%.3fW",
+        "Best-First Search completed: candidates=%u Premaining=%.3fW PowerConsumedByActiveLoads=%.3fW",
         static_cast<unsigned int>(loads_.size()),
         remainingPowerWatts_,
         committedPowerWatts_
@@ -1256,7 +1256,7 @@ void BestFirstSearch::markLoadSelectedToBeOn(std::size_t loadIndex)
 
     ESP_LOGI(
         TAG,
-        "Load selected ON: name=%s MAC=%02X:%02X:%02X:%02X:%02X:%02X pin=%u running=%.3fW Premaining=%.3fW Pcommitted=%.3fW",
+        "Load selected ON: name=%s MAC=%02X:%02X:%02X:%02X:%02X:%02X pin=%u running=%.3fW Premaining=%.3fW PowerConsumedByActiveLoads=%.3fW",
         load.getName().c_str(),
         macAddress[0],
         macAddress[1],

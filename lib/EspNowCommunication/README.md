@@ -58,7 +58,7 @@ created it" and "who it's ultimately for":
 enum class MessageType : std::uint8_t {
     NODE_REPORT, LOAD_REPORT, RELAY_COMMAND, ACKNOWLEDGEMENT,
     ERROR_MESSAGE, HANDSHAKE, DISCOVERY_REQUEST, DISCOVERY_RESPONSE,
-    // Commissioning lifecycle (see lib/CommissioningPackets), appended
+    // Commissioning lifecycle (see CommissioningPackets.h in lib/NodeManager), appended
     // without renumbering the values above:
     IDENTITY_REPORT, COMMISSION_COMMAND, COMMISSION_ACK,
     DECOMMISSION_COMMAND, DECOMMISSION_ACK

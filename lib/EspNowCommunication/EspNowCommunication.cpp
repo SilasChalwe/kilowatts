@@ -1226,6 +1226,20 @@ bool EspNowCommunication::initializeWiFi()
         esp_wifi_set_channel(
             channel_,
             WIFI_SECOND_CHAN_NONE
+        ) != ESP_OK ||
+        /*
+         * Modem sleep (the default STA power-save mode) intermittently
+         * powers the radio down between DTIM beacons. ESP-NOW's own
+         * traffic on the same radio then competes with that duty cycle,
+         * so a Central Node that just associated with the infrastructure
+         * AP misses its keepalive timing and gets kicked with
+         * WIFI_REASON_AUTH_EXPIRE within milliseconds of reaching the
+         * "run" state — before DHCP/DNS ever come up. Disabling power
+         * save keeps the radio fully responsive to both ESP-NOW and the
+         * AP association at once.
+         */
+        esp_wifi_set_ps(
+            WIFI_PS_NONE
         ) != ESP_OK)
     {
         ESP_LOGE(

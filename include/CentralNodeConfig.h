@@ -15,9 +15,10 @@
  * does NOT define a battery sensor address — Central boots with zero
  * local Loads and zero configured sensors until commissioned, exactly
  * like a Smart Node (see SmartNodeConfig.h's own file comment). Simulated
- * sensor input is a runtime-only concern now (see lib/DevelopmentSession,
- * lib/INA219Monitor::setDevelopmentOverride()), never a compile-time
- * value substituted automatically at boot.
+ * sensor input is a runtime-only concern now (see DevelopmentSession.h and
+ * INA219Monitor::setDevelopmentOverride() in lib/NodeManager and
+ * lib/BatteryManager respectively), never a compile-time value substituted
+ * automatically at boot.
  *
  * @author Chalwe Silas
  * @programme Final-Year Computer Engineering
@@ -32,6 +33,7 @@
 #include "INA219Monitor.h"
 #include "PowerBudgetCalculator.h"
 
+#include <array>
 #include <cstdint>
 
 namespace kilowatts {
@@ -42,6 +44,26 @@ constexpr const char* CENTRAL_NODE_NAME = "Central";
 
 /** DHCP hostname reported to the household/installation Access Point (cosmetic, see WiFiManager::Credentials::hostname). */
 constexpr const char* WIFI_STATION_HOSTNAME = "kilowatts-central";
+
+
+/*
+ * -----------------------------------------------------------------------
+ * Relay GPIO capability inventory (same board-safety contract as
+ * SmartNodeConfig::VERIFIED_RELAY_GPIO_PINS)
+ * -----------------------------------------------------------------------
+ * Chip-level safe set for the plain ESP32 (WROOM-32, no PSRAM) module
+ * Central runs on. Excludes GPIO0/2/5/12/15 (strapping - unsafe to drive
+ * during the transient boot window on a relay that must never glitch
+ * energised), GPIO1/3 (UART0 console), GPIO6-11 (integrated SPI flash
+ * bus), GPIO21/22 (already committed to Central's own battery-bus INA219
+ * I2C, see I2C_SERIAL_DATA_PIN/I2C_SERIAL_CLOCK_PIN above) and
+ * GPIO34/35/36/37/38/39 (input-only / not broken out). Capped at
+ * MAX_RELAY_GPIO_CAPABILITIES (8) to match the wire format used by
+ * NodeCommissioningRegistry::registerSelf().
+ */
+constexpr std::array<std::uint8_t, 8U> VERIFIED_RELAY_GPIO_PINS{
+    4U, 13U, 14U, 16U, 17U, 18U, 19U, 23U
+};
 
 
 /*
@@ -84,10 +106,14 @@ inline INA219Monitor::I2CBusConfiguration i2cBusConfiguration()
 
 /*
  * -----------------------------------------------------------------------
- * Battery/electrical policy (Sections 4.6.2.2-4.6.2.5). Real installation
- * values (battery chemistry/capacity, safe current limits) are PENDING
- * HARDWARE VERIFICATION; the numbers below are conservative placeholders
- * sized for a small 12V lead-acid/LiFePO4 demonstration bank.
+ * Battery/electrical policy defaults (Sections 4.6.2.2-4.6.2.5), used only
+ * on a never-commissioned device. NOMINAL_BATTERY_VOLTAGE_VOLTS and
+ * BATTERY_CAPACITY_AMP_HOURS are never assumed for a real installation -
+ * the installer supplies the real nameplate voltage/capacity for their
+ * actual battery bank via the CONFIGURE_BATTERY_SENSOR MQTT command (see
+ * CentralConfigurationStore::BatterySensorConfiguration), and that
+ * installer-entered value is authoritative from then on
+ * (configuredOrDefaultNominalVoltageVolts() in src/central/main.cpp).
  * -----------------------------------------------------------------------
  */
 constexpr float NOMINAL_BATTERY_VOLTAGE_VOLTS = 12.0F;

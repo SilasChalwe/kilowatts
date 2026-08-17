@@ -39,13 +39,26 @@ namespace SmartNodeConfig {
  * -----------------------------------------------------------------------
  * This is a board-safety contract, not installation topology. The installer
  * UI receives this exact list from the flashed Smart Node and offers no
- * other GPIOs. It is intentionally empty for the current ESP32-S3 camera
- * board until its schematic and the attached relay wiring have been
- * verified: guessing a GPIO could conflict with camera/flash/boot hardware
- * and energise a load unexpectedly. Once verified, add only tested output
- * pins here and reflash the common Smart Node image.
+ * other GPIOs.
+ *
+ * This is a chip-level safe set for the ESP32-S3-WROOM-1 N16R8 module (16MB
+ * flash + 8MB octal PSRAM, matching this Node's confirmed hardware), not a
+ * per-unit continuity-tested list. It excludes every pin Espressif documents
+ * as unsafe for this module: GPIO0/3/45/46 (strapping), GPIO43/44 (default
+ * UART0 console), GPIO19/20 (default USB-JTAG), GPIO26-32 (shared SPI
+ * flash/PSRAM bus) and GPIO35-37 (octal-PSRAM data lines on the R8
+ * variant). Capped at MAX_RELAY_GPIO_CAPABILITIES (8) to match the
+ * IdentityReportPacket wire format.
+ *
+ * This board is an ESP32-S3 camera module (ESP32-CAM-MB carrier) - if the
+ * camera sensor itself is physically populated on a given unit, its DVP
+ * bus/SIOD/SIOC/PWDN pins are additionally reserved on that unit even
+ * though they are chip-safe in general; verify against that specific
+ * camera module's schematic before wiring a relay to it.
  */
-constexpr std::array<std::uint8_t, 0U> VERIFIED_RELAY_GPIO_PINS{};
+constexpr std::array<std::uint8_t, 8U> VERIFIED_RELAY_GPIO_PINS{
+    4U, 5U, 6U, 7U, 15U, 16U, 17U, 18U
+};
 
 inline std::size_t getVerifiedRelayPinCount()
 {
