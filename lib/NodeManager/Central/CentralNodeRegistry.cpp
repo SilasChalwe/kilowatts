@@ -1,13 +1,3 @@
-/**
- * @file CentralNodeRegistry.cpp
- * @brief Implements Central's planning-time view of every known Node.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
- */
-
 #include "CentralNodeRegistry.h"
 
 #include "Load.h"
@@ -15,15 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
-/*
- * esp_log.h and every ESP_LOGx() call are only compiled on a real ESP32
- * build (ESP_PLATFORM is the macro ESP-IDF defines for every component
- * build), matching the pattern already used by BestFirstSearch.cpp and
- * INA219Monitor.cpp: the host build (run_cpp_test.sh, plain g++, no
- * ESP-IDF headers available) simply compiles without logging rather than
- * needing a fake stub header, and production logging on the real target
- * is completely unchanged.
- */
+// Host test builds have no ESP-IDF headers, so logging compiles out entirely.
 #ifdef ESP_PLATFORM
 #include "esp_log.h"
 #endif
@@ -172,12 +154,7 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
         const float plannedRunningWatts =
             loadPacket.nominalVoltageVolts * loadPacket.nominalCurrentAmps;
 
-        /*
-         * The same physical Load (this Node's MAC address + this relay
-         * pin) is looked up so a repeated report updates it in place
-         * instead of being rejected as a duplicate relay pin or adding a
-         * second entry for the same Load.
-         */
+        // Lookup by relay pin so a repeated report updates the same Load in place.
         Load *existingLoad = planningNode->node.getLoadByRelayPin(loadPacket.relayPin);
 
         if (existingLoad == nullptr) {
@@ -252,10 +229,6 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
         }
         existingLoad->setHealth(static_cast<LoadHealth>(loadPacket.availability));
 
-        /*
-         * Branch configuration (I_branch,max) for this relay pin, updated
-         * or inserted in place exactly like a Load above.
-         */
         bool branchConfigurationFound = false;
         for (BranchConfiguration& branch : planningNode->branchConfigurations) {
             if (branch.relayPin == loadPacket.relayPin) {
@@ -274,13 +247,11 @@ void CentralNodeRegistry::applyNodeReport(const NodeReportPacket& packet, std::u
     }
 
     /*
-     * Prune a Load this Node no longer reports (for example after a
-     * Load/Branch was removed on that Node, or - the case this phase
-     * makes routine - a freshly (re)commissioned Node now legitimately
-     * reports fewer Loads, down to zero, than it ever did before). Only
-     * safe for a complete, single-page report. applyNodeReport() rejects
-     * any unsupported page before reaching this point, so pruning cannot
-     * delete Loads merely because a future partial report arrived.
+     * Prune a Load this Node no longer reports (removed on that Node, or
+     * a freshly (re)commissioned Node now legitimately reporting fewer
+     * Loads than before). Only safe for a complete, single-page report;
+     * the check above already rejected any unsupported page, so pruning
+     * can't delete Loads because a future partial report arrived.
      */
     if (packet.pageIndex == 0U && packet.totalPages == 1U) {
         std::vector<std::uint8_t> relayPinsStillReported;

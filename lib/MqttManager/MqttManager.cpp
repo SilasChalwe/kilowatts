@@ -2,11 +2,6 @@
  * @file MqttManager.cpp
  * @brief Implements Central Node MQTT connectivity and the kilowatts/v1
  *        topic contract.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "MqttManager.h"

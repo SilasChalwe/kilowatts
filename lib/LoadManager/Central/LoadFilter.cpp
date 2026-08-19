@@ -1,13 +1,3 @@
-/**
- * @file LoadFilter.cpp
- * @brief Implements the separation of known Loads into Fixed and Auto groups.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
- */
-
 #include "LoadFilter.h"
 
 namespace kilowatts {
@@ -41,12 +31,8 @@ bool LoadFilter::addLoad(const Load& load)
         return true;
     }
 
-    /*
-     * AUTO_ON and AUTO_OFF are both Auto candidate Loads: an Auto Load's
-     * current ON/OFF state is only this planning cycle's starting point,
-     * not the filter's decision. Best-First Search decides later whether
-     * it stays ON or gets switched.
-     */
+    // An Auto Load's current ON/OFF state is only this cycle's starting
+    // point; Best-First Search decides later whether it stays or switches.
     if (load.isAuto()) {
         autoCandidateLoads_.push_back(&load);
         return true;

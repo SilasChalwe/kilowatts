@@ -5,11 +5,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #include "Node.h"
@@ -50,9 +45,6 @@ void printSection(const char* title) {
 const Node::MacAddress NODE_MAC = {0x02, 0x00, 0x00, 0x00, 0xE0, 0x01};
 const Node::MacAddress OTHER_MAC = {0x02, 0x00, 0x00, 0x00, 0xE0, 0x02};
 
-/**
- * TEST 1 - ADD / LOOKUP
- */
 void testAddAndLookup() {
     printSection("TEST 1 - ADD / LOOKUP");
 
@@ -81,9 +73,6 @@ void testAddAndLookup() {
     reportCheck("getLoad() returns nullptr for an out-of-range index", node.getLoad(99U) == nullptr);
 }
 
-/**
- * TEST 2 - REMOVE BY RELAY PIN
- */
 void testRemoveByRelayPin() {
     printSection("TEST 2 - REMOVE BY RELAY PIN");
 
@@ -117,9 +106,6 @@ void testRemoveByRelayPin() {
 
 int main() {
     std::printf("KILOWATTS NODE HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testAddAndLookup();
     testRemoveByRelayPin();

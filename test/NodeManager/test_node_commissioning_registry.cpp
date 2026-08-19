@@ -9,11 +9,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #include "NodeCommissioningRegistry.h"
@@ -56,9 +51,7 @@ const MacAddress SMART_MAC = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0x01};
 const MacAddress OTHER_MAC = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0x02};
 const MacAddress CENTRAL_MAC = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0x03};
 
-/**
- * TEST 1A - BOARD CAPABILITY INVENTORY
- *
+/*
  * The installer portal must receive only the GPIOs the flashed Smart Node
  * declared safe. This is a discovery fact and must refresh if a Node is
  * reflashed with a corrected board profile.
@@ -86,9 +79,6 @@ void testRelayCapabilities() {
                 refreshed->relayPins[0] == 18U && refreshed->relayPins[1] == 0U);
 }
 
-/**
- * TEST 1 - DISCOVERY CREATES/REFRESHES A RECORD
- */
 void testDiscovery() {
     printSection("TEST 1 - DISCOVERY CREATES/REFRESHES A RECORD");
 
@@ -121,9 +111,6 @@ void testDiscovery() {
     reportCheck("findByMac() returns nullptr for an unknown MAC", registry.findByMac(OTHER_MAC) == nullptr);
 }
 
-/**
- * TEST 2 - CENTRAL SELF-REGISTRATION
- */
 void testRegisterSelf() {
     printSection("TEST 2 - CENTRAL SELF-REGISTRATION");
 
@@ -146,9 +133,6 @@ void testRegisterSelf() {
                 unchanged != nullptr && std::strcmp(unchanged->friendlyName, "Central") == 0);
 }
 
-/**
- * TEST 3 - FIRST COMMISSIONING ROUND TRIP
- */
 void testFirstCommissioningRoundTrip() {
     printSection("TEST 3 - FIRST COMMISSIONING ROUND TRIP");
 
@@ -191,9 +175,6 @@ void testFirstCommissioningRoundTrip() {
                 commissioned->syncState == NodeCommissioningRegistry::SyncState::SYNCED);
 }
 
-/**
- * TEST 4 - FAILED COMMISSIONING NEVER PARTIALLY APPLIES
- */
 void testFailedCommissioningRollsBack() {
     printSection("TEST 4 - FAILED COMMISSIONING NEVER PARTIALLY APPLIES");
 
@@ -213,9 +194,6 @@ void testFailedCommissioningRollsBack() {
                 rolledBack != nullptr && rolledBack->syncState == NodeCommissioningRegistry::SyncState::FAILED);
 }
 
-/**
- * TEST 5 - RENAME AN ALREADY-COMMISSIONED NODE
- */
 void testRename() {
     printSection("TEST 5 - RENAME AN ALREADY-COMMISSIONED NODE");
 
@@ -239,9 +217,6 @@ void testRename() {
                 renamed != nullptr && std::strcmp(renamed->friendlyName, "Living Room") == 0);
 }
 
-/**
- * TEST 6 - DECOMMISSION AND REDISCOVERY
- */
 void testDecommissionAndRediscovery() {
     printSection("TEST 6 - DECOMMISSION AND REDISCOVERY");
 
@@ -267,9 +242,6 @@ void testDecommissionAndRediscovery() {
                 rediscovered != nullptr && rediscovered->lifecycleState == NodeLifecycleState::UNCOMMISSIONED);
 }
 
-/**
- * TEST 7 - PERSISTENCE IS HONEST ON A HOST BUILD
- */
 void testPersistenceHonestOnHostBuild() {
     printSection("TEST 7 - PERSISTENCE IS HONEST ON A HOST BUILD");
 
@@ -290,9 +262,6 @@ void testPersistenceHonestOnHostBuild() {
 
 int main() {
     std::printf("KILOWATTS NODECOMMISSIONINGREGISTRY HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testDiscovery();
     testRelayCapabilities();

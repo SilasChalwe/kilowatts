@@ -1,11 +1,6 @@
 /**
  * @file ChipInfo.h
  * @brief Declares ESP32 chip and hardware information access.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
  */
 
 #ifndef CHIP_INFO_H
@@ -21,15 +16,6 @@ class ChipInfo
 {
 public:
 
-    /**
-     * One complete ESP32 MAC address contains 6 bytes.
-     *
-     * Example:
-     * 24:6F:28:AA:BB:01
-     *
-     * macAddress[0] through macAddress[5] are the six bytes
-     * of ONE complete MAC address.
-     */
     using MacAddress =
         std::array<std::uint8_t, 6>;
 

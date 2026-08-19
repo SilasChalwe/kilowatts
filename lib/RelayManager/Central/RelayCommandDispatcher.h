@@ -1,14 +1,13 @@
 /**
  * @file RelayCommandDispatcher.h
  * @brief Declares OFF-before-ON relay dispatch ordering and
- *        command/acknowledgement tracking (Section 4.6.4.3, Algorithm 4.6).
+ *        command/acknowledgement tracking.
  *
- * After Best-First Search produces a target logical schedule, the
- * document requires that Loads transitioning ON -> OFF are commanded
- * first (releasing capacity) before any OFF -> ON transition is sent, and
- * that Central tracks each dispatched command until it is confirmed or
- * fails, rather than assuming the desired state is the confirmed
- * physical state.
+ * After Best-First Search produces a target logical schedule, Loads
+ * transitioning ON -> OFF must be commanded first (releasing capacity)
+ * before any OFF -> ON transition is sent, and Central tracks each
+ * dispatched command until it is confirmed or fails, rather than
+ * assuming the desired state is the confirmed physical state.
  *
  * RelayCommandDispatcher owns exactly two things:
  *
@@ -17,7 +16,7 @@
  *    confirmed state, and returns them in dispatch order: every OFF
  *    transition first (any order), then every ON transition afterward in
  *    the same relative order they were supplied (Best-First admission
- *    order is preserved through Algorithm 4.5's sequential allocation).
+ *    order is preserved through BestFirstSearch's sequential allocation).
  *    A target already at its desired confirmed state is dropped — there
  *    is nothing to command.
  * 2. Command/acknowledgement bookkeeping — commandId allocation, pending
@@ -29,11 +28,6 @@
  * not actuate GPIOs itself (RelayController), does not run Best-First
  * Search, and does not decide *what* the target schedule is — only how a
  * given schedule is sequenced and how in-flight commands are tracked.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_RELAY_COMMAND_DISPATCHER_H
@@ -91,12 +85,11 @@ public:
 
 
     /**
-     * Builds the OFF-before-ON dispatch order (Algorithm 4.6) from every
-     * candidate target. Preserves the caller's relative ordering within
-     * each phase — passing targets in Best-First admission order (the
-     * order BestFirstSearch::isLoadSelectedToBeOn() was evaluated in)
-     * keeps that same priority order within the ON phase, matching "Loads
-     * selected for ON operation are then enabled in Best-First order."
+     * Builds the OFF-before-ON dispatch order from every candidate
+     * target. Preserves the caller's relative ordering within each phase
+     * — passing targets in Best-First admission order (the order
+     * BestFirstSearch::isLoadSelectedToBeOn() was evaluated in) keeps
+     * that same priority order within the ON phase.
      *
      * A target whose desiredOn already equals currentlyConfirmedOn is a
      * no-op and is dropped from the result — there is nothing to command.

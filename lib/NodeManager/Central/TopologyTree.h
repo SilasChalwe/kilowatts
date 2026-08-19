@@ -1,29 +1,17 @@
 /**
  * @file TopologyTree.h
- * @brief Declares JSON construction for the kilowatts/v1/state/tree and
+ * @brief JSON construction for the kilowatts/v1/state/tree and
  *        kilowatts/v1/state/loads MQTT topics.
  *
- * TopologyTree's one responsibility: walk CentralNodeRegistry's known
- * Nodes/Loads/Branches and format them into the two JSON shapes the
- * mobile application needs — a nested tree (communication topology:
- * Central at the root, Smart Nodes nested by their real Next-Hop
- * relationship, each Node's electrical Branches as leaves) and a flat
- * per-Load array (every field the application needs to render one Load's
- * card/row without recomputing anything). It does not discover Nodes,
- * does not receive ESP-NOW packets, does not run Best-First Search, and
- * does not decide relay states — it only reads what CentralNodeRegistry
- * and each Load already know and formats it.
+ * Walks CentralNodeRegistry's known Nodes/Loads/Branches into a nested
+ * tree (Central at the root, Smart Nodes nested by their real Next-Hop
+ * relationship, electrical Branches as leaves) and a flat per-Load array.
  *
  * Communication topology (who forwards through whom, from
  * PlanningNode::nextHopToCentralMacAddress) is kept deliberately distinct
  * from electrical Branches (BestFirstSearch::BranchId, an owning Node's
  * relay pin): a Node's position in the tree comes from the former, while
  * the Branches listed under it come from the latter.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_TOPOLOGY_TREE_H
@@ -68,9 +56,8 @@ public:
     /**
      * Builds the flat kilowatts/v1/state/loads JSON payload: one object
      * per Load currently known (across every Node, Central included),
-     * carrying every field Section 4 ("Load State Published To MQTT")
-     * requires so the mobile application never has to recompute
-     * anything.
+     * carrying every field the mobile application needs to render a
+     * Load's card/row without recomputing anything.
      */
     static std::string buildLoadsJson(
         const CentralNodeRegistry& registry,

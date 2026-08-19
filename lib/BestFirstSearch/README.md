@@ -20,7 +20,7 @@ does not copy or own them), a battery/electrical state for the current
 planning cycle, and, for every branch a candidate belongs to, that
 branch's starting committed power and maximum current. It does not know
 how any of that was measured or obtained: battery State of Charge,
-power-budget calculation, Fixed-Load allocation (`AvailablePowerManager`),
+power-limit calculation, Fixed-Load allocation (`AvailablePowerManager`),
 Load classification (`LoadFilter`) and schedule evaluation
 (`LoadScheduleEvaluator`) are all handled by other modules, before their
 results ever reach this class.
@@ -96,7 +96,7 @@ whole search, used only to normalize `p_i`/`s_i`. It is a genuinely
 different quantity from `P_remaining` (`powerAvailableForAutoLoadsWatts`
 at the start, then decreasing as candidates are admitted — see the
 constraint guard below), whenever Fixed ON Loads have already committed
-part of the total budget.
+part of the total limit.
 
 `P_i`/`P_i_peak` are `Load::getPower().runningWatts`/`.startupWatts`.
 `W_i` is `Load::getPriority()`. `r_i` is supplied per candidate to
@@ -124,7 +124,7 @@ it may be admitted:
 
 ```
 1. SoC > SoC_min                                       -> else LOW_BATTERY
-2. P_i <= P_remaining                                   -> else POWER_BUDGET_EXCEEDED
+2. P_i <= P_remaining                                   -> else POWER_LIMIT_EXCEEDED
 3. P_committed + P_i_peak <= P_battery,max               -> else BATTERY_CURRENT_LIMIT
 4. (P_committed + P_i_peak) / V_B <= I_main,max          -> else MAIN_LIMIT_EXCEEDED
 5. (P_branch + P_i_peak) / V_B <= I_branch,max           -> else BRANCH_LIMIT_EXCEEDED
@@ -133,7 +133,7 @@ it may be admitted:
 ```cpp
 static constexpr std::uint8_t NONE = 0U;
 static constexpr std::uint8_t LOW_BATTERY = 1U;
-static constexpr std::uint8_t POWER_BUDGET_EXCEEDED = 2U;
+static constexpr std::uint8_t POWER_LIMIT_EXCEEDED = 2U;
 static constexpr std::uint8_t BATTERY_CURRENT_LIMIT = 3U;
 static constexpr std::uint8_t MAIN_LIMIT_EXCEEDED = 4U;
 static constexpr std::uint8_t BRANCH_LIMIT_EXCEEDED = 5U;
@@ -157,7 +157,7 @@ update are `O(1)` per candidate. Overall: `T(n) = O(n log n)`,
 
 ## Boundary
 
-Sensor acquisition, battery State-of-Charge estimation, power-budget
+Sensor acquisition, battery State-of-Charge estimation, power-limit
 calculation, Fixed-Load allocation, schedule evaluation, relay actuation,
 ESP-NOW, Wi-Fi, MQTT and persistent storage do not belong in this
 library. They supply inputs to the search (a battery/electrical state, a
@@ -171,7 +171,7 @@ through separate modules:
   Available for Auto Loads) and `initialCommittedPowerWatts` (its Fixed ON
   Running Power).
 - `LoadScheduleEvaluator` supplies each candidate's `r_i`.
-- `BatteryStateOfCharge` and `PowerBudgetCalculator` supply SoC, the SoC
+- `BatteryStateOfCharge` and `SafePowerLimitCalculator` supply SoC, the SoC
   thresholds, `V_B` and the battery/main current limits.
 - `RelayCommandDispatcher` (OFF-before-ON sequencing) and `RelayController`
   (local GPIO actuation) act on the result; `src/central/main.cpp`'s

@@ -13,11 +13,6 @@
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation —
  * matching test/BestFirstSearch/test_best_first_search.cpp.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "Load.h"
@@ -58,9 +53,6 @@ void printSection(const char* title) {
 
 const Load::MacAddress DEMO_MAC = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xB8};
 
-/**
- * TEST 1 - FIXED ON CLASSIFICATION
- */
 void testFixedOnClassification() {
     printSection("TEST 1 - FIXED ON CLASSIFICATION");
 
@@ -80,9 +72,6 @@ void testFixedOnClassification() {
                 loadFilter.getFixedOnLoad(0U) == &light);
 }
 
-/**
- * TEST 2 - FIXED OFF CLASSIFICATION
- */
 void testFixedOffClassification() {
     printSection("TEST 2 - FIXED OFF CLASSIFICATION");
 
@@ -101,9 +90,6 @@ void testFixedOffClassification() {
                 loadFilter.getFixedOffLoad(0U) == &pump);
 }
 
-/**
- * TEST 3 - AUTO ON AND AUTO OFF ARE BOTH CANDIDATES
- */
 void testAutoClassification() {
     printSection("TEST 3 - AUTO ON AND AUTO OFF ARE BOTH CANDIDATES");
 
@@ -126,9 +112,6 @@ void testAutoClassification() {
                 loadFilter.getAutoCandidateLoad(1U) == &chargingPort);
 }
 
-/**
- * TEST 4 - MIXED CLASSIFICATION AND RESET
- */
 void testMixedClassificationAndReset() {
     printSection("TEST 4 - MIXED CLASSIFICATION AND RESET");
 
@@ -155,9 +138,6 @@ void testMixedClassificationAndReset() {
     reportCheck("getFixedOnLoad(0) returns nullptr after reset()", loadFilter.getFixedOnLoad(0U) == nullptr);
 }
 
-/**
- * TEST 5 - OUT OF RANGE LOOKUPS
- */
 void testOutOfRangeLookups() {
     printSection("TEST 5 - OUT OF RANGE LOOKUPS");
 

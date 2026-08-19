@@ -1,13 +1,13 @@
 /**
  * @file BestFirstSearch.h
  * @brief Declares the Best-First Search used to select Auto candidate
- *        Load objects (Sections 4.6.2-4.6.4).
+ *        Load objects.
  *
  * BestFirstSearch receives Auto candidate Load objects and the current
  * planning-cycle electrical state (battery State of Charge, the power
  * available to Auto Loads this cycle, and the electrical limits a
  * candidate may not exceed). It does not measure or calculate any of
- * those values itself — battery-state estimation, power-budget
+ * those values itself — battery-state estimation, power-limit
  * calculation, Fixed-Load allocation, schedule evaluation, relay
  * actuation and communication are all handled by other modules, outside
  * this class. BestFirstSearch's own responsibility is exactly: score
@@ -16,8 +16,8 @@
  * or reject candidates while updating its own P_remaining, P_committed
  * and per-branch committed power.
  *
- * A "branch" here is Section 4.6.2.5's branch circuit b(i): one
- * relay-controlled DC output circuit, physically identified by the Node
+ * A "branch" here is branch circuit b(i): one relay-controlled DC output
+ * circuit, physically identified by the Node
  * that switches it plus the relay pin used to switch it (BranchId, below).
  * That identity is supplied by the caller for each candidate, together
  * with that branch's committed power and maximum current — the maximum
@@ -29,11 +29,6 @@
  *
  * OPEN is implemented as a binary min-heap ordered by f(i), so the
  * candidate with the smallest (most desirable) score is extracted first.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_BEST_FIRST_SEARCH_H
@@ -53,8 +48,8 @@ class BestFirstSearch {
 public:
 
     /**
-     * Identifies one physical electrical branch circuit, b(i) in Section
-     * 4.6.2.5: the relay-controlled DC output that feeds a Load. A Branch
+     * Identifies one physical electrical branch circuit, b(i): the
+     * relay-controlled DC output that feeds a Load. A Branch
      * is one relay channel belonging to one Node, so its identity is
      * exactly that Node's MAC address plus the relay pin switching it —
      * the same physical addressing already used for Load::Id, since in
@@ -89,27 +84,27 @@ public:
 
     /**
      * Rejection reason codes stored for a candidate that failed the
-     * electrical constraint guard (Equation 4.25 / Algorithm 4.4). The
-     * numeric values match the order the guard checks them in.
+     * electrical constraint guard. The numeric values match the order
+     * the guard checks them in.
      */
     static constexpr std::uint8_t NONE = 0U;
     static constexpr std::uint8_t LOW_BATTERY = 1U;
-    static constexpr std::uint8_t POWER_BUDGET_EXCEEDED = 2U;
+    static constexpr std::uint8_t POWER_LIMIT_EXCEEDED = 2U;
     static constexpr std::uint8_t BATTERY_CURRENT_LIMIT = 3U;
     static constexpr std::uint8_t MAIN_LIMIT_EXCEEDED = 4U;
     static constexpr std::uint8_t BRANCH_LIMIT_EXCEEDED = 5U;
 
 
     /**
-     * Policy weights controlling the physical-cost g(i) (Equation 4.30)
-     * and heuristic-cost h(i) (Equation 4.32) terms of the complete
-     * Best-First score f(i) = g(i) + h(i) (Equation 4.33).
+     * Policy weights controlling the physical-cost g(i) and
+     * heuristic-cost h(i) terms of the complete Best-First score
+     * f(i) = g(i) + h(i).
      *
      * maximumAllowedPriority is W_max, the priority scale
-     * Load::getPriority() values are normalized against to produce q_i
-     * (Equation 4.31). These are policy/configuration values, not
-     * physical measurements — BestFirstSearch validates them but does
-     * not invent production defaults for them.
+     * Load::getPriority() values are normalized against to produce q_i.
+     * These are policy/configuration values, not physical measurements —
+     * BestFirstSearch validates them but does not invent production
+     * defaults for them.
      */
     struct Weights {
         float runningPowerWeight;    // w_P
@@ -122,43 +117,41 @@ public:
 
 
     /**
-     * Battery and electrical-limit inputs for one planning cycle
-     * (Sections 4.6.2.2-4.6.2.5). Every value here is measured or
-     * derived elsewhere — battery-state estimation and power-budget
-     * preparation, a later phase — and supplied unchanged.
-     * BestFirstSearch does not measure SoC, does not read INA219, and
-     * does not calculate P_battery,max or I_main,max itself.
+     * Battery and electrical-limit inputs for one planning cycle. Every
+     * value here is measured or derived elsewhere — battery-state
+     * estimation and power-limit preparation, a later phase — and
+     * supplied unchanged. BestFirstSearch does not measure SoC, does not
+     * read INA219, and does not calculate P_battery,max or I_main,max
+     * itself.
      *
-     * totalAvailablePowerWatts is P_available (Equation 4.14): the total
-     * safe planning power for this cycle, before Fixed-load allocation.
-     * It is used only as the constant normalization denominator for
-     * p_i/s_i (Equations 4.27-4.28) — it is exactly
-     * AvailablePowerManager::getTotalAvailablePowerWatts().
+     * totalAvailablePowerWatts is P_available: the total safe planning
+     * power for this cycle, before Fixed-load allocation. It is used
+     * only as the constant normalization denominator for p_i/s_i — it is
+     * exactly AvailablePowerManager::getTotalAvailablePowerWatts().
      *
      * powerAvailableForAutoLoadsWatts is P_remaining's starting value
-     * (Equation 4.16: P_available - P_fixed): the Auto-load allocation
-     * budget this search sequentially consumes as candidates are
-     * admitted (Algorithm 4.5). It is exactly
-     * AvailablePowerManager::getPowerAvailableForAutoLoadsWatts(), and is
-     * a genuinely different quantity from totalAvailablePowerWatts
-     * whenever Fixed ON Loads commit part of the total budget.
+     * (P_available - P_fixed): the Auto-load allocation limit this
+     * search sequentially consumes as candidates are admitted. It is
+     * exactly AvailablePowerManager::getPowerAvailableForAutoLoadsWatts(),
+     * and is a genuinely different quantity from totalAvailablePowerWatts
+     * whenever Fixed ON Loads commit part of the total limit.
      *
      * initialCommittedPowerWatts is P_committed's starting value: the
      * steady-state power already flowing on the main DC bus before this
      * search admits anything — normally the Fixed ON Running Power
      * already calculated by AvailablePowerManager. BestFirstSearch owns
      * P_committed from this point on and increases it as Auto Loads are
-     * admitted (Equation 4.36).
+     * admitted.
      */
     struct ElectricalPlanningState {
-        float stateOfChargePercent;            // SoC        (Equation 4.8)
-        float minimumStateOfChargePercent;     // SoC_min    (Section 4.6.2.2)
-        float warningStateOfChargePercent;     // SoC_warn   (Equation 4.29)
-        float batteryBusVoltageVolts;          // V_B        (Equations 4.18-4.19)
-        float maximumBatteryPowerWatts;        // P_battery,max (Equation 4.12)
-        float maximumMainCurrentAmps;          // I_main,max (Section 4.6.2.5)
-        float totalAvailablePowerWatts;        // P_available (Equation 4.14)
-        float powerAvailableForAutoLoadsWatts; // P_remaining at the start (Equation 4.16)
+        float stateOfChargePercent;            // SoC
+        float minimumStateOfChargePercent;     // SoC_min
+        float warningStateOfChargePercent;     // SoC_warn
+        float batteryBusVoltageVolts;          // V_B
+        float maximumBatteryPowerWatts;        // P_battery,max
+        float maximumMainCurrentAmps;          // I_main,max
+        float totalAvailablePowerWatts;        // P_available
+        float powerAvailableForAutoLoadsWatts; // P_remaining at the start
         float initialCommittedPowerWatts;      // P_committed at the start
     };
 
@@ -189,9 +182,9 @@ public:
      * 0-100, a battery bus voltage that is not strictly positive, a
      * negative power/current limit, or warningStateOfChargePercent that
      * does not lie strictly above minimumStateOfChargePercent (the
-     * battery-stress denominator in Equation 4.29 would otherwise be
-     * zero or negative). Also rejected while a previously started search
-     * has not yet been run() or reset.
+     * battery-stress denominator would otherwise be zero or negative).
+     * Also rejected while a previously started search has not yet been
+     * run() or reset.
      */
     bool startSearch(const ElectricalPlanningState& planningState);
 
@@ -215,8 +208,8 @@ public:
 
     /**
      * Adds one Auto candidate Load to the current search on the given
-     * branch, together with its schedule future-penalty r_i (Equation
-     * 4.32) already prepared by LoadScheduleEvaluator.
+     * branch, together with its schedule future-penalty r_i already
+     * prepared by LoadScheduleEvaluator.
      *
      * Rejected when the search has not started/has completed, the Load
      * was already added, branchId was not registered via registerBranch()
@@ -231,10 +224,10 @@ public:
 
 
     /**
-     * Runs Best-First Search over every Auto candidate that was added
-     * (Algorithm 4.5): scores each candidate once, orders them in the
-     * OPEN min-heap by f(i), then repeatedly extracts the smallest score
-     * and applies the electrical constraint guard.
+     * Runs Best-First Search over every Auto candidate that was added:
+     * scores each candidate once, orders them in the OPEN min-heap by
+     * f(i), then repeatedly extracts the smallest score and applies the
+     * electrical constraint guard.
      */
     bool run();
 
@@ -282,13 +275,12 @@ public:
      * admissionPosition 0 is the first (smallest f(i)) Load admitted,
      * admissionPosition getNumberOfAdmittedLoads()-1 is the last.
      *
-     * This is the order the document requires relay ON commands be
-     * dispatched in ("Loads selected for ON operation are then enabled
-     * in Best-First order"): getLoad()/isLoadSelectedToBeOn() alone
-     * cannot reconstruct it, since those are indexed by addLoad() call
-     * order, not by admission order — a caller that rebuilt ON order by
-     * re-traversing candidates in addLoad()/registry order would silently
-     * discard the Best-First ordering this search just computed.
+     * Relay ON commands must be dispatched in this order:
+     * getLoad()/isLoadSelectedToBeOn() alone cannot reconstruct it, since
+     * those are indexed by addLoad() call order, not by admission order —
+     * a caller that rebuilt ON order by re-traversing candidates in
+     * addLoad()/registry order would silently discard the Best-First
+     * ordering this search just computed.
      *
      * Returns nullptr when admissionPosition is out of range, or before
      * run() has completed.
@@ -297,13 +289,11 @@ public:
 
 
     /**
-     * One candidate's inputs to the electrical constraint guard
-     * (Equations 4.20-4.25 / Algorithm 4.4), supplied directly rather
-     * than read from a live search — used both internally by run() and
-     * externally by a caller re-verifying feasibility immediately before
-     * actuation, against a freshly re-read electrical snapshot, without
-     * running the whole search again (Section "Add The Documented Safety
-     * Re-Check Immediately Before Each ON Command").
+     * One candidate's inputs to the electrical constraint guard, supplied
+     * directly rather than read from a live search — used both internally
+     * by run() and externally by a caller re-verifying feasibility
+     * immediately before actuation, against a freshly re-read electrical
+     * snapshot, without running the whole search again.
      */
     struct FeasibilityInputs {
         float stateOfChargePercent;        // SoC
@@ -321,10 +311,10 @@ public:
 
 
     /**
-     * Applies the exact Algorithm 4.4 constraint guard (Equations
-     * 4.20-4.25, in the documented check order) to inputs and returns
-     * NONE when feasible, otherwise the first violated constraint's
-     * rejection reason. Pure function — reads nothing from this object's
+     * Applies the constraint guard, in a fixed check order, to inputs
+     * and returns NONE when feasible, otherwise the first violated
+     * constraint's rejection reason. Pure function — reads nothing from
+     * this object's
      * own state, so it is safe to call at any time, including outside an
      * active search, and is exactly what a pre-actuation safety re-check
      * needs: rerun this one function against a freshly re-read snapshot,
@@ -345,26 +335,26 @@ public:
     /** Returns P_branch for branchId, or 0 when branchId was never registered. */
     float getBranchCommittedPowerWatts(BranchId branchId) const;
 
-    /** Returns B, the battery-stress term computed once at startSearch() (Equation 4.29). */
+    /** Returns B, the battery-stress term computed once at startSearch(). */
     float getBatteryStressTerm() const;
 
 
-    /** Returns p_i, the normalized running-power term (Equation 4.27). */
+    /** Returns p_i, the normalized running-power term. */
     float getLoadRunningPowerRatio(std::size_t loadIndex) const;
 
-    /** Returns s_i, the normalized startup-power term (Equation 4.28). */
+    /** Returns s_i, the normalized startup-power term. */
     float getLoadStartupPowerRatio(std::size_t loadIndex) const;
 
-    /** Returns q_i, the normalized user-priority term (Equation 4.31). */
+    /** Returns q_i, the normalized user-priority term. */
     float getLoadPriorityRatio(std::size_t loadIndex) const;
 
-    /** Returns g(i), the physical cost (Equation 4.30). */
+    /** Returns g(i), the physical cost. */
     float getLoadPhysicalCost(std::size_t loadIndex) const;
 
-    /** Returns h(i), the heuristic preference cost (Equation 4.32). */
+    /** Returns h(i), the heuristic preference cost. */
     float getLoadHeuristicCost(std::size_t loadIndex) const;
 
-    /** Returns f(i) = g(i) + h(i), the complete Best-First score (Equation 4.33). */
+    /** Returns f(i) = g(i) + h(i), the complete Best-First score. */
     float getLoadFinalScore(std::size_t loadIndex) const;
 
 
@@ -399,7 +389,7 @@ private:
 
 
     /**
-     * Candidate Evaluation Function (Algorithm 4.3).
+     * Candidate evaluation function.
      */
     float calculateRunningPowerRatio(std::size_t loadIndex) const;
 
@@ -417,11 +407,10 @@ private:
 
 
     /**
-     * Constraint Guard (Algorithm 4.4 / Equation 4.25). Returns NONE
-     * when candidate loadIndex is feasible, otherwise the first
-     * violated constraint's rejection reason, checked in the order
-     * SoC reserve, power budget, battery current limit, main-bus
-     * startup current, branch startup current.
+     * Constraint guard. Returns NONE when candidate loadIndex is
+     * feasible, otherwise the first violated constraint's rejection
+     * reason, checked in the order SoC reserve, power limit, battery
+     * current limit, main-bus startup current, branch startup current.
      */
     std::uint8_t checkFeasibility(std::size_t loadIndex) const;
 
@@ -446,9 +435,8 @@ private:
 
 
     /**
-     * Sequential Allocation of Remaining Capacity (Algorithm 4.5,
-     * Equations 4.34-4.37): admits loadIndex and updates P_remaining,
-     * P_committed and its branch's committed power.
+     * Sequential allocation of remaining capacity: admits loadIndex and
+     * updates P_remaining, P_committed and its branch's committed power.
      */
     void markLoadSelectedToBeOn(std::size_t loadIndex);
 
@@ -487,12 +475,12 @@ private:
     /**
      * Electrical state supplied to startSearch(). Constant for the whole
      * search except committedPowerWatts_, which is BestFirstSearch's own
-     * evolving P_committed (Equation 4.36).
+     * evolving P_committed.
      */
     ElectricalPlanningState planningState_;
     float remainingPowerWatts_;   // P_remaining
     float committedPowerWatts_;   // P_committed
-    float batteryStressTerm_;     // B, computed once per search (Equation 4.29)
+    float batteryStressTerm_;     // B, computed once per search
 
 
     /**
@@ -515,7 +503,7 @@ private:
 
 
     /**
-     * Scores calculated internally for each candidate (Algorithm 4.3).
+     * Scores calculated internally for each candidate.
      */
     std::vector<float> loadRunningPowerRatios_;   // p_i
     std::vector<float> loadStartupPowerRatios_;   // s_i

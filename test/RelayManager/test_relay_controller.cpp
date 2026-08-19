@@ -11,11 +11,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "RelayController.h"
@@ -139,9 +134,6 @@ void testRollbackRemoval() {
 
 int main() {
     std::printf("KILOWATTS RELAYCONTROLLER HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testRegistration();
     testCommandedStateTracking();

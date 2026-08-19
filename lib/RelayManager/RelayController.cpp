@@ -13,11 +13,6 @@
  *   ESP_PLATFORM, using ESP-IDF's driver/gpio.h. A host build's version of
  *   every hardware-touching method simply returns false without
  *   fabricating a GPIO level.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "RelayController.h"
@@ -117,8 +112,8 @@ bool RelayController::removeRelay(std::uint8_t relayPin)
 #ifdef ESP_PLATFORM
         /*
          * A channel is only removed as part of rolling back a failed
-         * provisioning operation, but still establish the documented safe
-         * OFF level before releasing the pin.
+         * provisioning operation, but still drive it to a safe OFF level
+         * before releasing the pin.
          */
         if (relay.hardwareApplied) {
             if (!writeGpioLevel(relay, false)) {
@@ -261,13 +256,12 @@ bool RelayController::configureGpio(RegisteredRelay& relay)
 
     /*
      * The initial output level is set as part of the same gpio_config()
-     * call that enables the pin as an output. The document additionally
-     * specifies a physical 10 kOhm pull-down resistor on each relay
-     * control line to guard against a spurious relay activation during
-     * the ESP32 boot sequence, before this configuration call runs;
-     * pull_down_en here is the matching software-side default for the
-     * short window after this call while no explicit level has been
-     * commanded yet.
+     * call that enables the pin as an output. Each relay control line
+     * also carries a physical 10 kOhm pull-down resistor to guard against
+     * a spurious relay activation during the ESP32 boot sequence, before
+     * this configuration call runs; pull_down_en here is the matching
+     * software-side default for the short window after this call while
+     * no explicit level has been commanded yet.
      */
     gpio_config_t ioConfiguration{};
     ioConfiguration.pin_bit_mask = 1ULL << static_cast<unsigned int>(pin);

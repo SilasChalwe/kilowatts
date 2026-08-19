@@ -1,11 +1,6 @@
 /**
  * @file WiFiManager.cpp
  * @brief Implements Central Node infrastructure Wi-Fi station connectivity.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "WiFiManager.h"

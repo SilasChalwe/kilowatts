@@ -1,11 +1,5 @@
 BestFirstSearch Test Report
-Author: Chalwe Silas
 
-Programme: Final-Year Computer Engineering
-
-Institution: The Copperbelt University
-
-Date: 8 May 2026
 This README reports the exact inputs, expected results, measured results and findings for the BestFirstSearch correctness and scalability tests.
 1. Final result
 Table 1 - Overall test result
@@ -53,7 +47,7 @@ g++ -std=c++17 -O2 \
 Do not compile the test with -DNDEBUG. That option disables assert().
 3. System boundary: full tree or flat input?
 The complete distribution model is a hierarchical tree. BestFirstSearch does not traverse that full tree.
-Stage 1 traverses the full distribution tree once and creates the candidate array. This is Stage 1 and Algorithm 4.2 on PDF pages 36-37. Stage 2 receives the flat candidate array and applies Algorithms 4.3-4.5 on PDF pages 37-38.
+Stage 1 traverses the full distribution tree once and creates the candidate array. Stage 2 receives the flat candidate array and applies Best-First selection.
 FULL DISTRIBUTION TREE
         |
         | Stage 1: traverse once
@@ -67,7 +61,7 @@ FINAL ON/OFF SCHEDULE
 Each flat candidate keeps b_i, the branch index of load i. This preserves the electrical branch relationship required by the constraint guard.
 4. Formulas implemented and tested
 No LaTeX commands are used in this README. Every formula is shown as plain readable text.
-Table 2A - Exact Candidate Evaluation formulas (Algorithm 4.3, PDF page 37)
+Table 2A - Exact Candidate Evaluation formulas
 Term	Exact implemented formula
 p_i	p_i = P_i / max(P_available, 1 W)
 s_i	s_i = max(0, P_i_peak - P_i) / max(P_available, 1 W)
@@ -90,7 +84,7 @@ h_i	Priority and schedule heuristic cost	Dimensionless
 f_i	Final Best-First score	Dimensionless
 
 The candidate with the smallest f_i is extracted from OPEN first.
-Table 3A - Constraint Guard formulas (Algorithm 4.4, PDF pages 37-38)
+Table 3A - Constraint Guard formulas
 Order/check	Exact condition required to pass
 1 - Battery reserve	SoC > SoC_min
 2 - Power budget	P_i <= P_remaining
@@ -110,7 +104,7 @@ Order/check	Stored rejection reason
 4 - Main limit	MAIN_LIMIT_EXCEEDED
 5 - Branch limit	BRANCH_LIMIT_EXCEEDED
 
-Table 4 - Admission updates (Algorithm 4.5, PDF page 38)
+Table 4 - Admission updates
 Updated value	Exact update after admission
 Decision	x_i = 1
 Remaining power	P_remaining = P_remaining - P_i
@@ -326,7 +320,6 @@ T_run(n)
 
 Memory = O(n)
 
-This matches Algorithm 4.5 on PDF page 38.
 Table 20 - Complete current path complexity
 Path	Current complexity	Reason
 Full-tree traversal in Stage 1	O(number of tree nodes)	Each tree node is visited once
@@ -340,7 +333,7 @@ Term	Exact meaning	Unit/range
 i	Candidate-array position, not the load ID	0 to n - 1
 n	Number of candidate Auto loads	Count
 autoLoadId_i	Unique system ID of Auto load i	Unsigned integer
-b_i	Zero-based branch index belonging to load i; written b(i) in Algorithm 4.4	Integer, no unit
+b_i	Zero-based branch index belonging to load i	Integer, no unit
 P_i	Normal running power of load i	Watts
 P_i_peak	Peak startup power of load i	Watts
 W_i	User priority of load i; it is not watts	0 to W_max
@@ -400,4 +393,4 @@ Real DC electrical limits	Controlled hardware safety test
 
 13. Final finding
 The correctness suite passed every formula, ordering, rejection, capacity-update, branch-update, tie-handling, validation and reset test. The scalability suite passed every size from 10 to 1,000 candidates, with every score finite, every candidate processed exactly once, every processing position unique and every final power total correct.
-The implementation of BestFirstSearch::run() achieves the proposed O(n log n) scheduling complexity from Algorithm 4.5 on PDF page 38. The current duplicate-ID scan in addAutoLoad() remains a separately documented O(n^2) registration limitation.
+The implementation of BestFirstSearch::run() achieves the proposed O(n log n) scheduling complexity. The current duplicate-ID scan in addAutoLoad() remains a separately documented O(n^2) registration limitation.

@@ -3,25 +3,10 @@
  * @brief Declares NVS persistence of user-configured Load priority, mode
  *        and Auto schedule, surviving a Central Node reboot.
  *
- * LoadConfigurationStore's one responsibility: remember the user's own
- * choices (priority, Fixed/Auto x ON/OFF mode, Auto schedule) for every
- * Load Central has ever been told about, across a reboot. Once a user has
- * configured a Load (through an MQTT command — see MqttManager), Central
- * must not let a later, unrelated ESP-NOW NodeReportPacket silently
- * overwrite that choice; Central's own planning cycle applies this
- * store's persisted configuration onto the matching Load object every
- * cycle instead.
- *
- * This class never decides Best-First Search results, never calculates
- * power, never performs ESP-NOW/MQTT itself, and never actuates a relay
- * — it purely remembers and reapplies user configuration onto an
- * already-existing kilowatts::Load object supplied by the caller
- * (typically found via CentralNodeRegistry).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
+ * Once a user has configured a Load via MQTT, Central must not let a
+ * later, unrelated ESP-NOW NodeReportPacket silently overwrite that
+ * choice; the planning cycle reapplies this store's persisted
+ * configuration onto the matching Load object every cycle instead.
  */
 
 #ifndef KILOWATTS_LOAD_CONFIGURATION_STORE_H
@@ -57,25 +42,19 @@ public:
 
 
     /**
-     * Loads every persisted entry from NVS (ESP32 target only) into
-     * memory, replacing whatever was previously held in memory.
-     *
-     * Returns false, and leaves this object's in-memory entries
-     * unchanged, on a host build, when nothing has ever been persisted,
-     * or when the persisted blob is corrupt/malformed — a corrupt record
-     * is never silently accepted.
+     * Loads every persisted entry from NVS (ESP32 target only), replacing
+     * whatever is currently held in memory. Returns false, leaving the
+     * in-memory entries unchanged, on a host build, when nothing has ever
+     * been persisted, or when the persisted blob is corrupt/malformed.
      */
     bool loadPersisted();
 
 
     /**
      * Records/updates the user's configuration for the Load identified by
-     * entry.macAddress + entry.relayPin (an existing entry for the same
-     * Load is replaced, not duplicated). This updates the in-memory copy
-     * only — call persist() to write it to NVS.
-     *
-     * Rejected (returns false, no change made) when entry.schedule.enabled
-     * is true and hour/minute is out of range.
+     * entry.macAddress + entry.relayPin. Updates the in-memory copy only
+     * — call persist() to write it to NVS. Rejected (returns false) when
+     * entry.schedule.enabled is true and hour/minute is out of range.
      */
     bool setConfiguration(const ConfigurationEntry& entry);
 
@@ -94,27 +73,18 @@ public:
 
 
     /**
-     * Applies the stored entry for load's own identity (if any) onto
-     * load: priority, then mode, then schedule (schedule is applied last
-     * and only takes effect when the resulting mode is Auto, matching
-     * Load::setSchedule()'s own rule — applying it to a Fixed Load is a
-     * harmless no-op, not an error).
-     *
-     * Returns false, leaving load completely unchanged, when no stored
-     * entry exists for load's identity — a Load Central has not yet
-     * received a user configuration for keeps whatever configuration its
-     * own NodeReportPacket last carried.
+     * Applies the stored entry for load's own identity (if any): priority,
+     * then mode, then schedule — applying a schedule to a Fixed Load is a
+     * harmless no-op per Load::setSchedule()'s own rule. Returns false,
+     * leaving load unchanged, when no stored entry exists for its identity.
      */
     bool applyToLoad(Load& load) const;
 
 
     /**
      * Persists every in-memory entry to NVS (ESP32 target only) as one
-     * blob, so a later loadPersisted() (for example after a reboot)
-     * restores exactly this state.
-     *
-     * Returns false on a host build, or when the underlying NVS write
-     * failed; the in-memory entries are unaffected either way.
+     * blob for a later loadPersisted() to restore. Returns false on a
+     * host build or NVS write failure; in-memory entries are unaffected.
      */
     bool persist() const;
 

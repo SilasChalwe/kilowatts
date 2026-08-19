@@ -1,14 +1,7 @@
 /**
  * @file NodeLifecycle.h
- * @brief Declares the device commissioning lifecycle shared by both
- *        Kilowatts firmware roles.
- *
- * A newly flashed ESP32 knows only its role (Central or Smart) at compile
- * time; it does not know its installation identity (friendly name, owning
- * Branches/Loads) until it has been discovered and commissioned. This
- * header defines that lifecycle as one small, explicit state machine so
- * "has this Node been configured yet" is never left implicit in scattered
- * booleans.
+ * @brief Device commissioning lifecycle shared by both Kilowatts firmware
+ *        roles.
  *
  *   FACTORY        -> never yet booted with persistence available.
  *   UNCOMMISSIONED -> booted, no valid persisted commissioning record.
@@ -19,19 +12,13 @@
  *   COMMISSIONED   -> the Node accepted and persisted its configuration.
  *   OPERATIONAL    -> commissioned and currently taking part in normal
  *                     planning (reserved for a later phase once a Node can
- *                     own Branches/Loads; this phase does not produce it).
+ *                     own Branches/Loads).
  *   DECOMMISSIONED -> explicitly removed from the installation.
  *
  * This header only defines the state values and which transitions between
- * them are legal. It does not decide when a transition should happen (see
- * lib/NodeCommissioningRegistry for Central's authoritative record and
- * lib/NodeIdentityStore for a Smart Node's own local record), does not
- * perform ESP-NOW communication, and does not persist anything itself.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * them are legal; it does not decide when a transition should happen (see
+ * NodeCommissioningRegistry for Central's authoritative record and
+ * NodeIdentityStore for a Smart Node's own local record).
  */
 
 #ifndef KILOWATTS_NODE_LIFECYCLE_H
@@ -43,7 +30,11 @@
 namespace kilowatts {
 
 
-/** Same byte layout as Load::MacAddress / EspNowCommunication::MacAddress (both plain aliases of this same type), declared independently here so the commissioning libraries stay free of any ESP-IDF/domain-object dependency and remain host-testable. */
+/**
+ * Same byte layout as Load::MacAddress / EspNowCommunication::MacAddress,
+ * declared independently so the commissioning libraries stay free of any
+ * ESP-IDF/domain-object dependency and remain host-testable.
+ */
 using MacAddress = std::array<std::uint8_t, 6>;
 
 
@@ -66,17 +57,11 @@ enum class NodeLifecycleState : std::uint8_t {
 
 /**
  * Returns true when moving from "from" to "to" is a legal lifecycle
- * transition. FACTORY/UNCOMMISSIONED/DISCOVERED are the pre-commissioning
- * states a Node can freely move between as ESP-NOW discovery learns more
- * about it; CONFIGURING is only entered from UNCOMMISSIONED/DISCOVERED and
- * only resolves to COMMISSIONED or back to UNCOMMISSIONED (a failed
- * commissioning attempt); DECOMMISSIONED is reachable from any state except
- * FACTORY (nothing has ever been commissioned yet, so there is nothing to
- * decommission) and, once DECOMMISSIONED, a Node may only re-enter the
- * lifecycle at UNCOMMISSIONED (never straight back to COMMISSIONED without
- * being configured again). A state never legally transitions to itself
- * through this function — callers that merely refresh "last seen" data for
- * an unchanged state do not need to call this at all.
+ * transition. DECOMMISSIONED is reachable from any state except FACTORY,
+ * and can only re-enter the lifecycle at UNCOMMISSIONED (never straight
+ * back to COMMISSIONED). A state never legally transitions to itself
+ * through this function - callers that merely refresh "last seen" data
+ * for an unchanged state don't need to call this at all.
  */
 bool isValidNodeLifecycleTransition(NodeLifecycleState from, NodeLifecycleState to);
 

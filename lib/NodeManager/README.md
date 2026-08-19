@@ -629,7 +629,7 @@ anything: relay pin, name, owning Node MAC, configured `mode` versus
 **target** state (`Load::getTargetRelayState()` — the actual per-cycle
 decision Central's Best-First Search wrote for this Load this cycle, which
 for an Auto Load can legitimately disagree with `mode`, e.g. a configured
-`AUTO_ON` Load that this cycle's search rejected for budget/battery reasons
+`AUTO_ON` Load that this cycle's search rejected for limit/battery reasons
 reports `targetOn: false`) versus **confirmed** state
 (`Load::getConfirmedRelayState()` plus `Load::isConfirmedRelayStateValid()`
 — the last hardware-confirmed physical truth, and whether that confirmation

@@ -2,11 +2,6 @@
 
 set -Eeuo pipefail
 
-# Author: Chalwe Silas
-# Programme: Final-Year Computer Engineering
-# Institution: The Copperbelt University
-# Date: 8 May 2026
-#
 # Compiles and runs one C++ unit-test file from the project's test directory.
 # The test filename is mandatory. The test folder is optional.
 

@@ -13,11 +13,19 @@ folder rather than one merged class:
 - **`WiFiProvisioningPortal`** — the self-hosted "Kilowatts-Setup-XXXX"
   Access Point and captive-portal HTTP form an installer uses to submit
   that SSID/password from a phone when no credentials are provisioned yet
-  or the provisioned ones stop working. Does not manage station
-  connectivity and does not decide when to start/stop — `src/central/main.cpp`
-  owns that policy (immediately at boot with no provisioned credentials;
-  via `checkWiFiProvisioningTrigger()` in the watchdog task after repeated
-  reconnect failures once credentials are provisioned but stop working).
+  or the provisioned ones stop working. The SSID field is a dropdown
+  populated by a live scan (falling back to manual entry if the scan finds
+  nothing or the network is hidden) so an installer can only pick a
+  network this device can actually join — the ESP32 has no 5GHz radio, so
+  a 5GHz-only network never appears in the list. The same form also
+  optionally provisions an MQTT broker (host/port/TLS/username/password,
+  saved via `MqttCredentialsStore`) — see `MqttManager`'s README for how
+  Central chooses between that and the built-in cloud broker. Does not
+  manage station connectivity and does not decide when to start/stop —
+  `src/central/main.cpp` owns that policy (immediately at boot with no
+  provisioned credentials; via `checkWiFiProvisioningTrigger()` in the
+  watchdog task after repeated reconnect failures once credentials are
+  provisioned but stop working).
 
 Used only so `MqttManager` and `CurrentTimeProvider`'s Automatic (NTP)
 mode can reach the internet. Smart Nodes never construct any of these
@@ -94,9 +102,11 @@ itself (`CurrentTimeProvider` uses ESP-IDF's SNTP client once an IP
 address exists), and knows nothing about Loads, Best-First Search, or
 relays. Wi-Fi credentials are never compiled in — they only ever come
 from `WiFiCredentialsStore` (NVS, populated by `WiFiProvisioningPortal`).
-MQTT broker credentials still live in `include/KilowattsSecrets.h`
-(gitignored; see `KilowattsSecrets.h.example`), which is unrelated to
-Wi-Fi station credentials.
+MQTT broker credentials follow the same installer-provisioned-first
+pattern via `MqttCredentialsStore`, falling back to the compiled-in cloud
+broker in `include/KilowattsSecrets.h` (gitignored; see
+`KilowattsSecrets.h.example`) only when nothing has been provisioned —
+see `MqttManager`'s own README.
 
 ## Host build
 

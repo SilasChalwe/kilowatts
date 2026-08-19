@@ -16,11 +16,6 @@
  * EspNowCommunication::Message header's origin/destination MAC address,
  * exactly like every other packet in this project — never repeated
  * inside these structs.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #ifndef KILOWATTS_DEVELOPMENT_PACKETS_H
@@ -75,10 +70,9 @@ struct DevAckPacket {
 
 /**
  * Central -> Node: erase this Node's own installation-specific persisted
- * configuration and reboot into PRODUCTION + UNCOMMISSIONED (Section
- * "Factory Reset"). confirmToken must equal FACTORY_RESET_CONFIRM_TOKEN
- * exactly (Section "Protect This Operation From Accidental Invocation")
- * - a mismatched token is rejected without touching NVS.
+ * configuration and reboot into PRODUCTION + UNCOMMISSIONED. confirmToken
+ * must equal FACTORY_RESET_CONFIRM_TOKEN exactly — a mismatched token is
+ * rejected without touching NVS.
  */
 constexpr std::uint8_t FACTORY_RESET_CONFIRM_TOKEN = 0x5AU;
 

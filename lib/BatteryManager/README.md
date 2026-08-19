@@ -3,7 +3,7 @@
 Battery/power sensing and accounting — measurement (INA219Monitor),
 state-of-charge estimation (BatteryStateOfCharge), Fixed-ON power
 accounting (AvailablePowerManager) and the P_available/P_remaining
-budget calculation (PowerBudgetCalculator) — grouped by domain, each
+limit calculation (SafePowerLimitCalculator) — grouped by domain, each
 class still strictly single-responsibility per its own section below.
 
 ---
@@ -69,8 +69,8 @@ This module does not read INA219 hardware itself — the caller (Central's
 Sensor Acquisition/Optimisation Task, via `INA219Monitor`) supplies the
 already-measured/filtered battery current and elapsed interval. It does
 not know `SoC_min`/`SoC_warn` policy thresholds (those are
-`PowerBudgetCalculator`'s and `BestFirstSearch`'s configuration), does not
-calculate the safe power budget, and does not run Best-First Search.
+`SafePowerLimitCalculator`'s and `BestFirstSearch`'s configuration), does not
+calculate the power limit, and does not run Best-First Search.
 
 ---
 
@@ -159,7 +159,7 @@ an `emaAlpha` outside `(0, 1]`.
 `KILOWATTS_DEVELOPMENT_MODE` (`include/DevelopmentMode.h`) changes only
 *where* `readMeasurements()` gets its raw voltage/current/power — every
 other method, and everything downstream of it (calibration, EMA
-filtering, `Load::setMeasurements()`, battery SoC, the power budget,
+filtering, `Load::setMeasurements()`, battery SoC, the power limit,
 Best-First Search), is the identical production code path in both modes:
 
 - **Development** (`KILOWATTS_DEVELOPMENT_MODE = 1`): returns each
@@ -194,7 +194,7 @@ if (powerMonitor.readFilteredMeasurementsForRelayPin(16U, filtered)) {
 sensor's running Exponential Moving Average (`P_bar(t) = alpha P(t) + (1 -
 alpha) P_bar(t-1)`, Equations 4.2-4.4) — this filtered snapshot, not the
 instantaneous one, is what the rest of the system (battery SoC, the power
-budget, Best-First Search) must consume (Section 4.6.1.1). Both return
+limit, Best-First Search) must consume (Section 4.6.1.1). Both return
 `false` — and leave their output unchanged — on any I2C failure, on an
 unregistered address/relay pin, or when the sensor's own math-overflow
 flag is set. INA219Monitor never fabricates a voltage/current/power
@@ -353,17 +353,17 @@ as if it came from real hardware.
 
 ---
 
-## PowerBudgetCalculator
+## SafePowerLimitCalculator
 
 
-Calculates the safe total power budget for one planning cycle
+Calculates the safe total power limit for one planning cycle
 (Section 4.6.2.3, Equations 4.9-4.14) — the `totalAvailablePowerWatts`
 `BestFirstSearch` and `AvailablePowerManager` both consume.
 
 ## Responsibility
 
 ```cpp
-PowerBudgetCalculator::Inputs inputs{};
+SafePowerLimitCalculator::Inputs inputs{};
 inputs.stateOfChargePercent = batteryStateOfCharge.getStateOfChargePercent();
 inputs.minimumStateOfChargePercent = config.socMinPercent;
 inputs.nominalBatteryVoltageVolts = config.nominalBatteryVoltageVolts;
@@ -374,10 +374,10 @@ inputs.maximumBatteryDischargeCurrentAmps = config.maximumBatteryDischargeCurren
 inputs.maximumMainCurrentAmps = config.maximumMainCurrentAmps;
 inputs.safetyFactor = config.safetyFactor;
 
-PowerBudgetCalculator budget;
-budget.calculate(inputs);
+SafePowerLimitCalculator limit;
+limit.calculate(inputs);
 
-float pAvailable = budget.getAvailablePowerWatts();   // -> AvailablePowerManager::calculateAvailablePower()
+float pAvailable = limit.getAvailablePowerWatts();   // -> AvailablePowerManager::calculateAvailablePower()
 ```
 
 ```
@@ -395,7 +395,7 @@ When `SoC <= SoC_min`, Equation 4.10's `max(0, ...)` clamp already forces
 states in words falls directly out of these equations, so one uniform
 calculation path (not a special-cased branch) produces a consistent
 `P_available` for the whole planning cycle regardless of battery state
-(see `test/PowerBudgetCalculator/`'s SoC-at-or-below-minimum test).
+(see `test/SafePowerLimitCalculator/`'s SoC-at-or-below-minimum test).
 
 `calculate()` rejects (previous result, if any, unchanged): a
 `stateOfChargePercent`/`minimumStateOfChargePercent` outside `[0, 100]`,

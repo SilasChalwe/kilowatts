@@ -2,23 +2,10 @@
  * @file EspNowCommunication.h
  * @brief Declares dynamic ESP-NOW communication for the Kilowatts tree network.
  *
- * One EspNowCommunication object represents the ESP-NOW capability
- * of THIS ESP32.
- *
- * THIS ESP32 obtains its own Wi-Fi station MAC address from ChipInfo.
- *
- * A Smart Node does not need a manually configured upstream Node MAC address.
- * It can broadcast a discovery request, receive responses from nearby
- * Nodes that already have a route to the Central Node, and select the
- * best Upstream Node using the lowest hop count first and RSSI when
- * candidate hop counts are equal.
- *
- * The selected peer becomes the Smart Node's upstream Node/next hop.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
+ * A Smart Node does not need a manually configured upstream Node MAC
+ * address. It broadcasts a discovery request, receives responses from
+ * nearby Nodes that already have a route to the Central Node, and selects
+ * the best Upstream Node by lowest hop count first, then RSSI on ties.
  */
 
 #ifndef KILOWATTS_ESP_NOW_COMMUNICATION_H
@@ -47,27 +34,9 @@ class EspNowCommunication {
 
 public:
 
-    /**
-     * One complete ESP32 MAC address contains 6 bytes.
-     *
-     * Example:
-     * 24:6F:28:AA:BB:01
-     *
-     * macAddress[0] through macAddress[5] are the six bytes
-     * of ONE MAC address.
-     */
     static constexpr std::size_t MAC_ADDRESS_LENGTH = 6U;
 
-
-    /**
-     * Maximum stored display length for a human-readable Node name.
-     *
-     * Examples:
-     * "Central"
-     * "Sitting Room"
-     * "Bedroom"
-     * "Garage"
-     */
+    /** Maximum stored display length for a human-readable Node name. */
     static constexpr std::size_t NODE_NAME_LENGTH = 20U;
 
 
@@ -98,36 +67,20 @@ public:
         UINT16_MAX;
 
 
-    /**
-     * Reuse the same MAC-address representation supplied by ChipInfo.
-     *
-     * ChipInfo remains responsible for reading the actual hardware
-     * Wi-Fi station MAC address. EspNowCommunication only uses it.
-     */
+    // ChipInfo remains responsible for reading the actual hardware MAC
+    // address; EspNowCommunication only reuses its representation.
     using MacAddress =
         ChipInfo::MacAddress;
 
 
-    /**
-     * ESP-NOW broadcast address.
-     *
-     * FF:FF:FF:FF:FF:FF
-     */
     static const MacAddress BROADCAST_MAC_ADDRESS;
 
 
     /**
-     * Describes what the payload contains.
-     *
-     * The ESP-NOW transport therefore remains reusable for:
-     * Node reports, Load reports, relay commands, acknowledgements,
-     * errors, connection handshakes, discovery and commissioning.
-     *
      * IDENTITY_REPORT/COMMISSION_COMMAND/COMMISSION_ACK/
      * DECOMMISSION_COMMAND/DECOMMISSION_ACK (see lib/CommissioningPackets)
      * were appended for the commissioning lifecycle without renumbering
-     * 1-8, the same "append, never renumber" convention already used for
-     * BestFirstSearch's rejection-reason codes.
+     * 1-8 — values are append-only since they cross the wire.
      */
     enum class MessageType : std::uint8_t {
         NODE_REPORT = 1U,
@@ -157,14 +110,8 @@ public:
     /**
      * Header carried by every Kilowatts ESP-NOW message.
      *
-     * originMacAddress:
-     *     Node that originally created the message.
-     *
-     * destinationMacAddress:
-     *     Final Node for which the message is intended.
-     *
-     * The immediate sender of one radio hop is NOT stored here.
-     * ESP-NOW gives that address separately when the packet is received.
+     * The immediate sender of one radio hop is NOT stored here — ESP-NOW
+     * supplies that address separately when a packet is received.
      */
     struct MessageHeader {
         std::uint8_t protocolVersion;
@@ -183,11 +130,7 @@ public:
         MAX_MESSAGE_SIZE - sizeof(MessageHeader);
 
 
-    /**
-     * Complete application message.
-     *
-     * Only header.payloadLength bytes of payload are valid.
-     */
+    /** Only header.payloadLength bytes of payload are valid. */
     struct Message {
         MessageHeader header;
 
@@ -199,16 +142,8 @@ public:
 
 
     /**
-     * Message returned to the application.
-     *
-     * senderMacAddress:
-     *     ESP32 that physically sent the most recent radio hop.
-     *
-     * signalStrengthDbm:
-     *     RSSI of that received radio hop.
-     *
-     * message.header.originMacAddress:
-     *     Node that originally created the information.
+     * senderMacAddress/signalStrengthDbm describe the immediate radio hop;
+     * message.header.originMacAddress is the Node that created the data.
      */
     struct ReceivedMessage {
         MacAddress senderMacAddress;
@@ -217,14 +152,7 @@ public:
     };
 
 
-    /**
-     * Creates the ESP-NOW manager for THIS ESP32.
-     *
-     * No upstream Node/peer MAC address is supplied here.
-     *
-     * All Nodes participating in discovery must currently use
-     * the same Wi-Fi channel.
-     */
+    /** All Nodes participating in discovery must use the same Wi-Fi channel. */
     explicit EspNowCommunication(
         std::uint8_t channel = 1U
     );
@@ -261,17 +189,10 @@ public:
 
 
     /**
-     * Registers one directly attached downstream Node whose
-     * relationship is already known by the application.
-     *
-     * This is used by the current behaviour test to represent
-     * downstream reports that we are pretending were already received.
-     *
-     * A real downstream ESP32 is registered automatically when its
-     * connection handshake is physically received.
-     *
-     * Because this overload does not represent a real received radio
-     * packet, RSSI is shown as N/A in the connection table.
+     * Registers one directly attached downstream Node without a real
+     * received radio packet backing it (RSSI shown as N/A in the
+     * connection table) — for tests; a real downstream ESP32 registers
+     * itself automatically when its connection handshake is received.
      */
     bool registerDirectDownstreamNode(
         const char* nodeName,
@@ -281,15 +202,8 @@ public:
 
 
     /**
-     * Registers one directly attached downstream Node with a supplied
-     * signal-strength value.
-     *
-     * This overload is useful for behaviour tests where the downstream
-     * Node is simulated but we still want the connection table to show
-     * an RSSI value.
-     *
-     * In the real system, RSSI comes automatically from the ESP-NOW
-     * receive metadata when the downstream Node physically communicates.
+     * Same as above, but with a caller-supplied RSSI value so a test can
+     * exercise the connection table's signal-strength display too.
      */
     bool registerDirectDownstreamNode(
         const char* nodeName,
@@ -318,20 +232,10 @@ public:
 
 
     /**
-     * Dynamically discovers the nearest valid upstream Node.
-     *
-     * Discovery flow:
-     *
-     * 1. Broadcast DISCOVERY_REQUEST.
-     * 2. Nodes that already know a route to Central respond.
-     * 3. Ignore Nodes that do not already have a route to Central.
-     * 4. Prefer the candidate with the lowest hop count to Central.
-     * 5. If candidate hop counts are equal, prefer the stronger RSSI.
-     * 6. The selected Node becomes this Node's Upstream Node.
-     *
-     * If this Smart Node already has a route, only Nodes with
-     * a LOWER hop count are accepted as upstream candidates.
-     * This prevents selecting one of its own descendants.
+     * Broadcasts a discovery request and selects the responding Node with
+     * the lowest hop count to Central (RSSI breaks ties). If this Node
+     * already has a route, only a strictly lower hop count is accepted,
+     * which prevents it from selecting one of its own descendants.
      */
     bool discoverUpstreamNode(
         std::uint32_t discoveryWindowMilliseconds = 1500U
@@ -408,13 +312,7 @@ public:
     }
 
 
-    /**
-     * Sends a message upward through the selected upstream Node
-     * toward the Central Node.
-     *
-     * No MAC address needs to be passed by the caller after
-     * discoverUpstreamNode() has selected the Upstream Node.
-     */
+    /** Routes via the already-selected upstream Node; no MAC address needed. */
     bool sendToCentral(
         MessageType messageType,
         const void* payload,
@@ -444,14 +342,7 @@ public:
     }
 
 
-    /**
-     * Forwards an existing message without changing:
-     * - original source,
-     * - final destination,
-     * - message ID.
-     *
-     * hopsRemaining is reduced by one.
-     */
+    /** Preserves original source, destination and message ID; decrements hopsRemaining. */
     bool forwardMessageTo(
         const MacAddress& nextHopMacAddress,
         const Message& message,
@@ -470,11 +361,7 @@ public:
     );
 
 
-    /**
-     * Returns true when the final destination is:
-     * - THIS Node, or
-     * - broadcast.
-     */
+    /** True when the final destination is THIS Node or broadcast. */
     bool isMessageForThisNode(
         const Message& message
     ) const;
@@ -507,39 +394,17 @@ public:
     std::uint8_t getChannel() const;
 
 
-    /**
-     * Prints THIS Node and its directly attached downstream Nodes.
-     *
-     * Examples:
-     *
-     * Central table:
-     *     Central
-     *     Sitting Room
-     *
-     * Sitting Room table:
-     *     Sitting Room
-     *     Bedroom
-     *     Garage
-     *
-     * A Node that is not directly attached is not printed in this
-     * direct-connection table.
-     */
+    /** Prints THIS Node and its directly attached downstream Nodes only. */
     void printConnectionInfo() const;
 
 
 private:
 
-    /**
-     * Payload sent when looking for an Upstream Node.
-     */
     struct DiscoveryRequest {
         std::uint32_t discoveryId;
     };
 
 
-    /**
-     * Payload sent by a Node that already has a route to Central.
-     */
     struct DiscoveryResponse {
         std::uint32_t discoveryId;
 
@@ -549,13 +414,7 @@ private:
     };
 
 
-    /**
-     * Internal connection message sent after a Smart Node
-     * selects its Upstream Node.
-     *
-     * The human-readable Node name is carried so the Upstream
-     * Node can display a meaningful direct-connection table.
-     */
+    /** Carries the Node name so the Upstream Node can display it in its connection table. */
     struct ConnectionHandshake {
         std::array<char, NODE_NAME_LENGTH> nodeName;
         std::uint16_t hopCountToCentral;
@@ -563,10 +422,6 @@ private:
     };
 
 
-    /**
-     * Information for one Node that is directly downstream
-     * from THIS ESP32.
-     */
     struct DirectDownstreamNodeInfo {
         std::array<char, NODE_NAME_LENGTH> nodeName;
         MacAddress macAddress;
@@ -641,26 +496,16 @@ private:
     );
 
 
-    /**
-     * Sends the connection handshake to the selected Upstream Node.
-     */
     bool sendConnectionHandshakeToUpstreamNode();
 
 
-    /**
-     * Processes a received connection handshake.
-     */
     void processConnectionHandshake(
         const RawReceivedPacket& packet,
         const Message& message
     );
 
 
-    /**
-     * Adds or updates one directly attached downstream Node.
-     *
-     * Returns true when a new downstream Node was added.
-     */
+    /** Returns true when a new downstream Node was added (vs. updated). */
     bool registerOrUpdateDirectDownstreamNode(
         const char* nodeName,
         const MacAddress& nodeMacAddress,
@@ -670,10 +515,6 @@ private:
     );
 
 
-    /**
-     * Refreshes RSSI when THIS ESP32 later hears another real
-     * packet directly from a registered downstream Node.
-     */
     void refreshDirectDownstreamNodeSignalStrength(
         const MacAddress& nodeMacAddress,
         std::int8_t signalStrengthDbm
@@ -717,23 +558,10 @@ private:
     );
 
 
-    /**
-     * Supplies the real Wi-Fi station MAC address of THIS ESP32.
-     *
-     * ESP-NOW does not read the local MAC address separately.
-     */
     ChipInfo chipInfo_;
 
-
-    /**
-     * Human-readable name of THIS ESP32 Node.
-     */
     std::array<char, NODE_NAME_LENGTH> localNodeName_;
 
-
-    /**
-     * Real Wi-Fi station MAC address of THIS ESP32.
-     */
     MacAddress localMacAddress_;
 
 
@@ -743,9 +571,6 @@ private:
     bool initialized_;
 
 
-    /**
-     * Tree information.
-     */
     bool centralNode_;
 
     bool upstreamNodeSelected_;
@@ -761,18 +586,10 @@ private:
     std::uint16_t hopCountToCentral_;
 
 
-    /**
-     * Nodes directly downstream from THIS ESP32.
-     *
-     * Central may therefore contain Sitting Room.
-     * Sitting Room may independently contain Bedroom and Garage.
-     */
+    /** Immediate children only, not the full downstream subtree. */
     std::vector<DirectDownstreamNodeInfo> directDownstreamNodes_;
 
 
-    /**
-     * Discovery state.
-     */
     bool discoveryInProgress_;
 
     std::uint32_t activeDiscoveryId_;
@@ -788,24 +605,16 @@ private:
     MacAddress bestUpstreamCandidateCentralMacAddress_;
 
 
-    /**
-     * Message IDs created by this Node.
-     */
     std::uint32_t nextMessageId_;
 
 
-    /**
-     * ESP-NOW / FreeRTOS synchronization.
-     */
     SemaphoreHandle_t sendCompleted_;
 
     SemaphoreHandle_t sendMutex_;
 
     SemaphoreHandle_t discoveryMutex_;
 
-    /**
-     * Protects THIS Node's direct downstream Node list.
-     */
+    /** Protects directDownstreamNodes_. */
     SemaphoreHandle_t directDownstreamNodesMutex_;
 
 
@@ -820,12 +629,7 @@ private:
     esp_now_send_status_t lastSendStatus_;
 
 
-    /**
-     * ESP-NOW callbacks are static.
-     *
-     * The firmware therefore uses one communication manager
-     * instance on each ESP32.
-     */
+    // ESP-NOW callbacks are static, so only one instance is supported per ESP32.
     static EspNowCommunication* instance_;
 };
 

@@ -16,11 +16,6 @@
  *
  * Register map and conversions are from the Texas Instruments INA219
  * datasheet (SBOS448).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "INA219Monitor.h"
@@ -107,9 +102,6 @@ constexpr std::uint16_t BUS_VOLTAGE_OVERFLOW_FLAG = 0x0002U;
 constexpr int I2C_TRANSACTION_TIMEOUT_MS = 100;
 
 /*
- * NVS is persistent non-volatile configuration storage, not a database.
- * This namespace and its per-sensor keys are private to INA219Monitor's
- * own responsibility (System Requirement 3: calibration persistence).
  * NVS keys are limited to 15 characters, so each key is a one-letter
  * field tag followed by the sensor's two-digit hex I2C address (e.g.
  * "v40" for the voltage offset of the sensor at 0x40).
@@ -442,7 +434,7 @@ bool INA219Monitor::readMeasurements(std::uint8_t i2cAddress, LoadMeasurements& 
          * the ONLY way a non-hardware reading is ever produced - no
          * sensor has one by default. Every downstream step (calibration
          * below, EMA filtering in readFilteredMeasurements(), battery
-         * SoC, the power budget, Best-First Search) is the identical
+         * SoC, the power limit, Best-First Search) is the identical
          * production code path regardless of this branch.
          */
         measurements = applyCalibration(sensor->developmentOverrideRawMeasurements, sensor->calibration);
@@ -594,7 +586,7 @@ bool INA219Monitor::readFilteredMeasurements(std::uint8_t i2cAddress, LoadMeasur
     }
 
     if (!sensor->hasFilteredMeasurement) {
-        /* P_bar(0) = P(0): the first successful reading seeds the filter. */
+        /* First successful reading seeds the filter: P_bar(0) = P(0). */
         sensor->filteredMeasurements = rawMeasurements;
         sensor->hasFilteredMeasurement = true;
     } else {
@@ -625,7 +617,7 @@ LoadMeasurements INA219Monitor::applyExponentialMovingAverage(
 {
     const float clampedAlpha = std::isfinite(alpha) ? std::max(0.0F, std::min(alpha, 1.0F)) : 1.0F;
 
-    /* P_bar(t) = alpha P(t) + (1 - alpha) P_bar(t-1), applied per Equations 4.2-4.4. */
+    /* P_bar(t) = alpha P(t) + (1 - alpha) P_bar(t-1). */
     LoadMeasurements filtered{};
     filtered.voltageVolts =
         (clampedAlpha * newRawMeasurements.voltageVolts) +

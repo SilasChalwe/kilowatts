@@ -2,15 +2,6 @@
  * @file DevelopmentSession.cpp
  * @brief Implements the explicit, runtime-only Development Session a
  *        Node's Operating Environment can enter.
- *
- * Entirely plain, hardware-free/network-free C++ — no ESP_PLATFORM split
- * is needed, so it is directly host-testable (see
- * test/DevelopmentSession/).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #include "DevelopmentSession.h"

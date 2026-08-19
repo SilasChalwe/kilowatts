@@ -1,11 +1,6 @@
 /**
  * @file EspNowCommunication.cpp
  * @brief Implements dynamic ESP-NOW communication for the Kilowatts tree network.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
  */
 
 #include "EspNowCommunication.h"
@@ -1574,10 +1569,6 @@ void EspNowCommunication::processRawReceivedPacket(
     const RawReceivedPacket& packet
 )
 {
-    /*
-     * If the immediate sender is already registered as directly
-     * downstream from THIS Node, keep that real direct-link RSSI current.
-     */
     refreshDirectDownstreamNodeSignalStrength(
         packet.senderMacAddress,
         packet.signalStrengthDbm
@@ -1710,13 +1701,9 @@ void EspNowCommunication::processDiscoveryRequest(
     const Message& message
 )
 {
-    /*
-     * Only a Node that already knows a route to Central
-     * is allowed to advertise itself as a possible upstream Node.
-     *
-     * This is what makes the discovery build a tree instead
-     * of allowing unconnected Nodes to choose each other.
-     */
+    // Only a Node that already has a route to Central may advertise
+    // itself as a possible upstream Node — this is what makes discovery
+    // build a tree instead of letting unconnected Nodes pick each other.
     if (hopCountToCentral_ ==
             UNKNOWN_HOP_COUNT ||
         !centralMacAddressKnown_)
@@ -1746,10 +1733,7 @@ void EspNowCommunication::processDiscoveryRequest(
         sizeof(request)
     );
 
-    /*
-     * Small random delay reduces the chance that every nearby
-     * Node responds to the broadcast at exactly the same time.
-     */
+    // Jitter reduces the chance every nearby Node responds at once.
     const std::uint32_t responseDelayMs =
         esp_random() % 31U;
 
@@ -1765,12 +1749,8 @@ void EspNowCommunication::processDiscoveryRequest(
         centralMacAddress_
     };
 
-    /*
-     * The response is physically broadcast so we do not have
-     * to add every discovering Node to the peer table.
-     *
-     * The logical destination remains the requesting Node.
-     */
+    // Physically broadcast so we don't have to add every discovering Node
+    // to the peer table; the logical destination is still the requester.
     sendTo(
         BROADCAST_MAC_ADDRESS,
         message.header.originMacAddress,
@@ -1854,13 +1834,8 @@ void EspNowCommunication::processDiscoveryResponse(
         return;
     }
 
-    /*
-     * If this Node already has a route, do not choose a Node
-     * at the same or deeper level. That could create a cycle.
-     *
-     * An unconnected Node has UNKNOWN_HOP_COUNT and may accept
-     * any candidate that already has a valid route to Central.
-     */
+    // A Node that already has a route must not choose a candidate at the
+    // same or deeper level — that could create a cycle.
     if (hopCountToCentral_ !=
             UNKNOWN_HOP_COUNT &&
         response.hopCountToCentral >=
@@ -1873,16 +1848,7 @@ void EspNowCommunication::processDiscoveryResponse(
         return;
     }
 
-    /*
-     * Upstream Node selection rule:
-     *
-     * 1. Prefer the candidate with the LOWEST hop count to Central.
-     * 2. When candidates have the SAME hop count, prefer the one
-     *    with the STRONGEST RSSI to this ESP32.
-     *
-     * Hop count tells us how many forwarding steps remain to Central.
-     * RSSI tells us the quality/strength of THIS direct radio link.
-     */
+    // Lowest hop count wins; ties broken by strongest RSSI.
     const bool shorterRouteToCentral =
         !discoveryCandidateFound_ ||
         response.hopCountToCentral <

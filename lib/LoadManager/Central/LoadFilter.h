@@ -2,37 +2,14 @@
  * @file LoadFilter.h
  * @brief Declares the separation of known Loads into Fixed and Auto groups.
  *
- * Before Best-First Search can run, every Load Central currently knows
- * about (its own Loads plus every remote Node's Loads, as assembled by
- * CentralNodeRegistry) must be separated according to its existing
- * LoadMode:
- *
- *     FIXED_ON            -> Fixed ON collection
- *     FIXED_OFF           -> Fixed OFF collection
- *     AUTO_ON / AUTO_OFF  -> Auto candidate collection
- *
  * A Fixed Load's ON/OFF state is authoritative and is not reconsidered
- * here. An Auto Load's current ON/OFF state is only this planning
- * cycle's starting point: whether it ends up ON or OFF is decided later
- * by Best-First Search, not by LoadFilter. AUTO_ON and AUTO_OFF are
- * therefore both Auto candidate Loads.
+ * here. An Auto Load's current ON/OFF state is only this planning cycle's
+ * starting point — whether it ends up ON or OFF is decided later by
+ * Best-First Search, not by LoadFilter — so AUTO_ON and AUTO_OFF are both
+ * classified as Auto candidates.
  *
  * LoadFilter stores pointers to the existing Load objects rather than
- * copying them, so every Load keeps the identity (owning Node MAC
- * address + relay pin) that CentralNodeRegistry already established.
- * A LoadFilter must not outlive the Loads it points to.
- *
- * LoadFilter classifies Loads only — that is its one responsibility. It
- * does not calculate Fixed ON Running Power, Total Available Power or
- * Power Available for Auto Loads (see AvailablePowerManager for that). It
- * does not discover Nodes, receive ESP-NOW packets, calculate RSSI or Hop
- * Count, calculate battery State of Charge, run Best-First Search,
- * control relays, or publish MQTT.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
+ * copying them; a LoadFilter must not outlive the Loads it points to.
  */
 
 #ifndef KILOWATTS_LOAD_FILTER_H

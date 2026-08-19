@@ -1,16 +1,3 @@
-/**
- * @file NodeLifecycle.cpp
- * @brief Implements the commissioning lifecycle transition rules.
- *
- * Plain, hardware-free C++ with no ESP-IDF dependency at all - always
- * compiled and fully host-testable (see test/NodeLifecycle/).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
- */
-
 #include "NodeLifecycle.h"
 
 namespace kilowatts {
@@ -33,12 +20,10 @@ bool isValidNodeLifecycleTransition(NodeLifecycleState from, NodeLifecycleState 
 
         case NodeLifecycleState::CONFIGURING:
             /*
-             * A failed/timed-out commissioning attempt rolls back to
-             * UNCOMMISSIONED - this state is only ever entered from
-             * UNCOMMISSIONED/DISCOVERED for a Node's first commissioning
-             * (see NodeCommissioningRegistry::beginCommissioning()), never
-             * for renaming an already-commissioned Node, so "failure means
-             * uncommissioned" is unambiguous here.
+             * CONFIGURING is only entered for a Node's first commissioning
+             * (never for renaming an already-commissioned Node), so a
+             * failed/timed-out attempt can unambiguously roll back to
+             * UNCOMMISSIONED.
              */
             return to == NodeLifecycleState::COMMISSIONED ||
                    to == NodeLifecycleState::UNCOMMISSIONED ||

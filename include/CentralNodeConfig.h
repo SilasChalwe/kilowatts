@@ -1,29 +1,17 @@
 /**
  * @file CentralNodeConfig.h
- * @brief Genuine hardware/policy configuration for the Kilowatts Central
- *        Node — no installation-specific local Loads/Branches.
+ * @brief Hardware/policy configuration for the Central Node — no
+ *        installation-specific local Loads/Branches.
  *
- * Compile-time configuration only (constants and factory functions), read
- * once at startup by src/central/main.cpp — mirrors SmartNodeConfig.h's
- * role for the Smart Node side. Fields marked "PENDING HARDWARE
- * VERIFICATION" are placeholder values that let the firmware compile and
- * run without every physical value re-confirmed against the actual
- * installation yet. Secrets (Wi-Fi password, MQTT credentials) are never
- * placed here — see KilowattsSecrets.h.
+ * Compile-time constants and factory functions only, read once at startup
+ * by src/central/main.cpp. Secrets (Wi-Fi password, MQTT credentials)
+ * live in KilowattsSecrets.h, never here.
  *
- * This header intentionally does NOT define any local Load/Branch, and
- * does NOT define a battery sensor address — Central boots with zero
- * local Loads and zero configured sensors until commissioned, exactly
- * like a Smart Node (see SmartNodeConfig.h's own file comment). Simulated
- * sensor input is a runtime-only concern now (see DevelopmentSession.h and
- * INA219Monitor::setDevelopmentOverride() in lib/NodeManager and
- * lib/BatteryManager respectively), never a compile-time value substituted
- * automatically at boot.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * Deliberately defines no local Load/Branch and no battery sensor address:
+ * Central boots with zero local Loads and zero configured sensors until
+ * commissioned, like a Smart Node. Simulated sensor input is a runtime-only
+ * override (DevelopmentSession.h, INA219Monitor::setDevelopmentOverride()),
+ * never a compile-time default applied automatically at boot.
  */
 
 #ifndef KILOWATTS_CENTRAL_NODE_CONFIG_H
@@ -31,7 +19,7 @@
 
 #include "BestFirstSearch.h"
 #include "INA219Monitor.h"
-#include "PowerBudgetCalculator.h"
+#include "PowerManager.h"
 
 #include <array>
 #include <cstdint>
@@ -46,32 +34,10 @@ constexpr const char* CENTRAL_NODE_NAME = "Central";
 constexpr const char* WIFI_STATION_HOSTNAME = "kilowatts-central";
 
 
-/*
- * -----------------------------------------------------------------------
- * Relay GPIO capability inventory (same board-safety contract as
- * SmartNodeConfig::VERIFIED_RELAY_GPIO_PINS)
- * -----------------------------------------------------------------------
- * Chip-level safe set for the plain ESP32 (WROOM-32, no PSRAM) module
- * Central runs on. Excludes GPIO0/2/5/12/15 (strapping - unsafe to drive
- * during the transient boot window on a relay that must never glitch
- * energised), GPIO1/3 (UART0 console), GPIO6-11 (integrated SPI flash
- * bus), GPIO21/22 (already committed to Central's own battery-bus INA219
- * I2C, see I2C_SERIAL_DATA_PIN/I2C_SERIAL_CLOCK_PIN above) and
- * GPIO34/35/36/37/38/39 (input-only / not broken out). Capped at
- * MAX_RELAY_GPIO_CAPABILITIES (8) to match the wire format used by
- * NodeCommissioningRegistry::registerSelf().
- */
-constexpr std::array<std::uint8_t, 8U> VERIFIED_RELAY_GPIO_PINS{
-    4U, 13U, 14U, 16U, 17U, 18U, 19U, 23U
-};
+constexpr std::array<std::uint8_t, 8U> VERIFIED_RELAY_GPIO_PINS{4U, 13U, 14U, 16U, 17U, 18U, 19U, 23U};
 
 
-/*
- * -----------------------------------------------------------------------
- * I2C bus (PENDING HARDWARE VERIFICATION)
- * -----------------------------------------------------------------------
- * Only consulted in production mode.
- */
+/* I2C bus - ESP32 standard SDA/SCL pins. Only consulted in production mode. */
 constexpr std::uint8_t I2C_SERIAL_DATA_PIN = 21U;
 constexpr std::uint8_t I2C_SERIAL_CLOCK_PIN = 22U;
 constexpr std::uint32_t I2C_CLOCK_SPEED_HZ = 400000U;
@@ -79,56 +45,45 @@ constexpr std::uint8_t I2C_PORT_NUMBER = 0U;
 
 inline INA219Monitor::I2CBusConfiguration i2cBusConfiguration()
 {
-    return INA219Monitor::I2CBusConfiguration{
-        I2C_SERIAL_DATA_PIN, I2C_SERIAL_CLOCK_PIN, I2C_CLOCK_SPEED_HZ, I2C_PORT_NUMBER
-    };
+    return INA219Monitor::I2CBusConfiguration{I2C_SERIAL_DATA_PIN, I2C_SERIAL_CLOCK_PIN, I2C_CLOCK_SPEED_HZ, I2C_PORT_NUMBER};
 }
 
 
 /*
- * -----------------------------------------------------------------------
- * Central's battery-bus INA219 (Section 4.5.1: monitors the whole battery
- * bus and is the final design's only INA219) is deliberately NOT
- * configured here. Section "Remove Automatic Development Battery Input":
- * a clean/uncommissioned Central must never automatically register an
- * installation-specific battery sensor address — battery sensor identity
- * (I2C address, shunt resistance, expected current) becomes real
- * commissioning configuration held by CentralConfigurationStore and applied
- * only after an installer command verifies that the real INA219 responds.
- * Until that succeeds, Central genuinely has no battery sensor:
- * BatteryStateOfCharge is never initialize()d, sensorAcquisitionTask() has
- * nothing to read, and every battery/SoC field the system publishes honestly
- * reports NOT_CONFIGURED/UNKNOWN rather than a fabricated reading (see
+ * Central's battery-bus INA219 is deliberately not configured here: an
+ * uncommissioned Central must never automatically pick up an
+ * installation-specific sensor address. Battery sensor identity (I2C
+ * address, shunt resistance, expected current) becomes commissioning
+ * configuration held by CentralConfigurationStore and is applied only
+ * after an installer command verifies the real INA219 responds. Until
+ * then BatteryStateOfCharge is never initialize()d, sensorAcquisitionTask()
+ * has nothing to read, and every battery/SoC field reports
+ * NOT_CONFIGURED/UNKNOWN rather than a fabricated reading (see
  * SystemStateJson's batterySensorConfigured/stateOfChargeValid fields).
- * -----------------------------------------------------------------------
  */
 
 
 /*
- * -----------------------------------------------------------------------
- * Battery/electrical policy defaults (Sections 4.6.2.2-4.6.2.5), used only
- * on a never-commissioned device. NOMINAL_BATTERY_VOLTAGE_VOLTS and
- * BATTERY_CAPACITY_AMP_HOURS are never assumed for a real installation -
- * the installer supplies the real nameplate voltage/capacity for their
- * actual battery bank via the CONFIGURE_BATTERY_SENSOR MQTT command (see
- * CentralConfigurationStore::BatterySensorConfiguration), and that
- * installer-entered value is authoritative from then on
- * (configuredOrDefaultNominalVoltageVolts() in src/central/main.cpp).
- * -----------------------------------------------------------------------
+ * Battery/electrical policy defaults, used only on a never-commissioned
+ * device. The installer supplies the real nameplate voltage/capacity for
+ * the battery bank via the CONFIGURE_BATTERY_SENSOR MQTT command (see
+ * CentralConfigurationStore::BatterySensorConfiguration), after which that
+ * value is authoritative (configuredOrDefaultNominalVoltageVolts() in
+ * src/central/main.cpp).
  */
 constexpr float NOMINAL_BATTERY_VOLTAGE_VOLTS = 12.0F;
 constexpr float BATTERY_CAPACITY_AMP_HOURS = 100.0F;
 constexpr float DEFAULT_STATE_OF_CHARGE_PERCENT = 80.0F;   // used only before any SoC has ever been persisted
-constexpr float MINIMUM_STATE_OF_CHARGE_PERCENT = 20.0F;   // SoC_min
-constexpr float WARNING_STATE_OF_CHARGE_PERCENT = 40.0F;   // SoC_warn
-constexpr float TARGET_RUNTIME_HOURS = 4.0F;                // T_target
-constexpr float MAXIMUM_BATTERY_DISCHARGE_CURRENT_AMPS = 40.0F; // I_B,max
-constexpr float MAXIMUM_MAIN_CURRENT_AMPS = 30.0F;          // I_main,max
-constexpr float SAFETY_FACTOR = 0.9F;                        // rho
+constexpr float MINIMUM_STATE_OF_CHARGE_PERCENT = 20.0F;
+constexpr float WARNING_STATE_OF_CHARGE_PERCENT = 40.0F;
+constexpr float TARGET_RUNTIME_HOURS = 4.0F;
+constexpr float MAXIMUM_BATTERY_DISCHARGE_CURRENT_AMPS = 40.0F;
+constexpr float MAXIMUM_MAIN_CURRENT_AMPS = 30.0F;
+constexpr float SAFETY_FACTOR = 0.9F;
 
-inline PowerBudgetCalculator::Inputs powerBudgetInputs(float stateOfChargePercent, float batteryBusVoltageVolts)
+inline SafePowerLimitCalculator::Inputs safePowerLimitInputs(float stateOfChargePercent, float batteryBusVoltageVolts)
 {
-    PowerBudgetCalculator::Inputs inputs{};
+    SafePowerLimitCalculator::Inputs inputs{};
     inputs.stateOfChargePercent = stateOfChargePercent;
     inputs.minimumStateOfChargePercent = MINIMUM_STATE_OF_CHARGE_PERCENT;
     inputs.nominalBatteryVoltageVolts = NOMINAL_BATTERY_VOLTAGE_VOLTS;
@@ -143,13 +98,10 @@ inline PowerBudgetCalculator::Inputs powerBudgetInputs(float stateOfChargePercen
 
 
 /*
- * -----------------------------------------------------------------------
- * Best-First Search policy weights (Section 4.6.3, Equations 4.30/4.32).
- * Equal unit weighting across w_P/w_S/w_B/w_Q by default so no single
- * term dominates the demonstration ranking; w_T slightly favours letting
- * an already-due schedule compete on its own priority. W_max=10 comfortably
- * exceeds every configured Load priority (max 9, Central Status Indicator).
- * -----------------------------------------------------------------------
+ * Equal unit weighting across all terms by default so no single factor
+ * dominates the ranking. Maximum allowed priority (10) comfortably
+ * exceeds every configured Load's priority (max 9, Central Status
+ * Indicator).
  */
 inline BestFirstSearch::Weights bestFirstSearchWeights()
 {
@@ -164,53 +116,39 @@ inline BestFirstSearch::Weights bestFirstSearchWeights()
 }
 
 
-/*
- * -----------------------------------------------------------------------
- * Optimisation cadence (Section 4.6.1: "Optimisation Task ... nominal
- * period: 5 seconds").
- * -----------------------------------------------------------------------
- */
 constexpr std::uint32_t OPTIMIZATION_PERIOD_MILLISECONDS = 5000U;
 constexpr std::uint32_t SENSOR_ACQUISITION_PERIOD_MILLISECONDS = 1000U;
 constexpr std::uint32_t WATCHDOG_PERIOD_MILLISECONDS = 60000U;
 constexpr std::uint32_t RELAY_COMMAND_ACK_TIMEOUT_MILLISECONDS = 3000U;
 
 /*
- * The ONE Node-report staleness timeout used everywhere a Smart Node's
- * online/offline status matters (Section "Exclude Stale/Offline Smart
- * Nodes From Planning") — TopologyTree's "online" field and the
- * Optimisation Task's candidate-exclusion check both use exactly this
- * constant, so there is never more than one definition of "how long
- * before a Node is considered offline" in this project. Smart Nodes send
- * a NODE_REPORT roughly every 2 seconds (see NODE_REPORT_PERIOD_MS in
- * src/smart/main.cpp); 5x that cadence tolerates a couple of missed/lost
- * reports before declaring a Node offline, while still being well inside
- * one Optimisation Task period.
+ * The one Node-report staleness timeout used everywhere a Smart Node's
+ * online/offline status matters — TopologyTree's "online" field and the
+ * Optimisation Task's candidate-exclusion check both use this constant,
+ * so there is only one definition of "offline" in this project. Smart
+ * Nodes report roughly every 2 seconds (NODE_REPORT_PERIOD_MS in
+ * src/smart/main.cpp); 5x that cadence tolerates a couple of missed
+ * reports while staying well inside one Optimisation Task period.
  */
 constexpr std::uint32_t NODE_REPORT_TIMEOUT_MILLISECONDS = 10000U;
 
 /*
- * How long a previously-valid battery telemetry reading may still be
- * treated as usable (for Fixed-load critical-protection planning only —
- * see src/central/main.cpp) after the INA219 stops returning successful
- * readings, before it is treated as genuinely invalid rather than
- * merely stale (Section "Fix Sensor Failure Behavior": "must never be
- * treated indefinitely as fresh"). 5x the 1s Sensor Acquisition Task
- * period tolerates a couple of transient read failures.
+ * How long a previously-valid battery telemetry reading stays usable (for
+ * Fixed-load critical-protection planning only — see src/central/main.cpp)
+ * after the INA219 stops returning successful readings, before it is
+ * treated as invalid rather than merely stale. 5x the 1s Sensor
+ * Acquisition Task period tolerates a couple of transient read failures.
  */
 constexpr std::uint32_t BATTERY_TELEMETRY_STALE_TIMEOUT_MILLISECONDS = 5000U;
 
 
 /*
- * -----------------------------------------------------------------------
- * MQTT (broker connectivity/credentials live in KilowattsSecrets.h, never
- * here). MQTT_DEVICE_ID identifies this installation inside the shared
+ * MQTT broker connectivity/credentials live in KilowattsSecrets.h, never
+ * here. MQTT_DEVICE_ID identifies this installation inside the shared
  * "kilowatts/v1" namespace (see MqttManager).
- * -----------------------------------------------------------------------
- */
-/*
- * The build may override this with a quoted PlatformIO build flag, for
- * example:
+ *
+ * The build may override the namespace with a quoted PlatformIO build
+ * flag, for example:
  *   -DKILOWATTS_MQTT_TOPIC_NAMESPACE=\"kilowatts/v1/home-42\"
  *
  * Keeping a safe default preserves existing Central builds, while a real

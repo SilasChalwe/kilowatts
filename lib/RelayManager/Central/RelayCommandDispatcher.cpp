@@ -1,17 +1,12 @@
 /**
  * @file RelayCommandDispatcher.cpp
  * @brief Implements OFF-before-ON relay dispatch ordering and
- *        command/acknowledgement tracking (Section 4.6.4.3, Algorithm 4.6).
+ *        command/acknowledgement tracking.
  *
  * Entirely plain, hardware-free/network-free C++ — no ESP_PLATFORM split
  * is needed, since this class never touches ESP-NOW or GPIO itself.
  * Always compiled and fully host-testable (see
  * test/RelayCommandDispatcher/).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "RelayCommandDispatcher.h"

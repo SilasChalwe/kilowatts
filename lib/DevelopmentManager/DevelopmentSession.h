@@ -3,32 +3,16 @@
  * @brief Declares the explicit, runtime-only Development Session a Node's
  *        Operating Environment can enter.
  *
- * DevelopmentSession's one responsibility: track whether THIS Node is
- * currently PRODUCTION (the only default, on every boot, with no
- * exception) or DEVELOPMENT, and remember which sensors currently have an
- * explicit simulated V/I override armed. Nothing in this class ever
- * changes environment or arms an override on its own — every transition
- * is the direct, explicit result of a caller (an MQTT commands/development
- * message on Central, or a DEV_SESSION_COMMAND/DEV_SENSOR_INPUT_COMMAND
- * received over ESP-NOW on a Smart Node) calling start()/end()/
- * setSensorOverride()/clearSensorOverride().
+ * Nothing in this class ever changes environment or arms an override on
+ * its own — every transition is the direct, explicit result of a caller
+ * (an MQTT command on Central, or a DEV_SESSION_COMMAND/
+ * DEV_SENSOR_INPUT_COMMAND received over ESP-NOW on a Smart Node) calling
+ * start()/end()/setSensorOverride()/clearSensorOverride(). This class
+ * stores policy/state only; it does not read INA219 hardware or perform
+ * ESP-NOW/MQTT communication itself.
  *
- * This class stores policy/state only. It does not read INA219 hardware,
- * does not perform ESP-NOW or MQTT communication, and does not decide
- * *when* a session should start — see src/central/main.cpp and
- * src/smart/main.cpp for where a received command actually calls these
- * methods, and INA219Monitor::setDevelopmentOverride()/
- * clearDevelopmentOverride() for where an armed override actually changes
- * what a sensor read returns.
- *
- * Overlays here are never persisted to NVS: end() (and the session simply
- * never having started) leaves zero trace, matching "Development
- * configuration overlays do not write to production NVS."
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * Overlays here are never persisted to NVS — end() (and the session
+ * simply never having started) leaves zero trace.
  */
 
 #ifndef KILOWATTS_DEVELOPMENT_SESSION_H
@@ -80,9 +64,8 @@ public:
 
     /**
      * DEVELOPMENT -> PRODUCTION, and discards every sensor override this
-     * session armed (Section "Development Exit": simulated input/failure
-     * injection/overlay state is cleared, not carried into the next
-     * session or into production).
+     * session armed — overlay state is never carried into the next
+     * session or into production.
      *
      * Rejected (returns false, no change) when not currently active.
      */
@@ -97,9 +80,8 @@ public:
      * that policy decision.
      *
      * Rejected (returns false, no change) when no session is currently
-     * active — Section "Development Session Is Explicit": simulation
-     * requires START_DEVELOPMENT_SESSION first, an override alone is
-     * never enough.
+     * active — simulation requires an active session first, an override
+     * alone is never enough.
      */
     bool setSensorOverride(std::uint8_t i2cAddress, float voltageVolts, float currentAmps);
 

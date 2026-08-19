@@ -1,18 +1,8 @@
-/**
- * @file NodeCommissioningRegistry.cpp
- * @brief Implements Central's authoritative record of every Node's
- *        identity and commissioning lifecycle.
- *
- * Every lookup/lifecycle method is plain, hardware-free C++ and always
- * compiled, so it is directly host-testable (see
+/*
+ * Lookup/lifecycle methods are plain, hardware-free C++ and always
+ * compiled, so they're directly host-testable (see
  * test/NodeCommissioningRegistry/). NVS persistence (loadPersisted()/
- * persist()) is compiled only under ESP_PLATFORM, matching the split
- * LoadConfigurationStore already established.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * persist()) compiles only under ESP_PLATFORM.
  */
 
 #include "NodeCommissioningRegistry.h"
@@ -34,13 +24,9 @@ static const char *TAG = "NODE_COMMISSION_REGISTRY";
 namespace {
 
 /*
- * NVS is persistent non-volatile configuration storage, not a database.
- * This namespace/keys are private to NodeCommissioningRegistry's own
- * responsibility. Every record is stored as one fixed-layout entry inside
- * a single blob (the same "one blob, not one NVS key per record" pattern
- * LoadConfigurationStore already uses), guarded by an explicit schema
- * version key so an incompatible future layout is discarded rather than
- * misread.
+ * Every record is stored as one fixed-layout entry inside a single blob
+ * (not one NVS key per record), guarded by an explicit schema version key
+ * so an incompatible future layout is discarded rather than misread.
  */
 constexpr const char* NVS_NAMESPACE = "kw_commission";
 constexpr const char* NVS_KEY_SCHEMA_VERSION = "schema";

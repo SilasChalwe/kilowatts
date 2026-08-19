@@ -1,14 +1,3 @@
-/**
- * @file Load.cpp
- * @brief Implements one electrical load connected to a Central Node or Smart Node.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
- */
-
-
 #include "Load.h"
 
 

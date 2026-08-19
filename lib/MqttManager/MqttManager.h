@@ -41,19 +41,14 @@
  * initial message-handling call stack.
  *
  * MQTT/Wi-Fi loss must never stop local sensor monitoring, Best-First
- * Search, ESP-NOW, or relay control (Section "MQTT failure must not stop
- * local control") — this class only ever reports connectivity state
- * honestly; it never blocks the caller waiting for a connection.
+ * Search, ESP-NOW, or relay control — this class only ever reports
+ * connectivity state honestly; it never blocks the caller waiting for a
+ * connection.
  *
  * This module requires the real ESP-IDF MQTT client (esp-mqtt,
  * mqtt_client.h) and cJSON for parsing incoming commands, and is
  * therefore ESP32-target-only, like WiFiManager, EspNowCommunication and
  * ChipInfo — it has no host build split and no host-native test.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_MQTT_MANAGER_H
@@ -124,10 +119,9 @@ using LoadCommandHandler = LoadCommandResult (*)(void* context, const LoadComman
 
 /**
  * kilowatts/v1/commands/system: requesting an immediate extra planning
- * cycle outside the normal ~5s cadence (Section 4.6.1's Optimisation Task
- * period), or a factory reset (Section "Factory Reset") of Central itself
- * or a remote Node. Unrecognised actions are rejected with a structured
- * acknowledgement rather than silently ignored.
+ * cycle outside the normal Optimisation Task cadence, or a factory reset
+ * of Central itself or a remote Node. Unrecognised actions are rejected
+ * with a structured acknowledgement rather than silently ignored.
  */
 enum class SystemCommandAction : std::uint8_t {
     UNKNOWN = 0U,
@@ -140,8 +134,7 @@ enum class SystemCommandAction : std::uint8_t {
 
 /**
  * confirmText/targetNodeMacAddress are only meaningful for
- * FACTORY_RESET_CENTRAL/FACTORY_RESET_NODE (Section "Protect This
- * Operation From Accidental Invocation"): confirmText must equal
+ * FACTORY_RESET_CENTRAL/FACTORY_RESET_NODE: confirmText must equal
  * "FACTORY_RESET_CONFIRMED" exactly, checked by the domain handler, not
  * by MqttManager's own syntactic parsing.
  */
@@ -233,10 +226,10 @@ using ConfigCommandHandler = LoadCommandResult (*)(void* context, const ConfigCo
 
 
 /**
- * kilowatts/v1/commands/development (Section "Development Session Is
- * Explicit"): the only way a Node's OperatingEnvironment ever becomes
- * DEVELOPMENT, and the only way a sensor ever gets a simulated
- * voltage/current override — never automatic, never compile-time.
+ * kilowatts/v1/commands/development: the only way a Node's
+ * OperatingEnvironment ever becomes DEVELOPMENT, and the only way a
+ * sensor ever gets a simulated voltage/current override — never
+ * automatic, never compile-time.
  */
 enum class DevelopmentCommandAction : std::uint8_t {
     UNKNOWN = 0U,
@@ -269,7 +262,7 @@ struct DevelopmentCommandRequest {
 using DevelopmentCommandHandler = LoadCommandResult (*)(void* context, const DevelopmentCommandRequest& request);
 
 
-/** Machine-readable outcome for one kilowatts/v1/acks entry (Section "Command IDs And Acks"). */
+/** Machine-readable outcome for one kilowatts/v1/acks entry. */
 enum class AckStatus : std::uint8_t {
     ACCEPTED = 0U,
     APPLIED = 1U,

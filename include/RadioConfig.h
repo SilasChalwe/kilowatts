@@ -10,11 +10,6 @@
  * configured Access Point actually broadcasts on this channel before
  * associating with it — see WiFiManager's README for the
  * RADIO_CHANNEL_MISMATCH policy this constant exists to support.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_RADIO_CONFIG_H

@@ -1,15 +1,10 @@
 /**
  * @file test_relay_command_dispatcher.cpp
  * @brief Host-native correctness tests for OFF-before-ON dispatch ordering
- *        and command/acknowledgement tracking (Algorithm 4.6).
+ *        and command/acknowledgement tracking.
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "RelayCommandDispatcher.h"
@@ -59,9 +54,6 @@ RelayTarget makeTargetWithUnknownConfirmedState(const Load::MacAddress& mac, std
     return RelayTarget{mac, relayPin, desiredOn, desiredOn, /* currentlyConfirmedValid */ false};
 }
 
-/**
- * TEST 1 - NO-OP TARGETS ARE DROPPED
- */
 void testNoOpTargetsAreDropped() {
     printSection("TEST 1 - NO-OP TARGETS ARE DROPPED");
 
@@ -74,11 +66,9 @@ void testNoOpTargetsAreDropped() {
     reportCheck("Two already-satisfied targets produce an empty dispatch order", dispatchOrder.empty());
 }
 
-/**
- * TEST 2 - OFF TRANSITIONS ARE DISPATCHED BEFORE ANY ON TRANSITION
- * Three ON transitions listed first in the input, then two OFF
- * transitions: the dispatch order must still place both OFF transitions
- * ahead of all three ON transitions.
+/*
+ * ON transitions are listed first in the input; the dispatch order must
+ * still place both OFF transitions ahead of all three ON transitions.
  */
 void testOffBeforeOn() {
     printSection("TEST 2 - OFF TRANSITIONS DISPATCHED BEFORE ANY ON TRANSITION");
@@ -118,9 +108,6 @@ void testOffBeforeOn() {
     reportCheck("All three ON transitions are present", onCount == 3U);
 }
 
-/**
- * TEST 3 - ON PHASE PRESERVES BEST-FIRST ADMISSION ORDER
- */
 void testOnPhasePreservesOrder() {
     printSection("TEST 3 - ON PHASE PRESERVES BEST-FIRST ADMISSION ORDER");
 
@@ -144,9 +131,6 @@ void testOnPhasePreservesOrder() {
                 dispatchOrder[2].nodeMacAddress == NODE_B);
 }
 
-/**
- * TEST 4 - COMMAND/ACKNOWLEDGEMENT TRACKING
- */
 void testCommandTracking() {
     printSection("TEST 4 - COMMAND/ACKNOWLEDGEMENT TRACKING");
 
@@ -181,9 +165,6 @@ void testCommandTracking() {
                 dispatcher.getNumberOfPendingCommands() == 0U);
 }
 
-/**
- * TEST 5 - EXPIRED COMMAND DETECTION
- */
 void testExpiredCommandDetection() {
     printSection("TEST 5 - EXPIRED COMMAND DETECTION");
 
@@ -203,12 +184,11 @@ void testExpiredCommandDetection() {
                 dispatcher.getNumberOfPendingCommands() == 2U);
 }
 
-/**
- * TEST 6 - UNKNOWN CONFIRMED STATE IS NEVER TREATED AS A NO-OP
+/*
  * A target whose currentlyConfirmedOn happens to already equal desiredOn
  * must still be dispatched when currentlyConfirmedValid is false — an
  * unknown physical state is never assumed to already match what is
- * wanted (Section "Unknown Relay State").
+ * wanted.
  */
 void testUnknownConfirmedStateIsNeverANoOp() {
     printSection("TEST 6 - UNKNOWN CONFIRMED STATE IS NEVER A NO-OP");
@@ -239,9 +219,6 @@ void testUnknownConfirmedStateIsNeverANoOp() {
 
 int main() {
     std::printf("KILOWATTS RELAYCOMMANDDISPATCHER HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testNoOpTargetsAreDropped();
     testOffBeforeOn();

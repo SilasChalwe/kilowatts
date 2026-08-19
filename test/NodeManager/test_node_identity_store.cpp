@@ -9,11 +9,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #include "NodeIdentityStore.h"
@@ -50,9 +45,6 @@ void printSection(const char* title) {
     std::printf("======================================================================\n");
 }
 
-/**
- * TEST 1 - DEFAULT STATE
- */
 void testDefaultState() {
     printSection("TEST 1 - DEFAULT STATE");
 
@@ -63,9 +55,6 @@ void testDefaultState() {
                 std::strcmp(identity.getFriendlyName(), "") == 0);
 }
 
-/**
- * TEST 2 - FIRST COMMISSIONING
- */
 void testFirstCommissioning() {
     printSection("TEST 2 - FIRST COMMISSIONING");
 
@@ -85,9 +74,6 @@ void testFirstCommissioning() {
                 std::strcmp(identity.getFriendlyName(), "Sitting Room") == 0);
 }
 
-/**
- * TEST 3 - RENAME AN ALREADY-COMMISSIONED NODE
- */
 void testRename() {
     printSection("TEST 3 - RENAME AN ALREADY-COMMISSIONED NODE");
 
@@ -102,9 +88,6 @@ void testRename() {
                 std::strcmp(identity.getFriendlyName(), "Living Room") == 0);
 }
 
-/**
- * TEST 4 - DECOMMISSION RESETS TO UNCOMMISSIONED
- */
 void testDecommission() {
     printSection("TEST 4 - DECOMMISSION RESETS TO UNCOMMISSIONED");
 
@@ -123,9 +106,6 @@ void testDecommission() {
                 identity.getLifecycleState() == NodeLifecycleState::COMMISSIONED);
 }
 
-/**
- * TEST 5 - PERSISTENCE IS HONEST ON A HOST BUILD
- */
 void testPersistenceHonestOnHostBuild() {
     printSection("TEST 5 - PERSISTENCE IS HONEST ON A HOST BUILD");
 
@@ -145,9 +125,6 @@ void testPersistenceHonestOnHostBuild() {
 
 int main() {
     std::printf("KILOWATTS NODEIDENTITYSTORE HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testDefaultState();
     testFirstCommissioning();

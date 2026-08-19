@@ -21,14 +21,12 @@
  * Loads, does not calculate system Available Power, does not perform MQTT,
  * and does not control relays. It measures. Nothing else.
  *
- * Development vs. production sensor source (Chapter 4, "Development mode
- * may provide deterministic test measurements at the hardware-source
- * boundary"): a per-sensor runtime override (setDevelopmentOverride() /
+ * A per-sensor runtime override (setDevelopmentOverride() /
  * clearDevelopmentOverride()), never a compile-time switch, changes only
  * where readMeasurements() gets its raw voltage/current/power from - every
  * other method on this class, and everything downstream of it (EMA
  * filtering, calibration, Load::setMeasurements(), battery State of
- * Charge, the power budget, Best-First Search) is exactly the same
+ * Charge, the power limit, Best-First Search) is exactly the same
  * production code path whether or not an override is active. No sensor
  * has an override by default: a freshly registered sensor always attempts
  * real I2C communication first, and only ever reports a substituted
@@ -49,11 +47,6 @@
  * the development-value substitution, and calibration NVS persistence are
  * compiled only when building for the ESP32 target (see
  * INA219Monitor.cpp).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_INA219_MONITOR_H
@@ -138,8 +131,8 @@ public:
      * They are required, not defaulted: correct calibration depends on
      * them, and this module never assumes an undocumented board.
      *
-     * emaAlpha is the smoothing factor a (Equations 4.2-4.4), applied by
-     * readFilteredMeasurements() below; it must satisfy 0 < alpha <= 1.
+     * emaAlpha is the smoothing factor applied by readFilteredMeasurements()
+     * below; it must satisfy 0 < alpha <= 1.
      */
     struct INA219SensorConfiguration {
         std::uint8_t i2cAddress;
@@ -151,10 +144,8 @@ public:
 
 
     /**
-     * Calibration offsets/scaling factors for one INA219 device (System
-     * Requirement 3: "calibration persistence via Non-Volatile Storage to
-     * securely retain sensor calibration offsets and scaling factors").
-     * Applied to the raw voltage/current reading, before EMA filtering,
+     * Calibration offsets/scaling factors for one INA219 device. Applied
+     * to the raw voltage/current reading, before EMA filtering,
      * inside readMeasurements(): correctedVoltage = raw.voltage +
      * voltageOffsetVolts; correctedCurrent = (raw.current +
      * currentOffsetAmps) * currentScaleFactor; power is then recomputed
@@ -307,7 +298,7 @@ public:
      * Reads a raw measurement for i2cAddress (exactly as readMeasurements()
      * does, including the development/production and calibration
      * behaviour described above) and folds it into that sensor's running
-     * Exponential Moving Average (Equations 4.2-4.4):
+     * Exponential Moving Average:
      *
      *     P_bar(t) = alpha P(t) + (1 - alpha) P_bar(t-1)
      *
@@ -317,9 +308,8 @@ public:
      * filtered value yet exists.
      *
      * This is the filtered snapshot the rest of the system (battery State
-     * of Charge, the power budget, Best-First Search) must consume, not
-     * the instantaneous readMeasurements() value, per the Measurement and
-     * Filtering Model (Section 4.6.1.1).
+     * of Charge, the power limit, Best-First Search) must consume, not
+     * the instantaneous readMeasurements() value.
      *
      * Returns false, and leaves filteredMeasurements/the running filter
      * state unchanged, when the underlying readMeasurements() call fails
@@ -334,9 +324,9 @@ public:
     bool readFilteredMeasurementsForRelayPin(std::uint8_t relayPin, LoadMeasurements& filteredMeasurements);
 
     /**
-     * Pure Exponential Moving Average math (Equations 4.2-4.4), applied
-     * independently to voltage, current and power. Always compiled and
-     * hardware-free so it is directly host-testable; readFilteredMeasurements()
+     * Pure Exponential Moving Average math, applied independently to
+     * voltage, current and power. Always compiled and hardware-free so it
+     * is directly host-testable; readFilteredMeasurements()
      * is simply this function wired to a real/development raw reading and
      * this sensor's own persisted filter state.
      *
@@ -354,9 +344,8 @@ public:
      * Adopts calibration as the active offsets/scaling factors for the
      * registered sensor at i2cAddress, applied to every subsequent
      * readMeasurements() call, and persists it to NVS (ESP32 target only)
-     * so it survives a reboot or power interruption (System Requirement
-     * 3). Calibration storage is scoped to a namespace private to this
-     * module.
+     * so it survives a reboot or power interruption. Calibration storage
+     * is scoped to a namespace private to this module.
      *
      * Rejected (returns false, no persistence attempted) when i2cAddress
      * is not registered, or calibration contains a non-finite value, or

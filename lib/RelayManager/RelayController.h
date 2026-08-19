@@ -23,11 +23,6 @@
  * compiled only when building for the ESP32 target (see
  * RelayController.cpp), matching the ESP_PLATFORM split already used by
  * INA219Monitor and CurrentTimeProvider.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_RELAY_CONTROLLER_H
@@ -70,8 +65,8 @@ public:
      * assumed, so it is always supplied explicitly.
      *
      * initialStateOn is the safe state applied the moment this relay is
-     * registered — normally false (OFF), matching the document's
-     * pull-down/safe-default boot behaviour. The GPIO is configured for
+     * registered — normally false (OFF), matching the pull-down/safe-
+     * default boot behaviour. The GPIO is configured for
      * output and driven to this state in the same call, before any other
      * code can command it, so there is no undefined transient state.
      */
@@ -152,8 +147,8 @@ public:
     /**
      * Reads the real GPIO output level currently driven for relayPin and
      * translates it back into a logical ON/OFF state using that relay's
-     * activeHigh polarity. This is the read-back the document requires
-     * before a relay command is reported as confirmed.
+     * activeHigh polarity. This is the read-back required before a relay
+     * command is reported as confirmed.
      *
      * Returns false, and leaves on unchanged, when relayPin is not
      * registered, or on a host build where no real GPIO exists.

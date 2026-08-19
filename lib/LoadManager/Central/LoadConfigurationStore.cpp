@@ -8,11 +8,6 @@
  * host-testable (see test/LoadConfigurationStore/). NVS persistence
  * (loadPersisted()/persist()) is compiled only under ESP_PLATFORM,
  * matching the split already used elsewhere in this project.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "LoadConfigurationStore.h"
@@ -33,13 +28,9 @@ static const char *TAG = "LOAD_CONFIG_STORE";
 
 namespace {
 
-/*
- * NVS is persistent non-volatile configuration storage, not a database.
- * This namespace and key are private to LoadConfigurationStore's own
- * responsibility. Every entry is stored as one fixed-layout record inside
- * a single blob (rather than one NVS key per Load) so the number of
- * remembered Loads is not limited by NVS's per-device key count.
- */
+// Entries are stored as one fixed-layout record inside a single blob,
+// rather than one NVS key per Load, so the remembered-Load count isn't
+// limited by NVS's per-device key count.
 constexpr const char* NVS_NAMESPACE = "kw_loadcfg";
 constexpr const char* NVS_KEY_ENTRIES = "entries";
 
@@ -151,12 +142,9 @@ bool LoadConfigurationStore::applyToLoad(Load& load) const
     load.setPriority(entry.priority);
     load.setMode(entry.mode);
 
-    /*
-     * setSchedule() itself rejects a schedule on a Fixed Load (returning
-     * false), which is the correct, harmless outcome here: this store's
-     * persisted schedule for a Load the user has since switched to Fixed
-     * simply does not apply, exactly like calling it directly would.
-     */
+    // setSchedule() rejects the call on a Fixed Load, so a persisted
+    // schedule for a Load the user has since switched to Fixed is
+    // silently ignored rather than causing an error here.
     load.setSchedule(entry.schedule);
 
     return true;

@@ -1,31 +1,20 @@
 /**
  * @file NodeIdentityStore.h
- * @brief Declares a Smart Node's own local, persisted commissioning
- *        identity.
+ * @brief A Smart Node's own local, persisted commissioning identity.
  *
- * NodeIdentityStore's one responsibility: remember whether THIS physical
- * ESP32 has ever been commissioned, and under what friendly name, across a
- * reboot. This is the Smart-Node-local counterpart to Central's
- * authoritative NodeCommissioningRegistry - each Smart Node stores only
- * its own identity, never the whole installation (Section "Smart Node
- * Local Persistence").
+ * The Smart-Node-local counterpart to Central's authoritative
+ * NodeCommissioningRegistry - each Smart Node stores only its own
+ * identity, never the whole installation.
  *
  * Unlike NodeCommissioningRegistry, this class never observes DISCOVERED
  * or CONFIGURING for itself - those only describe what Central currently
  * knows *about* a Node from the outside. From a Node's own point of view
- * it is simply UNCOMMISSIONED (nothing valid persisted yet) or
- * COMMISSIONED/OPERATIONAL (a friendly name has been applied and
- * persisted); applyCommission() resolves synchronously in one call, with
- * no in-between state to persist. Likewise DECOMMISSIONED is never stored
+ * it is simply UNCOMMISSIONED or COMMISSIONED/OPERATIONAL;
+ * applyCommission() resolves synchronously in one call, with no
+ * in-between state to persist. DECOMMISSIONED is likewise never stored
  * locally: applyDecommission() resets straight back to UNCOMMISSIONED,
- * since a Node has no reason to remember it was once decommissioned - only
- * Central needs that historical distinction (to avoid recreating a fake
- * Node from a stale command, see NodeCommissioningRegistry).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * since only Central needs that historical distinction (to avoid
+ * recreating a fake Node from a stale command).
  */
 
 #ifndef KILOWATTS_NODE_IDENTITY_STORE_H
@@ -68,22 +57,17 @@ public:
 
     /**
      * Applies a received CommissionCommandPacket's friendlyName - the
-     * Node-local half of the same operation
+     * Node-local half of the operation
      * NodeCommissioningRegistry::requestCommissioning() performs on
-     * Central, so the acceptance rule mirrors it exactly: accepted only
-     * when friendlyName is non-empty and fits FRIENDLY_NAME_BUFFER_SIZE,
-     * and the current lifecycleState is UNCOMMISSIONED (first
-     * commissioning, moves to COMMISSIONED) or COMMISSIONED/OPERATIONAL
-     * (rename, lifecycleState unchanged).
+     * Central, so the acceptance rule mirrors it: accepted only when
+     * friendlyName is valid and lifecycleState is UNCOMMISSIONED (first
+     * commissioning) or COMMISSIONED/OPERATIONAL (rename).
      *
      * Unlike Central's two-phase pending/confirm flow, this resolves
-     * immediately and completely in one call - a Node is its own
-     * authority for whether it accepted the change, so there is nothing
-     * further to confirm locally. The caller should persist() this result
-     * and reply with CommissionAckPacket{success, getLifecycleState()}
-     * either way.
-     *
-     * Returns false, with no change made, when rejected.
+     * immediately in one call - a Node is its own authority for whether
+     * it accepted the change. The caller should persist() this result and
+     * reply with CommissionAckPacket{success, getLifecycleState()} either
+     * way. Returns false, with no change made, when rejected.
      */
     bool applyCommission(const char* friendlyName);
 

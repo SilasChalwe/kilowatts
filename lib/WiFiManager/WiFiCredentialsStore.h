@@ -12,11 +12,6 @@
  * KilowattsSecrets.h's WIFI_SSID/WIFI_PASSWORD remain the factory-default
  * fallback used only when nothing has ever been provisioned here - see
  * src/central/main.cpp's boot sequence for the precedence.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 15 August 2026
  */
 
 #ifndef KILOWATTS_WIFI_CREDENTIALS_STORE_H

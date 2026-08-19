@@ -16,11 +16,6 @@
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation —
  * matching test/BestFirstSearch/test_best_first_search.cpp.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "INA219Monitor.h"
@@ -73,9 +68,6 @@ INA219Monitor::INA219SensorConfiguration makeSensorConfiguration(
     };
 }
 
-/**
- * TEST 1 - REGISTER ONE SENSOR
- */
 void testRegisterOneSensor() {
     printSection("TEST 1 - REGISTER ONE SENSOR");
 
@@ -102,9 +94,6 @@ void testRegisterOneSensor() {
                 monitor.getSensor(1U) == nullptr);
 }
 
-/**
- * TEST 2 - REGISTER SEVERAL SENSORS
- */
 void testRegisterSeveralSensors() {
     printSection("TEST 2 - REGISTER SEVERAL SENSORS");
 
@@ -121,9 +110,6 @@ void testRegisterSeveralSensors() {
                 monitor.getNumberOfSensors() == 3U);
 }
 
-/**
- * TEST 3 - FIND SENSOR BY I2C ADDRESS
- */
 void testFindSensorByI2CAddress() {
     printSection("TEST 3 - FIND SENSOR BY I2C ADDRESS");
 
@@ -142,9 +128,6 @@ void testFindSensorByI2CAddress() {
                 monitor.findSensorByI2CAddress(0x4AU) == nullptr);
 }
 
-/**
- * TEST 4 - FIND SENSOR BY RELAY PIN
- */
 void testFindSensorByRelayPin() {
     printSection("TEST 4 - FIND SENSOR BY RELAY PIN");
 
@@ -163,9 +146,6 @@ void testFindSensorByRelayPin() {
                 monitor.findSensorByRelayPin(99U) == nullptr);
 }
 
-/**
- * TEST 5 - REJECT DUPLICATE I2C ADDRESS
- */
 void testRejectDuplicateI2CAddress() {
     printSection("TEST 5 - REJECT DUPLICATE I2C ADDRESS");
 
@@ -182,9 +162,6 @@ void testRejectDuplicateI2CAddress() {
                 monitor.findSensorByRelayPin(17U) == nullptr);
 }
 
-/**
- * TEST 6 - REJECT DUPLICATE RELAY PIN
- */
 void testRejectDuplicateRelayPin() {
     printSection("TEST 6 - REJECT DUPLICATE RELAY PIN");
 
@@ -201,10 +178,9 @@ void testRejectDuplicateRelayPin() {
                 monitor.findSensorByI2CAddress(0x41U) == nullptr);
 }
 
-/**
- * TEST 7 - REJECT INVALID CONFIGURATION
- * Every value INA219Monitor can validate without any hardware: an I2C
- * address outside the INA219's real 0x40-0x4F address space, a
+/*
+ * Covers every value INA219Monitor can validate without any hardware: an
+ * I2C address outside the INA219's real 0x40-0x4F address space, a
  * non-positive shunt resistance or maximum current, and a shunt/current
  * combination that would exceed the sensor's measurable shunt-voltage
  * range.
@@ -255,8 +231,7 @@ void testRejectInvalidConfiguration() {
                 monitor.addSensor(makeSensorConfiguration(0x46U, 9U, 0.1F, 2.0F, 1.0F)));
 }
 
-/**
- * TEST 9 - EXPONENTIAL MOVING AVERAGE MATH (Equations 4.2-4.4)
+/*
  * applyExponentialMovingAverage() is pure, hardware-free math and is
  * always compiled, so it is directly host-testable independent of any
  * real or development reading.
@@ -286,8 +261,7 @@ void testExponentialMovingAverageMath() {
                 std::fabs(alphaZero.voltageVolts - previous.voltageVolts) < 0.001F);
 }
 
-/**
- * TEST 10 - CALIBRATION VALIDATION AND APPLICATION
+/*
  * setCalibration()/getCalibration() bookkeeping and applyCalibration()'s
  * math are always compiled; only NVS persistence itself (which always
  * reports failure on a host build, per persistCalibration()) is
@@ -326,8 +300,7 @@ void testCalibrationValidationAndApplication() {
                 std::fabs(restored.currentScaleFactor - 1.02F) < 0.0001F);
 }
 
-/**
- * TEST 8 - HOST BUILD NEVER FABRICATES HARDWARE
+/*
  * Without ESP_PLATFORM, every hardware-touching method must honestly
  * report failure/absence instead of simulating a device or a reading —
  * even for an otherwise validly registered sensor.
@@ -388,9 +361,6 @@ void testHostBuildReportsNoHardware() {
 }
 
 
-/**
- * TEST 11 - DEVELOPMENT OVERRIDE BOOKKEEPING
- */
 void testDevelopmentOverrideBookkeeping() {
     printSection("TEST 11 - DEVELOPMENT OVERRIDE BOOKKEEPING");
 
@@ -420,9 +390,6 @@ void testDevelopmentOverrideBookkeeping() {
                 std::string(toText(MeasurementSource::SIMULATED)) == "SIMULATED");
 }
 
-/**
- * TEST 12 - PROVISIONING ROLLBACK REMOVAL
- */
 void testRollbackRemoval() {
     printSection("TEST 12 - PROVISIONING ROLLBACK REMOVAL");
 

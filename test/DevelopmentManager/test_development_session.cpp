@@ -5,11 +5,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #include "DevelopmentSession.h"
@@ -47,9 +42,6 @@ void printSection(const char* title) {
     std::printf("======================================================================\n");
 }
 
-/**
- * TEST 1 - PRODUCTION IS ALWAYS THE DEFAULT
- */
 void testProductionIsDefault() {
     printSection("TEST 1 - PRODUCTION IS ALWAYS THE DEFAULT");
 
@@ -59,9 +51,6 @@ void testProductionIsDefault() {
     reportCheck("A new session has zero sensor overrides", session.getNumberOfSensorOverrides() == 0U);
 }
 
-/**
- * TEST 2 - START / END
- */
 void testStartEnd() {
     printSection("TEST 2 - START / END");
 
@@ -80,9 +69,6 @@ void testStartEnd() {
     reportCheck("A second end() while already inactive is rejected", !session.end());
 }
 
-/**
- * TEST 3 - SENSOR OVERRIDES REQUIRE AN ACTIVE SESSION
- */
 void testOverridesRequireActiveSession() {
     printSection("TEST 3 - SENSOR OVERRIDES REQUIRE AN ACTIVE SESSION");
 
@@ -113,9 +99,6 @@ void testOverridesRequireActiveSession() {
     reportCheck("clearSensorOverride() on an already-cleared address is rejected", !session.clearSensorOverride(0x40U));
 }
 
-/**
- * TEST 4 - END DISCARDS EVERY OVERRIDE
- */
 void testEndDiscardsOverrides() {
     printSection("TEST 4 - END DISCARDS EVERY OVERRIDE");
 
@@ -135,9 +118,6 @@ void testEndDiscardsOverrides() {
                 !session.findSensorOverride(0x40U, v, i));
 }
 
-/**
- * TEST 5 - TEXT REPRESENTATION
- */
 void testTextRepresentation() {
     printSection("TEST 5 - TEXT REPRESENTATION");
 
@@ -151,9 +131,6 @@ void testTextRepresentation() {
 
 int main() {
     std::printf("KILOWATTS DEVELOPMENTSESSION HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testProductionIsDefault();
     testStartEnd();

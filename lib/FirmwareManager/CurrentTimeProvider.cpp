@@ -23,11 +23,6 @@
  *   hardware-touching operation simply reports failure/no data rather
  *   than fabricating a synchronized time, a persisted value, or an
  *   applied clock change.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "CurrentTimeProvider.h"
@@ -54,25 +49,16 @@ static const char *TAG = "CURRENT_TIME_PROVIDER";
 
 namespace {
 
-/*
- * POSIX TZ string for Zambia (Central Africa Time, UTC+2, no daylight
- * saving time), matching this project's stated institution (The
- * Copperbelt University). POSIX TZ sign convention is inverted from the
- * UTC offset: east of Greenwich is negative, hence "CAT-2" for UTC+2.
- * ESP-IDF's newlib does not carry the IANA zoneinfo database, so a POSIX
- * TZ string is used rather than a zone name such as "Africa/Lusaka".
- *
- * Used by setenv("TZ", ...) unconditionally (both platforms), so this
- * stays outside the ESP_PLATFORM guard below.
- */
+// POSIX TZ string for Central Africa Time (UTC+2, no DST). POSIX TZ sign
+// convention is inverted from the UTC offset (east of Greenwich is
+// negative), hence "CAT-2" for UTC+2. ESP-IDF's newlib doesn't carry the
+// IANA zoneinfo database, so a zone name like "Africa/Lusaka" won't work.
+//
+// Used by setenv("TZ", ...) unconditionally (both platforms), so this
+// stays outside the ESP_PLATFORM guard below.
 constexpr const char* LOCAL_TIMEZONE_POSIX_STRING = "CAT-2";
 
-/*
- * Sanity bounds for a manually entered year: this project cannot
- * legitimately need a manual date before the year 2000, and 2099 is
- * generous headroom without accepting nonsensical values. Used by
- * isManualDateTimeValid(), which is always compiled.
- */
+// Sanity bounds for a manually entered year, used by isManualDateTimeValid().
 constexpr std::uint16_t MINIMUM_MANUAL_YEAR = 2000U;
 constexpr std::uint16_t MAXIMUM_MANUAL_YEAR = 2099U;
 
@@ -103,17 +89,8 @@ std::uint8_t daysInMonth(std::uint16_t year, std::uint8_t month)
 
 #ifdef ESP_PLATFORM
 
-/*
- * pool.ntp.org is the standard public NTP pool used throughout ESP-IDF's
- * own SNTP documentation and examples.
- */
 constexpr const char* NTP_SERVER_HOSTNAME = "pool.ntp.org";
 
-/*
- * NVS is persistent non-volatile configuration storage, not a database.
- * This namespace and its two keys are local to CurrentTimeProvider's own
- * responsibility only.
- */
 constexpr const char* NVS_NAMESPACE = "kw_time";
 constexpr const char* NVS_KEY_TIME_MODE = "mode";
 constexpr const char* NVS_KEY_MANUAL_TIMESTAMP = "manual_ts";

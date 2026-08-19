@@ -1,14 +1,3 @@
-/**
- * @file TopologyTree.cpp
- * @brief Implements JSON construction for the kilowatts/v1/state/tree and
- *        kilowatts/v1/state/loads MQTT topics.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
- */
-
 #include "TopologyTree.h"
 
 #include "BestFirstSearch.h"
@@ -88,7 +77,7 @@ const char* TopologyTree::rejectionReasonText(std::uint8_t reason)
     switch (reason) {
         case BestFirstSearch::NONE: return "NONE";
         case BestFirstSearch::LOW_BATTERY: return "LOW_BATTERY";
-        case BestFirstSearch::POWER_BUDGET_EXCEEDED: return "POWER_BUDGET_EXCEEDED";
+        case BestFirstSearch::POWER_LIMIT_EXCEEDED: return "POWER_LIMIT_EXCEEDED";
         case BestFirstSearch::BATTERY_CURRENT_LIMIT: return "BATTERY_CURRENT_LIMIT";
         case BestFirstSearch::MAIN_LIMIT_EXCEEDED: return "MAIN_LIMIT_EXCEEDED";
         case BestFirstSearch::BRANCH_LIMIT_EXCEEDED: return "BRANCH_LIMIT_EXCEEDED";
@@ -255,11 +244,9 @@ void TopologyTree::appendNodeAndChildren(
         out += ",";
 
         /*
-         * remainingDepthGuard bounds recursion the same way the pre-tree
-         * printer in src/central/main.cpp historically did: a legitimate
-         * chain can visit every known Node once, so reaching zero can
-         * only mean a corrupted Next-Hop relationship (a routing loop),
-         * never a real topology.
+         * A legitimate chain visits every known Node at most once, so
+         * remainingDepthGuard reaching zero can only mean a corrupted
+         * Next-Hop relationship (a routing loop), never a real topology.
          */
         if (remainingDepthGuard == 0U) {
             out += "\"children\":[]";

@@ -1,7 +1,7 @@
 /**
  * @file BestFirstSearch.cpp
  * @brief Implements the Best-First Search used to select Auto candidate
- *        Load objects (Sections 4.6.2-4.6.4).
+ *        Load objects.
  *
  * Power preparation (AvailablePowerManager), Load classification
  * (LoadFilter), schedule evaluation (LoadScheduleEvaluator), battery-state
@@ -9,11 +9,6 @@
  * all handled outside this class.
  *
  * OPEN is implemented as a binary min-heap ordered by f(i).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "BestFirstSearch.h"
@@ -145,8 +140,8 @@ bool BestFirstSearch::startSearch(
         planningState.initialCommittedPowerWatts;
 
     /*
-     * B = clamp((SoC_warn - SoC) / (SoC_warn - SoC_min), 0, 1)
-     * (Equation 4.29). The denominator is guaranteed strictly positive by
+     * B = clamp((SoC_warn - SoC) / (SoC_warn - SoC_min), 0, 1). The
+     * denominator is guaranteed strictly positive by
      * isElectricalPlanningStateValid(), so B is computed once here rather
      * than once per candidate, since it does not depend on any
      * per-candidate quantity.
@@ -429,10 +424,7 @@ bool BestFirstSearch::run()
     clearOpenSet();
 
 
-    /*
-     * Algorithm 4.3 - score every candidate once and insert it into
-     * OPEN. Equations 4.27-4.33.
-     */
+    /* Score every candidate once and insert it into OPEN. */
     for (std::size_t loadIndex = 0U;
          loadIndex < loads_.size();
          ++loadIndex) {
@@ -476,10 +468,9 @@ bool BestFirstSearch::run()
 
 
     /*
-     * Algorithm 4.5 - repeatedly extract the smallest f(i) from OPEN and
-     * apply the constraint guard (Algorithm 4.4). Each extraction is
-     * O(log n), so processing n candidates through the heap is
-     * O(n log n).
+     * Repeatedly extract the smallest f(i) from OPEN and apply the
+     * constraint guard. Each extraction is O(log n), so processing n
+     * candidates through the heap is O(n log n).
      */
     while (!openSetLoadIndexes_.empty()) {
 
@@ -748,10 +739,8 @@ bool BestFirstSearch::isElectricalPlanningStateValid(
         isFinitePercentage(planningState.minimumStateOfChargePercent) &&
         isFinitePercentage(planningState.warningStateOfChargePercent) &&
         /*
-         * SoC_warn must lie strictly above SoC_min (Section 4.6.3.2:
-         * "Let SoC_warn be the warning level above the protected
-         * reserve") so the battery-stress denominator in Equation 4.29
-         * is strictly positive and never divides by zero.
+         * SoC_warn must lie strictly above SoC_min so the battery-stress
+         * denominator is strictly positive and never divides by zero.
          */
         planningState.warningStateOfChargePercent >
             planningState.minimumStateOfChargePercent &&
@@ -857,7 +846,7 @@ float BestFirstSearch::calculateRunningPowerRatio(
         return 0.0F;
     }
 
-    /* p_i = P_i / max(P_available, 1 W) (Equation 4.27). */
+    /* p_i = P_i / max(P_available, 1 W). */
     const float runningPowerWatts =
         loads_[loadIndex]->getPower().runningWatts;
 
@@ -878,9 +867,9 @@ float BestFirstSearch::calculateStartupPowerRatio(
     }
 
     /*
-     * s_i = max(0, P_i_peak - P_i) / max(P_available, 1 W) (Equation
-     * 4.28). Only the extra current above the Load's own running power
-     * is charged here, so a Load with no startup surge scores s_i = 0.
+     * s_i = max(0, P_i_peak - P_i) / max(P_available, 1 W). Only the
+     * extra current above the Load's own running power is charged here,
+     * so a Load with no startup surge scores s_i = 0.
      */
     const LoadPower loadPower = loads_[loadIndex]->getPower();
 
@@ -907,7 +896,7 @@ float BestFirstSearch::calculatePriorityRatio(
         return 0.0F;
     }
 
-    /* q_i = W_i / W_max (Equation 4.31). */
+    /* q_i = W_i / W_max. */
     return limitValueToRange(
         static_cast<float>(
             loads_[loadIndex]->getPriority()
@@ -930,7 +919,7 @@ float BestFirstSearch::calculatePhysicalCost(
         return 0.0F;
     }
 
-    /* g(i) = w_P p_i + w_S s_i + w_B B (Equation 4.30). */
+    /* g(i) = w_P p_i + w_S s_i + w_B B. */
     return
         (weights_.runningPowerWeight *
          loadRunningPowerRatios_[loadIndex]) +
@@ -951,10 +940,9 @@ float BestFirstSearch::calculateHeuristicCost(
     }
 
     /*
-     * h(i) = w_Q (1 - q_i) + w_T r_i (Equation 4.32). r_i was already
-     * prepared outside this class (LoadScheduleEvaluator) and is never
-     * combined with W_i/q_i — priority and schedule stay two separate
-     * additive terms, exactly as the document defines them.
+     * h(i) = w_Q (1 - q_i) + w_T r_i. r_i was already prepared outside
+     * this class (LoadScheduleEvaluator) and is never combined with
+     * W_i/q_i — priority and schedule stay two separate additive terms.
      */
     return
         (weights_.priorityWeight *
@@ -973,7 +961,7 @@ float BestFirstSearch::calculateFinalScore(
         return 0.0F;
     }
 
-    /* f(i) = g(i) + h(i) (Equation 4.33). Smaller is more desirable. */
+    /* f(i) = g(i) + h(i). Smaller is more desirable. */
     return
         loadPhysicalCosts_[loadIndex] +
         loadHeuristicCosts_[loadIndex];
@@ -1050,45 +1038,45 @@ std::uint8_t BestFirstSearch::checkFeasibility(
 
 std::uint8_t BestFirstSearch::checkFeasibility(const FeasibilityInputs& inputs)
 {
-    /* Condition 1 (Equation 4.20): SoC > SoC_min. */
+    /* Condition 1: SoC > SoC_min. */
     if (inputs.stateOfChargePercent <= inputs.minimumStateOfChargePercent) {
         return LOW_BATTERY;
     }
 
-    /* Condition 2 (Equation 4.21): P_i <= P_remaining. */
+    /* Condition 2: P_i <= P_remaining. */
     if (inputs.candidateRunningPowerWatts > inputs.remainingPowerWatts) {
-        return POWER_BUDGET_EXCEEDED;
+        return POWER_LIMIT_EXCEEDED;
     }
 
-    /* Condition 3 (Equation 4.22): P_committed + P_i_peak <= P_battery,max. */
+    /* Condition 3: P_committed + P_i_peak <= P_battery,max. */
     if (inputs.committedPowerWatts + inputs.candidatePeakPowerWatts >
         inputs.maximumBatteryPowerWatts) {
         return BATTERY_CURRENT_LIMIT;
     }
 
     /*
-     * I_main,start(i) = (P_committed + P_i_peak) / V_B (Equation 4.19).
-     * Callers of this static overload are responsible for supplying a
-     * strictly positive batteryBusVoltageVolts (guaranteed for the
-     * internal caller by isElectricalPlanningStateValid(); the
-     * pre-actuation caller re-reads a live measurement it already knows
-     * to be valid before ever reaching this check).
+     * I_main,start(i) = (P_committed + P_i_peak) / V_B. Callers of this
+     * static overload are responsible for supplying a strictly positive
+     * batteryBusVoltageVolts (guaranteed for the internal caller by
+     * isElectricalPlanningStateValid(); the pre-actuation caller re-reads
+     * a live measurement it already knows to be valid before ever
+     * reaching this check).
      */
     const float mainStartupCurrentAmps =
         (inputs.committedPowerWatts + inputs.candidatePeakPowerWatts) /
         inputs.batteryBusVoltageVolts;
 
-    /* Condition 4 (Equation 4.23): I_main,start(i) <= I_main,max. */
+    /* Condition 4: I_main,start(i) <= I_main,max. */
     if (mainStartupCurrentAmps > inputs.maximumMainCurrentAmps) {
         return MAIN_LIMIT_EXCEEDED;
     }
 
-    /* I_b,start(i) = (P_b + P_i_peak) / V_B (Equation 4.18). */
+    /* I_b,start(i) = (P_b + P_i_peak) / V_B. */
     const float branchStartupCurrentAmps =
         (inputs.branchCommittedPowerWatts + inputs.candidatePeakPowerWatts) /
         inputs.batteryBusVoltageVolts;
 
-    /* Condition 5 (Equation 4.24): I_b,start(i) <= I_b,max. */
+    /* Condition 5: I_b,start(i) <= I_b,max. */
     if (branchStartupCurrentAmps > inputs.branchMaximumCurrentAmps) {
         return BRANCH_LIMIT_EXCEEDED;
     }
@@ -1237,10 +1225,8 @@ void BestFirstSearch::markLoadSelectedToBeOn(std::size_t loadIndex)
     admittedLoadIndexesInOrder_.push_back(loadIndex);
 
     /*
-     * Sequential Allocation of Remaining Capacity (Algorithm 4.5,
-     * Equations 4.34-4.37). checkFeasibility() already guaranteed
-     * runningPowerWatts <= remainingPowerWatts_, so this subtraction
-     * never goes negative.
+     * checkFeasibility() already guaranteed runningPowerWatts <=
+     * remainingPowerWatts_, so this subtraction never goes negative.
      */
     remainingPowerWatts_ -= runningPowerWatts;
     committedPowerWatts_ += runningPowerWatts;

@@ -25,11 +25,6 @@
  * This module requires the real ESP-IDF Wi-Fi/HTTP-server/lwIP stack and
  * is therefore ESP32-target-only, like WiFiManager - it has no host build
  * split and no host-native test.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 15 August 2026
  */
 
 #ifndef KILOWATTS_WIFI_PROVISIONING_PORTAL_H

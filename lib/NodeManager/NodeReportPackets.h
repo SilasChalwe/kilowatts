@@ -1,38 +1,20 @@
 /**
  * @file NodeReportPackets.h
- * @brief Wire-format structures sent between Kilowatts ESP32 firmware over ESP-NOW.
+ * @brief Wire-format structures sent between Kilowatts ESP32 firmware over
+ *        ESP-NOW.
  *
- * These structures are the byte layout carried inside an EspNowCommunication
- * Message payload. They are a transport representation only: a
- * NodeReportPacket is how one Node's report travels over the radio, not the
- * Node/Load domain object used for planning (see Node.h in lib/NodeManager
- * and Load.h in lib/LoadManager for that). They are actual ESP-NOW
- * wire-format payloads, not general DTO
- * objects and not power-management domain objects — hence "Packet" in every
- * name here, and "NodeReportPackets" rather than "PowerManagementMessages"
- * as the module name: this module does not manage power.
+ * These are the byte layouts carried inside an EspNowCommunication Message
+ * payload - a transport representation only, not the Node/Load domain
+ * object used for planning (see Node.h/Load.h). Declared once here and
+ * included by both src/central/main.cpp and src/smart/main.cpp so the two
+ * sides can't silently drift apart on byte layout.
  *
- * Central and Smart firmware previously each declared their own copy of
- * these structures by hand. Because both sides must agree on the exact
- * same byte layout to interpret a received payload correctly, the two
- * copies were a system contract that could silently drift apart if only
- * one file was edited. They are declared once here instead and included
- * by both src/central/main.cpp and src/smart/main.cpp.
- *
- * ESP-NOW v1.0 (the profile this project targets, since the Central Node's
- * classic ESP32 has no Wi-Fi 6 radio) caps one physical message at
- * ESP_NOW_MAX_DATA_LEN = 250 bytes, so EspNowCommunication::MAX_PAYLOAD_SIZE
- * is a hard ceiling on every struct below (enforced by the static_asserts
- * at the bottom of this file). MAX_LOADS_PER_NODE_PACKET = 3 is the current
- * configured-load limit and fits a complete report in one ESP-NOW message
- * with headroom to spare. `pageIndex`/`totalPages` are reserved wire fields;
- * the deployed Central and Smart firmware accept and emit only page 0 of 1
- * until a future release implements complete multi-page reassembly.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
+ * ESP-NOW v1.0 (the Central Node's classic ESP32 has no Wi-Fi 6 radio)
+ * caps one physical message at ESP_NOW_MAX_DATA_LEN = 250 bytes, so
+ * EspNowCommunication::MAX_PAYLOAD_SIZE is a hard ceiling on every struct
+ * below, enforced by the static_asserts at the bottom of this file.
+ * `pageIndex`/`totalPages` are reserved wire fields; the deployed firmware
+ * accepts and emits only page 0 of 1 until multi-page reassembly exists.
  */
 
 #ifndef KILOWATTS_NODE_REPORT_PACKETS_H
@@ -72,39 +54,28 @@ enum class LoadAvailability : std::uint8_t {
 /**
  * Wire layout for one Load inside a NodeReportPacket.
  *
- * mode holds the raw kilowatts::LoadMode::Value byte (Fixed/Auto x ON/OFF)
- * as currently configured. confirmedRelayState is the last physically
- * read-back relay state (see RelayController::readBackState()) — the two
- * are deliberately separate fields: mode is the configured/commanded
- * intent, confirmedRelayState is the last known physical truth, and a
- * receiver (Central, then MQTT/the mobile application) must never treat
- * one as the other.
+ * mode is the configured/commanded intent (raw LoadMode::Value byte);
+ * confirmedRelayState is the last physically read-back relay state (see
+ * RelayController::readBackState()). The two are deliberately separate
+ * fields, and a receiver must never treat one as the other.
  *
- * confirmedRelayStateValid carries this Load's own
- * Load::isConfirmedRelayStateValid() — whether confirmedRelayState is
- * currently a trustworthy hardware confirmation, as opposed to a Load that
- * has never yet had a successful relay read-back. A receiver must only
- * treat confirmedRelayState as meaningful when this is 1; when it is 0 the
- * receiver must preserve whatever confirmed state/validity it already held
- * rather than overwriting it with this report's (meaningless) OFF default.
+ * confirmedRelayStateValid is this Load's own
+ * Load::isConfirmedRelayStateValid(). A receiver must only treat
+ * confirmedRelayState as meaningful when this is 1; when it is 0 the
+ * receiver must preserve whatever confirmed state/validity it already
+ * held rather than overwriting it with this report's meaningless OFF
+ * default.
  *
- * branchMaximumCurrentAmps is the Branch configuration property I_branch,max
- * (Section 4.5.1) for the Branch this Load sits on — i.e. this relay pin
- * on this Node's owning Node MAC (see BestFirstSearch::BranchId). It is
- * carried here, rather than in a separate Branch packet, because in the
- * current Kilowatts hardware design one relay channel feeds exactly one
- * Load, so Branch and Load share one relay-pin identity and one wire
- * record; Central derives BranchId as {NodeReportPacket::nodeMacAddress,
- * LoadReportPacket::relayPin} without this packet repeating the Node MAC
- * per Load.
+ * branchMaximumCurrentAmps is carried per-Load rather than in a separate
+ * Branch packet because one relay channel feeds exactly one Load in the
+ * current hardware design, so Branch and Load share one relay-pin
+ * identity; Central derives BranchId as {NodeReportPacket::nodeMacAddress,
+ * LoadReportPacket::relayPin}.
  *
  * nominalVoltageVolts/nominalCurrentAmps are installer-entered/nameplate
- * ratings. Central derives planned running power as V × A; no duplicate
- * power field travels over ESP-NOW. These facts are intentionally separate
- * from a live sensor reading: the final hardware design has one INA219 at
- * Central's battery bus and no per-load INA219 modules on Smart Nodes. The
- * optimiser and UI must label the derived value as an estimate rather than
- * live consumption.
+ * ratings, not a live sensor reading - the hardware has one INA219 at
+ * Central's battery bus and none per Load. Central derives planned
+ * running power as V x A; the optimiser and UI must label it an estimate.
  */
 struct LoadReportPacket {
     char name[16];
@@ -152,14 +123,10 @@ struct NodeReportPacket {
 /**
  * Application-level acknowledgement of one NodeReportPacket, sent by
  * Central back to the reporting Node once it has actually decoded and
- * applied the report to its registry (Section "Application-Level Node
- * Report Ack") - MAC-layer ESP-NOW delivery success alone never proves
- * Central understood/accepted a report, only that a radio frame arrived.
- * reportSequenceId lets the reporting Node match this ACK to the exact
- * NodeReportPacket it sent (see NodeReportPacket::reportSequenceId); the
- * owning Node itself is already identified by the surrounding
- * EspNowCommunication message header, the same convention every other
- * packet in this file already uses.
+ * applied the report to its registry - MAC-layer ESP-NOW delivery success
+ * alone never proves Central understood/accepted a report, only that a
+ * radio frame arrived. reportSequenceId lets the reporting Node match this
+ * ACK to the exact NodeReportPacket it sent.
  */
 enum class NodeReportAckStatus : std::uint8_t {
     ACCEPTED = 0U,

@@ -7,11 +7,6 @@
  * emission, hand-formatted rather than through a JSON library, since the
  * schema is small and fixed) — always compiled and fully host-testable
  * (see test/SystemStateJson/).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "SystemStateJson.h"

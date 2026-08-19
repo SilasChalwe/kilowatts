@@ -31,11 +31,6 @@
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation —
  * matching test/BestFirstSearch/test_best_first_search.cpp.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "CurrentTimeProvider.h"
@@ -81,9 +76,6 @@ ManualDateTime makeDateTime(
     return ManualDateTime{year, month, day, hour, minute, second};
 }
 
-/**
- * TEST 1 - VALID MANUAL DATE/TIME IS ACCEPTED
- */
 void testValidManualDateTimeAccepted() {
     printSection("TEST 1 - VALID MANUAL DATE/TIME IS ACCEPTED");
 
@@ -103,9 +95,6 @@ void testValidManualDateTimeAccepted() {
                 CurrentTimeProvider::isManualDateTimeValid(makeDateTime(2026U, 1U, 31U, 0U, 0U, 0U)));
 }
 
-/**
- * TEST 2 - IMPOSSIBLE VALUES ARE REJECTED, NEVER NORMALIZED
- */
 void testImpossibleValuesRejected() {
     printSection("TEST 2 - IMPOSSIBLE VALUES ARE REJECTED, NEVER NORMALIZED");
 
@@ -134,8 +123,7 @@ void testImpossibleValuesRejected() {
     reportCheck("Second 60 is rejected", !CurrentTimeProvider::isManualDateTimeValid(makeDateTime(2026U, 6U, 15U, 12U, 0U, 60U)));
 }
 
-/**
- * TEST 3 - DEFAULT STATE HAS NO VALID TIME
+/*
  * A fresh provider must never claim a valid time it does not have —
  * neither initializeTimeSynchronization() nor setManualCurrentDateTime()
  * have been called yet.
@@ -164,12 +152,10 @@ void testDefaultStateHasNoValidTime() {
     reportCheck("getCurrentLocalSecond() fails on a fresh provider", !currentTimeProvider.getCurrentLocalSecond(second));
 }
 
-/**
- * TEST 4 - TIME MODE BOOKKEEPING: AUTOMATIC -> MANUAL -> AUTOMATIC
+/*
  * On a host build there is no real NVS/SNTP, so setTimeMode() honestly
  * reports failure (it could not persist or (re)start real hardware) —
- * but the in-memory Time Mode still changes, exactly as documented
- * ("the in-memory mode is still updated either way").
+ * but the in-memory Time Mode still changes.
  */
 void testTimeModeBookkeeping() {
     printSection("TEST 4 - TIME MODE BOOKKEEPING: AUTOMATIC -> MANUAL -> AUTOMATIC");
@@ -197,8 +183,7 @@ void testTimeModeBookkeeping() {
                 currentTimeProvider.getCurrentTimeSource() != TimeSource::NTP);
 }
 
-/**
- * TEST 5 - HOST BUILD NEVER FABRICATES A HARDWARE-APPLIED MANUAL TIME
+/*
  * Even a perfectly valid ManualDateTime must not be reported as applied
  * on a host build, since there is no real system clock of a Node to set.
  */
@@ -226,8 +211,7 @@ void testHostBuildNeverFabricatesManualApplication() {
                 !currentTimeProvider.getLastConfiguredManualDateTime(lastManualDateTime));
 }
 
-/**
- * TEST 6 - initializeTimeSynchronization() ON A HOST BUILD
+/*
  * There is no real NVS on a host build, so setup honestly fails rather
  * than pretending initialization succeeded.
  */

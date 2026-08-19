@@ -13,11 +13,6 @@
  * CommissioningPackets::IdentityReportPacket::firmwareVersion[12], a
  * fixed-size ESP-NOW wire field — must always fit in 11 characters plus
  * the terminating null.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #ifndef KILOWATTS_FIRMWARE_VERSION_H

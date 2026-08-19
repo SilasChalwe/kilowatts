@@ -1,19 +1,9 @@
-/**
- * @file NodeIdentityStore.cpp
- * @brief Implements a Smart Node's own local, persisted commissioning
- *        identity.
- *
+/*
  * getLifecycleState()/getFriendlyName()/applyCommission()/
  * applyDecommission() are plain, hardware-free C++ and always compiled, so
  * they are directly host-testable (see test/NodeIdentityStore/). NVS
- * persistence (loadPersisted()/persist()) is compiled only under
- * ESP_PLATFORM, matching the split LoadConfigurationStore/
- * NodeCommissioningRegistry already established.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * persistence (loadPersisted()/persist()) compiles only under
+ * ESP_PLATFORM.
  */
 
 #include "NodeIdentityStore.h"

@@ -1,14 +1,3 @@
-/**
- * @file NodeRegistryJson.cpp
- * @brief Implements JSON construction for the kilowatts/v1/state/nodes and
- *        kilowatts/v1/config/nodes MQTT topics.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
- */
-
 #include "NodeRegistryJson.h"
 
 #include <cstdio>

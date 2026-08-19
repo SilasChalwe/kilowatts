@@ -11,16 +11,11 @@
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation —
  * matching test/BestFirstSearch/test_best_first_search.cpp.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
-#include "AvailablePowerManager.h"
 #include "Load.h"
 #include "LoadFilter.h"
+#include "PowerManager.h"
 
 #include <cmath>
 #include <cstdio>

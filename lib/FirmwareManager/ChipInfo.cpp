@@ -1,14 +1,3 @@
-/**
- * @file ChipInfo.cpp
- * @brief Implements ESP32 chip and hardware information access.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
- */
-
-
 #include "ChipInfo.h"
 
 
@@ -57,22 +46,6 @@ bool ChipInfo::getMacAddress(
     MacAddress& macAddress
 ) const
 {
-    /*
-     * One complete MAC address contains 6 bytes.
-     *
-     * Example:
-     * 24:6F:28:AA:BB:01
-     *
-     * macAddress[0] = 0x24
-     * macAddress[1] = 0x6F
-     * macAddress[2] = 0x28
-     * macAddress[3] = 0xAA
-     * macAddress[4] = 0xBB
-     * macAddress[5] = 0x01
-     *
-     * These are NOT six different MAC addresses.
-     * Together they form ONE Wi-Fi station MAC address.
-     */
     const esp_err_t result =
         esp_read_mac(
             macAddress.data(),

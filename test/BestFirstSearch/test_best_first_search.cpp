@@ -1,13 +1,11 @@
 /**
  * @file test_best_first_search.cpp
  * @brief Host-native correctness tests for Load, LoadFilter,
- *        AvailablePowerManager and the Chapter 4 BestFirstSearch
- *        implementation.
+ *        AvailablePowerManager and BestFirstSearch.
  *
  * Every expected numeric value in the scoring/rejection sections below is
- * hand-derived directly from the formulas in Sections 4.6.2-4.6.4 of the
- * dissertation (Equations 4.8-4.37, Algorithms 4.2-4.5) and cross-checked
- * against BestFirstSearch.cpp's actual implementation of them.
+ * hand-derived from BestFirstSearch.cpp's scoring/admission formulas and
+ * cross-checked against its actual implementation.
  *
  * LoadScheduleEvaluator is not exercised here: it calls
  * CurrentTimeProvider's real methods, which require ESP-IDF's SNTP/NVS
@@ -21,18 +19,12 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
-#include "AvailablePowerManager.h"
 #include "BestFirstSearch.h"
 #include "Load.h"
 #include "LoadFilter.h"
-#include "PowerBudgetCalculator.h"
+#include "PowerManager.h"
 
 #include <cmath>
 #include <cstdint>
@@ -46,7 +38,7 @@ using kilowatts::Load;
 using kilowatts::LoadFilter;
 using kilowatts::LoadMode;
 using kilowatts::LoadPower;
-using kilowatts::PowerBudgetCalculator;
+using kilowatts::SafePowerLimitCalculator;
 
 namespace {
 
@@ -578,18 +570,18 @@ void testConstraintGuardRejectionReasons() {
     }
 
     {
-        // P_i(10) > P_remaining(5) -> POWER_BUDGET_EXCEEDED, independent of
+        // P_i(10) > P_remaining(5) -> POWER_LIMIT_EXCEEDED, independent of
         // P_available(total)=100W: this is exactly why P_available and
         // P_remaining must be two separate fields.
         BestFirstSearch search;
         configureEqualWeights(search);
         search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 10.0F, 100.0F, 10.0F, 100.0F, 5.0F, 0.0F));
         search.registerBranch(BRANCH_0, 0.0F, 10.0F);
-        Load load(Load::Id{mac, 2U}, "PowerBudget", LoadPower{10.0F, 10.0F}, 1U, LoadMode::Auto::ON);
+        Load load(Load::Id{mac, 2U}, "HighPowerLoad", LoadPower{10.0F, 10.0F}, 1U, LoadMode::Auto::ON);
         search.addLoad(load, BRANCH_0, 0.0F);
         search.run();
-        reportCheck("P_i > P_remaining yields POWER_BUDGET_EXCEEDED",
-                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+        reportCheck("P_i > P_remaining yields POWER_LIMIT_EXCEEDED",
+                    search.getLoadSelectionRejectionReason(0U) == BestFirstSearch::POWER_LIMIT_EXCEEDED);
         reportCheck("P_remaining is unchanged by a rejected candidate", nearValue(search.getRemainingPowerWatts(), 5.0F));
     }
 
@@ -642,7 +634,7 @@ void testConstraintGuardRejectionReasons() {
  * extracted and admitted first, consuming part of P_remaining before the
  * second candidate is even checked — so the second is rejected purely
  * because the first one already used the power it needed, not because
- * the original budget could never have covered it.
+ * the original limit could never have covered it.
  */
 void testSequentialAllocation() {
     printSection("TEST 9 - SEQUENTIAL ALLOCATION OF REMAINING CAPACITY");
@@ -665,9 +657,9 @@ void testSequentialAllocation() {
 
     /* p(B) = 8/15 = 0.5333 < p(A) = 10/15 = 0.6667, so B is admitted first. */
     reportCheck("The cheaper Load (LoadB) is admitted first", search.isLoadSelectedToBeOn(0U));
-    reportCheck("The more expensive Load (LoadA) is rejected with POWER_BUDGET_EXCEEDED",
+    reportCheck("The more expensive Load (LoadA) is rejected with POWER_LIMIT_EXCEEDED",
                 !search.isLoadSelectedToBeOn(1U) &&
-                search.getLoadSelectionRejectionReason(1U) == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+                search.getLoadSelectionRejectionReason(1U) == BestFirstSearch::POWER_LIMIT_EXCEEDED);
     reportCheck("Remaining power after the cycle is 15 - 8 = 7 W", nearValue(search.getRemainingPowerWatts(), 7.0F));
     reportCheck("Committed power after the cycle is 8 W", nearValue(search.getCommittedPowerWatts(), 8.0F));
 }
@@ -915,7 +907,7 @@ void testResetAndBoundsSafety() {
  * TEST 15 - DYNAMIC CANDIDATE COUNT
  * BestFirstSearch's containers are all std::vector, so there is no
  * project-imposed maximum candidate count. This adds 120 distinct Auto
- * candidates across two branches with an ample power budget and confirms
+ * candidates across two branches with an ample power limit and confirms
  * every one is processed exactly once and admitted.
  */
 void testDynamicCandidateCount() {
@@ -961,7 +953,7 @@ void testDynamicCandidateCount() {
         }
     }
 
-    reportCheck("Every one of the 120 candidates fits the budget and is selected", selectedCount == candidateCount);
+    reportCheck("Every one of the 120 candidates fits the limit and is selected", selectedCount == candidateCount);
     reportCheck("Remaining power after selecting all 120 one-watt candidates is 0 W",
                 nearValue(search.getRemainingPowerWatts(), 0.0F));
     reportCheck("Branch 0 and branch 1 committed power split 60 W / 60 W",
@@ -1059,8 +1051,8 @@ void testStaticFeasibilityCheckForPreActuationRecheck() {
     {
         BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
         inputs.candidateRunningPowerWatts = 60.0F; // > remainingPowerWatts (50)
-        reportCheck("P_i > P_remaining standalone -> POWER_BUDGET_EXCEEDED",
-                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+        reportCheck("P_i > P_remaining standalone -> POWER_LIMIT_EXCEEDED",
+                    BestFirstSearch::checkFeasibility(inputs) == BestFirstSearch::POWER_LIMIT_EXCEEDED);
     }
     {
         BestFirstSearch::FeasibilityInputs inputs = makeFeasible();
@@ -1100,7 +1092,7 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
 
     BestFirstSearch search;
     configureEqualWeights(search);
-    /* Generous budget: WaterPump (35W) fits, but nothing else competes for it, so it is admitted. */
+    /* Generous limit: WaterPump (35W) fits, but nothing else competes for it, so it is admitted. */
     search.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 1000.0F, 1000.0F, 100.0F, 100.0F, 0.0F));
     search.registerBranch(BRANCH_0, 0.0F, 1000.0F);
 
@@ -1109,7 +1101,7 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
     search.addLoad(waterPump, BRANCH_0, 0.0F);
 
     reportCheck("Search runs to completion", search.run());
-    reportCheck("WaterPump (35W, generous 100W budget) is admitted this cycle", search.isLoadSelectedToBeOn(0U));
+    reportCheck("WaterPump (35W, generous 100W limit) is admitted this cycle", search.isLoadSelectedToBeOn(0U));
 
     /* Exactly the orchestration pattern central/main.cpp must use: */
     waterPump.setLastBestFirstRejectionReason(search.getLoadSelectionRejectionReason(0U));
@@ -1122,7 +1114,7 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
     reportCheck("Target relay state is ON, reflecting this cycle's Best-First decision",
                 waterPump.getTargetRelayState());
 
-    /* Now the rejected direction: configured AUTO_ON, but budget forces rejection. */
+    /* Now the rejected direction: configured AUTO_ON, but limit forces rejection. */
     BestFirstSearch tightSearch;
     configureEqualWeights(tightSearch);
     tightSearch.startSearch(makePlanningState(80.0F, 20.0F, 40.0F, 12.0F, 1000.0F, 1000.0F, 5.0F, 5.0F, 0.0F));
@@ -1132,7 +1124,7 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
     tightSearch.addLoad(fan, BRANCH_0, 0.0F);
 
     reportCheck("Search runs to completion", tightSearch.run());
-    reportCheck("Fan (18W, only 5W budget) is rejected this cycle", !tightSearch.isLoadSelectedToBeOn(0U));
+    reportCheck("Fan (18W, only 5W limit) is rejected this cycle", !tightSearch.isLoadSelectedToBeOn(0U));
 
     fan.setLastBestFirstRejectionReason(tightSearch.getLoadSelectionRejectionReason(0U));
     fan.setTargetRelayState(tightSearch.isLoadSelectedToBeOn(0U));
@@ -1140,8 +1132,8 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
     reportCheck("Configured mode remains exactly AUTO_ON after being rejected", fan.getMode() == LoadMode::Auto::ON);
     reportCheck("isOn()/isOff() (which read configured mode) still report ON", fan.isOn() && !fan.isOff());
     reportCheck("Target relay state is OFF, reflecting this cycle's Best-First rejection", !fan.getTargetRelayState());
-    reportCheck("Rejection reason (POWER_BUDGET_EXCEEDED) was recorded",
-                fan.getLastBestFirstRejectionReason() == BestFirstSearch::POWER_BUDGET_EXCEEDED);
+    reportCheck("Rejection reason (POWER_LIMIT_EXCEEDED) was recorded",
+                fan.getLastBestFirstRejectionReason() == BestFirstSearch::POWER_LIMIT_EXCEEDED);
 }
 
 /*
@@ -1154,18 +1146,18 @@ void testConfiguredModeNeverMutatedByBestFirstDecision() {
  * one Smart Node, 10 by a second Smart Node, a mix of Fixed/Auto modes,
  * wattages from 2W to 1500W, and two Loads with a non-zero future-schedule
  * penalty - and runs the *entire* pipeline a real optimisation cycle uses
- * (PowerBudgetCalculator -> AvailablePowerManager -> BestFirstSearch) across
+ * (SafePowerLimitCalculator -> AvailablePowerManager -> BestFirstSearch) across
  * every combination of battery capacity (20/100/1000 Ah) and State of
  * Charge (25/50/75/100%), 12 scenarios in total.
  *
  * For every scenario it prints a complete, readable report - starting
- * battery capacity/energy, Fixed-only remaining budget, then every single
+ * battery capacity/energy, Fixed-only remaining limit, then every single
  * Load's configured (initial) state next to Best-First's this-cycle
  * (new) state and rejection reason, then the final committed/remaining
  * power - and asserts the invariants that must hold no matter how the
  * battery scenario changes: every Fixed Load's configured mode is
  * completely unaffected by the battery scenario, no admitted Load ever
- * exceeds the budget it was admitted under, and a strictly larger
+ * exceeds the limit it was admitted under, and a strictly larger
  * capacity/SoC combination never admits *less* total power than a
  * strictly smaller one.
  */
@@ -1194,7 +1186,7 @@ const char* rejectionReasonText(std::uint8_t reason) {
     switch (reason) {
         case BestFirstSearch::NONE: return "-";
         case BestFirstSearch::LOW_BATTERY: return "LOW_BATTERY";
-        case BestFirstSearch::POWER_BUDGET_EXCEEDED: return "POWER_BUDGET_EXCEEDED";
+        case BestFirstSearch::POWER_LIMIT_EXCEEDED: return "POWER_LIMIT_EXCEEDED";
         case BestFirstSearch::BATTERY_CURRENT_LIMIT: return "BATTERY_CURRENT_LIMIT";
         case BestFirstSearch::MAIN_LIMIT_EXCEEDED: return "MAIN_LIMIT_EXCEEDED";
         case BestFirstSearch::BRANCH_LIMIT_EXCEEDED: return "BRANCH_LIMIT_EXCEEDED";
@@ -1203,7 +1195,7 @@ const char* rejectionReasonText(std::uint8_t reason) {
 }
 
 /**
- * What this exact installation would draw with no power-budget
+ * What this exact installation would draw with no power-limit
  * coordination at all - every Load simply left running at its own
  * currently-configured state (Fixed-ON Loads, plus every Auto Load
  * currently AUTO_ON), the way a plain relay board with manual switches
@@ -1279,28 +1271,28 @@ void runInstallationScenario(const std::vector<LoadSpec>& specs, float batteryCa
     std::printf("SCENARIO: batteryCapacity=%.0f Ah  SoC=%.0f%%\n", batteryCapacityAmpHours, stateOfChargePercent);
     std::printf("----------------------------------------------------------------------\n");
 
-    PowerBudgetCalculator::Inputs budgetInputs{};
-    budgetInputs.stateOfChargePercent = stateOfChargePercent;
-    budgetInputs.minimumStateOfChargePercent = MINIMUM_SOC_PERCENT;
-    budgetInputs.nominalBatteryVoltageVolts = NOMINAL_VOLTAGE_VOLTS;
-    budgetInputs.batteryCapacityAmpHours = batteryCapacityAmpHours;
-    budgetInputs.targetRuntimeHours = TARGET_RUNTIME_HOURS;
-    budgetInputs.batteryBusVoltageVolts = NOMINAL_VOLTAGE_VOLTS;
-    budgetInputs.maximumBatteryDischargeCurrentAmps = MAX_BATTERY_DISCHARGE_CURRENT_AMPS;
-    budgetInputs.maximumMainCurrentAmps = MAX_MAIN_CURRENT_AMPS;
-    budgetInputs.safetyFactor = SAFETY_FACTOR;
+    SafePowerLimitCalculator::Inputs safePowerLimitInputs{};
+    safePowerLimitInputs.stateOfChargePercent = stateOfChargePercent;
+    safePowerLimitInputs.minimumStateOfChargePercent = MINIMUM_SOC_PERCENT;
+    safePowerLimitInputs.nominalBatteryVoltageVolts = NOMINAL_VOLTAGE_VOLTS;
+    safePowerLimitInputs.batteryCapacityAmpHours = batteryCapacityAmpHours;
+    safePowerLimitInputs.targetRuntimeHours = TARGET_RUNTIME_HOURS;
+    safePowerLimitInputs.batteryBusVoltageVolts = NOMINAL_VOLTAGE_VOLTS;
+    safePowerLimitInputs.maximumBatteryDischargeCurrentAmps = MAX_BATTERY_DISCHARGE_CURRENT_AMPS;
+    safePowerLimitInputs.maximumMainCurrentAmps = MAX_MAIN_CURRENT_AMPS;
+    safePowerLimitInputs.safetyFactor = SAFETY_FACTOR;
 
-    PowerBudgetCalculator budget;
-    const bool budgetCalculated = budget.calculate(budgetInputs);
-    reportCheck("PowerBudgetCalculator accepts this scenario's inputs", budgetCalculated);
-    if (!budgetCalculated) {
+    SafePowerLimitCalculator limit;
+    const bool safePowerLimitCalculated = limit.calculate(safePowerLimitInputs);
+    reportCheck("SafePowerLimitCalculator accepts this scenario's inputs", safePowerLimitCalculated);
+    if (!safePowerLimitCalculated) {
         totalCommittedPowerOut = 0.0F;
         return;
     }
 
-    const float ratedEnergyWh = budget.getRatedEnergyWattHours();
-    const float usableEnergyWh = budget.getUsableEnergyWattHours();
-    const float totalAvailablePowerWatts = budget.getAvailablePowerWatts();
+    const float ratedEnergyWh = limit.getRatedEnergyWattHours();
+    const float usableEnergyWh = limit.getUsableEnergyWattHours();
+    const float totalAvailablePowerWatts = limit.getAvailablePowerWatts();
     std::printf("  Battery: E_rated=%.1f Wh  E_usable=%.1f Wh  P_available=%.1f W\n",
                 ratedEnergyWh, usableEnergyWh, totalAvailablePowerWatts);
 
@@ -1330,7 +1322,7 @@ void runInstallationScenario(const std::vector<LoadSpec>& specs, float batteryCa
     reportCheck("Search score weights configured", configureEqualWeights(search));
     const bool searchStarted = search.startSearch(makePlanningState(
         stateOfChargePercent, MINIMUM_SOC_PERCENT, WARNING_SOC_PERCENT, NOMINAL_VOLTAGE_VOLTS,
-        budget.getMaximumBatteryPowerWatts(), MAX_MAIN_CURRENT_AMPS,
+        limit.getMaximumBatteryPowerWatts(), MAX_MAIN_CURRENT_AMPS,
         totalAvailablePowerWatts, powerForAutoLoadsWatts, fixedOnPowerWatts));
     reportCheck("Search starts for every SoC/capacity combination in range", searchStarted);
     if (!searchStarted) {
@@ -1430,17 +1422,17 @@ void runInstallationScenario(const std::vector<LoadSpec>& specs, float batteryCa
 
     /*
      * BestFirstSearch does not own Fixed Load safety - a Fixed-ON Load
-     * commits its power regardless of budget (Section "Fixed Loads are
-     * never Best-First Search candidates"; shedding an over-budget Fixed
+     * commits its power regardless of limit (Section "Fixed Loads are
+     * never Best-First Search candidates"; shedding an over-limit Fixed
      * Load is src/central/main.cpp's separate critical-protection logic,
      * outside this library). So P_committed can legitimately exceed
      * P_available when Fixed Loads alone already do, at low battery
      * capacity/SoC (see this installation's 152W of Fixed-ON Loads). What
      * BestFirstSearch does own is the Auto-load allocation: it must never
-     * admit more Auto power than powerForAutoLoadsWatts, the budget left
+     * admit more Auto power than powerForAutoLoadsWatts, the limit left
      * over after Fixed Loads.
      */
-    reportCheck("Admitted Auto power never exceeds the budget left after Fixed Loads",
+    reportCheck("Admitted Auto power never exceeds the limit left after Fixed Loads",
                 search.getCommittedPowerWatts() - fixedOnPowerWatts <= powerForAutoLoadsWatts + 0.001F);
     reportCheck("Best-First's own P_committed matches this report's independently-summed total",
                 nearValue(search.getCommittedPowerWatts(), totalCommittedThisScenario, 0.01F));
@@ -1451,7 +1443,7 @@ void runInstallationScenario(const std::vector<LoadSpec>& specs, float batteryCa
      * running this installation's naive "every switch left in its current
      * position" demand instead - both computed the same way (Wh / W), no
      * assumed duty cycle, no invented numbers. TARGET_RUNTIME_HOURS
-     * (T_target) is the same constant PowerBudgetCalculator itself used to
+     * (T_target) is the same constant SafePowerLimitCalculator itself used to
      * derive P_runtime (Equation 4.11) for this scenario's P_available, so
      * comparing against it is comparing against the system's own design
      * goal, not an arbitrary window.
@@ -1485,7 +1477,7 @@ void testRealisticMultiNodeInstallationAcrossBatteryScenarios() {
      * (capacity, SoC) iteration order - both loops go from smallest to
      * largest, so a strictly larger capacity or SoC must never admit
      * strictly less total power than a strictly smaller one on the same
-     * fixed installation, since the budget can only grow.
+     * fixed installation, since the limit can only grow.
      */
     float previousCommittedForCapacity = -1.0F;
     for (float capacity : capacities) {
@@ -1515,9 +1507,6 @@ void testRealisticMultiNodeInstallationAcrossBatteryScenarios() {
 
 int main() {
     std::printf("KILOWATTS LOAD + LOADFILTER + AVAILABLEPOWERMANAGER + BESTFIRSTSEARCH HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
     std::printf("Targets the Chapter 4 lib/BestFirstSearch implementation (Sections 4.6.2-4.6.4).\n");
 
     testLoadDataModel();

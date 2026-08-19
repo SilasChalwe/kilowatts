@@ -1,7 +1,7 @@
 /**
  * @file test_battery_state_of_charge.cpp
  * @brief Host-native correctness tests for the coulomb-counting battery
- *        State of Charge estimator (Equation 4.8).
+ *        State of Charge estimator.
  *
  * update()'s math is plain, hardware-free C++ and always compiled, so it
  * is fully exercised here. Persistence (persist()/the NVS-backed load
@@ -11,14 +11,9 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
-#include "BatteryStateOfCharge.h"
+#include "PowerManager.h"
 
 #include <cmath>
 #include <cstdio>
@@ -230,9 +225,6 @@ void testValidityAndSource() {
 
 int main() {
     std::printf("KILOWATTS BATTERYSTATEOFCHARGE HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testInitializationValidation();
     testUpdateValidation();

@@ -3,26 +3,15 @@
  * @brief Wire-format structures for the commissioning lifecycle, sent
  *        between Kilowatts ESP32 firmware over ESP-NOW.
  *
- * These are transport structures only, the same kind of thing
- * lib/NodeReportPackets already declares for measurement/relay traffic -
- * kept in their own file rather than added to NodeReportPackets.h because
- * that file's NodeReportPacket is already close to
- * EspNowCommunication::MAX_PAYLOAD_SIZE (it carries up to
- * MAX_LOADS_PER_NODE_PACKET LoadReportPacket entries) and is sent on a hot
- * ~2s cycle; commissioning packets are small, sent rarely (on a lifecycle
- * change, or once per watchdog cycle for IdentityReportPacket), and belong
- * to a distinct concern, so keeping them separate avoids risking the
- * already-tested NodeReportPacket layout.
+ * Kept separate from NodeReportPackets.h: NodeReportPacket is already
+ * close to EspNowCommunication::MAX_PAYLOAD_SIZE and sent on a hot ~2s
+ * cycle, while these packets are small and sent rarely (on a lifecycle
+ * change, or once per watchdog cycle for IdentityReportPacket) - keeping
+ * them separate avoids risking the already-tested NodeReportPacket layout.
  *
  * The owning Node for every packet below is always the surrounding
  * EspNowCommunication::Message header's origin/destination MAC address,
- * exactly like RelayCommandPacket already does in NodeReportPackets.h -
  * never repeated inside these structs.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #ifndef KILOWATTS_COMMISSIONING_PACKETS_H

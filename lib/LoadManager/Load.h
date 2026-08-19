@@ -2,19 +2,9 @@
  * @file Load.h
  * @brief Defines one electrical load connected to a Central Node or Smart Node.
  *
- * Every Load belongs to one ESP32 Node.
- *
- * The Load ID is:
- *
- *     Node MAC address + Relay Pin
- *
- * This allows the Load to keep its identity when Loads from many Nodes
- * are combined, processed and later sent back through the network.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
+ * A Load's ID (Node MAC address + relay pin) lets it keep its identity
+ * when Loads from many Nodes are combined, processed and later sent back
+ * through the network.
  */
 
 #ifndef KILOWATTS_LOAD_H
@@ -125,8 +115,7 @@ struct AutoSchedule {
  * Represents one electrical load connected to one ESP32 Node.
  *
  * State authority: this class deliberately keeps several distinct
- * concepts that must never overwrite one another (Section "State
- * Authority After These Corrections"):
+ * concepts that must never overwrite one another:
  *
  * - getMode()/setMode() — the CONFIGURED user/system operating mode
  *   (FIXED_ON/FIXED_OFF/AUTO_ON/AUTO_OFF). This is a setting, changed
@@ -268,56 +257,38 @@ public:
 
 
     /**
-     * Records the relay state actually read back from hardware
-     * (RelayController::readBackState()) after a successfully confirmed
-     * relay command. This is the physical truth, distinct from
-     * getMode()/isOn() (the configured/commanded intent) and from
-     * getTargetRelayState() (what the current planning cycle wants) — a
-     * caller must not treat any of the three as another.
-     *
-     * Calling this always marks the confirmation valid
-     * (isConfirmedRelayStateValid() becomes true): only call it when a
-     * command has genuinely been confirmed. A failed/timed-out command
-     * must NOT call this — see the class-level documentation and
-     * RelayCommandDispatcher's README for why a failed acknowledgement
-     * does not prove the relay is OFF.
+     * Records the relay state actually read back from hardware after a
+     * successfully confirmed relay command — physical truth, distinct
+     * from getMode()/isOn() (configured intent) and getTargetRelayState()
+     * (what this cycle wants). A failed/timed-out command must NOT call
+     * this: a failed acknowledgement does not prove the relay is OFF.
      */
     void setConfirmedRelayState(bool on);
 
     /**
-     * Returns the last relay state confirmed by hardware read-back — the
-     * last value ever passed to setConfirmedRelayState(), preserved
-     * exactly as-is across any number of failed commands in between.
-     * Always check isConfirmedRelayStateValid() first: when it is false,
-     * this value is stale/unknown and must not be trusted as current
-     * physical truth (though it may still be a useful conservative
-     * estimate — see Load's class documentation).
+     * Returns the last value passed to setConfirmedRelayState(), preserved
+     * as-is across any number of failed commands in between. Check
+     * isConfirmedRelayStateValid() first — when false, this value is
+     * stale/unknown and must not be trusted as current physical truth.
      */
     bool getConfirmedRelayState() const;
 
     /**
      * Returns whether getConfirmedRelayState() currently reflects a
-     * trustworthy physical confirmation. False from construction until
-     * the first setConfirmedRelayState() call, and stays exactly as it
-     * was through any number of failed/timed-out commands afterward —
-     * only a fresh successful confirmation ever makes it true again
-     * (there is no separate "invalidate" call: failure simply never
-     * touches this flag, which is what "preserve the previous trusted
-     * state" means in practice).
+     * trustworthy physical confirmation. False until the first
+     * setConfirmedRelayState() call, and unaffected by any number of
+     * failed/timed-out commands afterward — only a fresh successful
+     * confirmation makes it true again.
      */
     bool isConfirmedRelayStateValid() const;
 
 
     /**
      * Records targetOn as the relay state Central's current planning
-     * cycle wants for this Load — derived from Fixed configuration (or
-     * documented critical-protection override) for a Fixed Load, or from
-     * BestFirstSearch's admission decision for an Auto Load. This is
-     * planning output, recomputed every cycle; it is deliberately NEVER
-     * written into getMode()/setMode() — an Auto Load's configured
-     * AUTO_ON/AUTO_OFF mode is a user/system setting that Best-First
-     * Search must never overwrite merely because it selected or rejected
-     * the Load this cycle (see Load's class documentation).
+     * cycle wants for this Load. Recomputed every cycle; deliberately
+     * never written into getMode()/setMode() — an Auto Load's configured
+     * mode must never be overwritten merely because it was selected or
+     * rejected this cycle.
      */
     void setTargetRelayState(bool targetOn);
 

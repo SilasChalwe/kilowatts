@@ -5,11 +5,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "SystemStateJson.h"
@@ -78,9 +73,6 @@ SystemStateInputs makeInputs() {
     return inputs;
 }
 
-/**
- * TEST 1 - VALID JSON STRUCTURE (BRACE/BRACKET BALANCE)
- */
 void testValidJsonStructure() {
     printSection("TEST 1 - VALID JSON STRUCTURE");
 
@@ -98,10 +90,6 @@ void testValidJsonStructure() {
     reportCheck("No trailing comma directly before a closing brace", json.find(",}") == std::string::npos);
 }
 
-/**
- * TEST 2 - EVERY REQUIRED FIELD IS PRESENT
- * Section 19's minimum field list.
- */
 void testEveryRequiredFieldIsPresent() {
     printSection("TEST 2 - EVERY REQUIRED FIELD IS PRESENT");
 
@@ -132,9 +120,6 @@ void testEveryRequiredFieldIsPresent() {
     reportCheck("Fault count is present", contains(json, "\"faultCount\":0"));
 }
 
-/**
- * TEST 3 - DEVELOPMENT VS PRODUCTION ENVIRONMENT AND BATTERY SOURCE ARE LABELLED
- */
 void testSensorSourceLabelling() {
     printSection("TEST 3 - DEVELOPMENT VS PRODUCTION ENVIRONMENT AND BATTERY SOURCE LABELLING");
 
@@ -171,9 +156,6 @@ void testSensorSourceLabelling() {
                 contains(unconfiguredJson, "\"stateOfChargeSource\":\"UNKNOWN\""));
 }
 
-/**
- * TEST 4 - FAULT SUMMARY STRING ESCAPING
- */
 void testFaultSummaryEscaping() {
     printSection("TEST 4 - FAULT SUMMARY STRING ESCAPING");
 
@@ -193,9 +175,6 @@ void testFaultSummaryEscaping() {
 
 int main() {
     std::printf("KILOWATTS SYSTEMSTATEJSON HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testValidJsonStructure();
     testEveryRequiredFieldIsPresent();

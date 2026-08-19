@@ -9,11 +9,6 @@
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #include "LoadConfigurationStore.h"
@@ -56,9 +51,6 @@ const Load::MacAddress NODE_MAC = {0x02, 0x00, 0x00, 0x00, 0xE0, 0x01};
 
 using ConfigurationEntry = LoadConfigurationStore::ConfigurationEntry;
 
-/**
- * TEST 1 - SET/FIND/UPSERT
- */
 void testSetFindUpsert() {
     printSection("TEST 1 - SET/FIND/UPSERT");
 
@@ -88,9 +80,6 @@ void testSetFindUpsert() {
                 found.priority == 9U && found.mode == LoadMode::Fixed::ON && !found.schedule.enabled);
 }
 
-/**
- * TEST 2 - SCHEDULE VALIDATION
- */
 void testScheduleValidation() {
     printSection("TEST 2 - SCHEDULE VALIDATION");
 
@@ -110,9 +99,6 @@ void testScheduleValidation() {
                 store.setConfiguration(disabledScheduleGarbageTime));
 }
 
-/**
- * TEST 3 - APPLY TO LOAD
- */
 void testApplyToLoad() {
     printSection("TEST 3 - APPLY TO LOAD");
 
@@ -149,9 +135,6 @@ void testApplyToLoad() {
     reportCheck("No schedule is active on the now-Fixed Load", !fixedLoad.getSchedule().enabled);
 }
 
-/**
- * TEST 4 - PERSISTENCE IS HONEST ON A HOST BUILD
- */
 void testPersistenceHonestOnHostBuild() {
     printSection("TEST 4 - PERSISTENCE IS HONEST ON A HOST BUILD");
 
@@ -171,9 +154,6 @@ void testPersistenceHonestOnHostBuild() {
 
 int main() {
     std::printf("KILOWATTS LOADCONFIGURATIONSTORE HOST TEST REPORT\n");
-    std::printf("Author: Chalwe Silas\n");
-    std::printf("Programme: Final-Year Computer Engineering\n");
-    std::printf("Institution: The Copperbelt University\n");
 
     testSetFindUpsert();
     testScheduleValidation();

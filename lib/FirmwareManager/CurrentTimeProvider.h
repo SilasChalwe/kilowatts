@@ -3,24 +3,8 @@
  * @brief Declares dual-mode (Automatic NTP / Manual) real wall-clock time
  *        for the Kilowatts firmware.
  *
- * CurrentTimeProvider has one responsibility: obtain, maintain and expose
- * valid real current local date/time for the rest of the firmware, from
- * exactly one of two legitimate production sources the user selects:
- *
- * - AUTOMATIC: ESP-IDF's real SNTP client synchronizes the ESP32 system
- *   clock from a real NTP server whenever internet/IP connectivity is
- *   available.
- * - MANUAL: the user/application supplies a real current local date/time
- *   directly, which becomes authoritative even while internet
- *   connectivity exists — this is not a fake test clock, it is a real
- *   production fallback for when internet time is unavailable or the
- *   user deliberately wants manual control.
- *
  * Both modes ultimately set the same ESP32 system clock — there are never
- * two independent clocks. Once a mode has actually established a valid
- * time (a real NTP synchronization, or a validated manual entry this
- * boot), every subsequent read comes from that one system clock, not a
- * fresh internet request and not a second software counter.
+ * two independent clocks.
  *
  * Three concepts are tracked separately and must never be collapsed into
  * one flag:
@@ -40,20 +24,10 @@
  * synchronization has actually completed — never claimed in advance.
  *
  * A timestamp stored in flash (NVS) does not advance while the ESP32 is
- * completely powered off. The last manually entered date/time may be kept
- * in NVS as a recovery/reference value (getLastConfiguredManualDateTime()),
- * but it is never treated as current valid time by itself — only a real
- * NTP sync or a fresh manual entry this boot can make current time valid.
- * No external RTC is added in this phase.
- *
- * CurrentTimeProvider does not know about Loads, schedules, priorities,
- * power, ESP-NOW, or relays. It does not implement the NTP protocol
- * itself — that is ESP-IDF's SNTP client (see CurrentTimeProvider.cpp).
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
+ * completely powered off, so the last manually entered date/time kept
+ * there (getLastConfiguredManualDateTime()) is never treated as current
+ * valid time by itself — only a real NTP sync or a fresh manual entry
+ * this boot can make current time valid.
  */
 
 #ifndef KILOWATTS_CURRENT_TIME_PROVIDER_H

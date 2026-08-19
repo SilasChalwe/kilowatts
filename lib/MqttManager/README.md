@@ -51,9 +51,21 @@ mqtt.setLoadCommandHandler(&handleLoadCommand, &applicationContext);
 mqtt.setSystemCommandHandler(&handleSystemCommand, &applicationContext);
 mqtt.setConfigCommandHandler(&handleConfigCommand, &applicationContext);
 
-mqtt.begin(MqttManager::Credentials{Secrets::MQTT_BROKER_URI, Secrets::MQTT_USERNAME, Secrets::MQTT_PASSWORD});
+// Broker choice (only call begin() after WiFiManager::isConnected()):
+// an installer-provisioned broker (MqttCredentialsStore - e.g. a local
+// broker on the site's own network, for when there is no reliable
+// internet uplink) wins if one exists; otherwise this falls back to the
+// compiled-in cloud broker in KilowattsSecrets.h.
+MqttCredentialsStore::Credentials provisioned{};
+if (mqttCredentialsStore.load(provisioned)) {
+    mqtt.begin(MqttManager::Credentials{provisioned.host, provisioned.port, provisioned.useTls,
+                                         provisioned.username, provisioned.password});
+} else {
+    mqtt.begin(MqttManager::Credentials{Secrets::MQTT_BROKER_HOST, Secrets::MQTT_BROKER_PORT,
+                                         Secrets::MQTT_BROKER_USE_TLS, Secrets::MQTT_USERNAME,
+                                         Secrets::MQTT_PASSWORD});
+}
 
-// Once connected (only call after WiFiManager::isConnected()):
 mqtt.publish(MqttManager::TOPIC_STATE_SYSTEM, systemStateJson, /* qos */ 1, /* retain */ true);
 ```
 
@@ -103,6 +115,28 @@ esp-mqtt's own built-in retry/backoff; `MqttManager` does not reimplement
 it, only reports `DISCONNECTED`/`CONNECTING`/`CONNECTED` honestly as
 esp-mqtt's events arrive.
 
+## Local testing
+
+To test against a broker on your own network instead of the cloud one
+(no internet required), run a broker on your dev machine and provision
+its address through the captive portal's optional MQTT fields (see
+`WiFiProvisioningPortal`) instead of leaving them blank:
+
+```
+sudo apt install mosquitto mosquitto-clients   # if not already installed
+sudo systemctl enable --now mosquitto
+hostname -I                                    # this machine's LAN IP - use it as the broker host
+```
+
+Default Mosquitto config (`/etc/mosquitto/mosquitto.conf`) listens on
+port `1883`, no TLS, `allow_anonymous true` (no username/password) —
+enter that host/port in the portal and leave TLS/username/password
+blank. The host's LAN IP changes per machine/network, and anonymous
+access is fine for a closed bench network only — don't reuse this
+config for a real install.
+
+Watch traffic with `mosquitto_sub -h <that IP> -t 'kilowatts/#' -v`.
+
 ## Dependencies
 
 Requires ESP-IDF's `esp-mqtt` client (`mqtt_client.h`) and `cJSON`
@@ -110,8 +144,12 @@ Requires ESP-IDF's `esp-mqtt` client (`mqtt_client.h`) and `cJSON`
 `src/idf_component.yml` (`espressif/mqtt`, `espressif/cjson`) rather than
 vendored, and is therefore ESP32-target-only — like `WiFiManager`,
 `EspNowCommunication` and `ChipInfo`, it has no host build split and no
-host-native test. Broker credentials live in `include/KilowattsSecrets.h`
-(gitignored) — never in this module.
+host-native test. Broker credentials never live in this module: an
+installer-provisioned broker persists via `MqttCredentialsStore` (NVS,
+same pattern as `WiFiCredentialsStore` — see that module's own README and
+`WiFiProvisioningPortal`, which is what actually lets an installer submit
+one), and the compiled-in cloud-broker fallback lives in
+`include/KilowattsSecrets.h` (gitignored).
 
 ## Boundary
 
@@ -126,7 +164,7 @@ broker and dispatches parsed commands to the caller.
 
 
 Formats the `kilowatts/v1/state/system` MQTT payload — the battery,
-power-budget and connectivity summary the mobile application needs, so it
+power-limit and connectivity summary the mobile application needs, so it
 never has to recompute any Chapter 4 mathematics itself.
 
 ## Responsibility
@@ -136,7 +174,7 @@ SystemStateInputs inputs{};
 inputs.batteryVoltageVolts = battery bus V;
 inputs.stateOfChargePercent = batteryStateOfCharge.getStateOfChargePercent();
 inputs.estimatedTotalLoadPowerWatts = relay/rating estimate;
-inputs.availablePowerWatts = powerBudget.getAvailablePowerWatts();
+inputs.availablePowerWatts = safePowerLimit.getAvailablePowerWatts();
 inputs.remainingPowerWatts = search.getRemainingPowerWatts();
 inputs.wifiConnected = wifiManager.isConnected();
 inputs.batteryMeasurementSourceText = developmentSession.isActive() ? "SIMULATED" : "HARDWARE";
@@ -148,7 +186,7 @@ mqttManager.publish(MqttManager::TOPIC_STATE_SYSTEM, payload, /* qos */ 1, /* re
 
 `SystemStateJson` has zero business logic — every field in
 `SystemStateInputs` is already computed by the module that owns it
-(`BatteryStateOfCharge`, `PowerBudgetCalculator`, `AvailablePowerManager`,
+(`BatteryStateOfCharge`, `SafePowerLimitCalculator`, `AvailablePowerManager`,
 `BestFirstSearch`, `WiFiManager`, `MqttManager`, `CurrentTimeProvider`).
 It only formats them into the fixed JSON schema, hand-formatted via
 `snprintf`/string concatenation rather than a JSON library, since the

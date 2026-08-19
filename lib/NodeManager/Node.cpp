@@ -1,13 +1,3 @@
-/**
- * @file Node.cpp
- * @brief Implements one ESP32 Node and the Loads that belong to it.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
- */
-
 #include "Node.h"
 
 namespace kilowatts {
@@ -21,19 +11,10 @@ Node::Node(const MacAddress& macAddress)
 
 bool Node::addLoad(const Load& load)
 {
-    /*
-     * A Node may only contain Loads whose Load ID carries
-     * this Node's MAC address.
-     */
     if (load.getMacAddress() != macAddress_) {
         return false;
     }
 
-    /*
-     * The relay pin identifies one Load inside this Node.
-     * Two Loads belonging to the same Node cannot use
-     * the same relay pin.
-     */
     if (isRelayPinAlreadyUsed(load.getRelayPin())) {
         return false;
     }

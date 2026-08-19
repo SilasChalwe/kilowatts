@@ -2,31 +2,17 @@
  * @file CentralNodeRegistry.h
  * @brief Declares Central's planning-time view of every known Node.
  *
- * The Central Node receives NodeReportPacket/LoadReportPacket reports over
- * ESP-NOW. Those packets are a transport representation: raw bytes
- * describing what one Node currently looks like. CentralNodeRegistry
- * converts each received report into the real kilowatts::Node /
- * kilowatts::Load domain objects used by the rest of the system, and keeps
- * one up-to-date copy of every Node Central currently knows about,
- * including Central's own local Node.
+ * Converts received NodeReportPacket/LoadReportPacket wire data into
+ * kilowatts::Node / kilowatts::Load domain objects and keeps one
+ * up-to-date copy of every Node Central knows about, including Central's
+ * own local Node.
  *
  * A Load's identity is its owning Node's MAC address plus its relay pin
  * (see Load::Id). CentralNodeRegistry always takes that owning MAC
- * address from the report's own NodeReportPacket::nodeMacAddress field, never
- * from the immediate ESP-NOW sender of the packet. A Node that forwards a
- * report on behalf of one of its own descendants must not have that
+ * address from the report's own NodeReportPacket::nodeMacAddress field,
+ * never from the immediate ESP-NOW sender of the packet, so a Node
+ * forwarding a report on behalf of a descendant can't have the
  * descendant's Loads reassigned to itself.
- *
- * CentralNodeRegistry holds and updates this data only. It does not
- * perform ESP-NOW discovery, RSSI or hop-count calculation, battery State
- * of Charge or available-power calculation, Best-First Search, MQTT
- * communication, or relay control. Those responsibilities belong to other
- * modules and later phases.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 8 May 2026
  */
 
 #ifndef KILOWATTS_CENTRAL_NODE_REGISTRY_H
@@ -54,11 +40,11 @@ public:
      * One Branch's configuration as last reported by the Node that owns
      * it: the relay pin identifying the Branch inside that Node (paired
      * with the enclosing PlanningNode's own MAC address, this is exactly
-     * BestFirstSearch::BranchId), and I_branch,max, the safe configured
-     * current limit for that circuit (Section 4.5.1) — never the relay's
-     * printed contact rating, always the configured safe value reported
-     * by the owning Node. Committed power is not stored here: that is a
-     * per-planning-cycle value BestFirstSearch itself owns and evolves
+     * BestFirstSearch::BranchId), and the safe configured current limit
+     * for that circuit — never the relay's printed contact rating, always
+     * the configured safe value reported by the owning Node. Committed
+     * power is not stored here: that is a per-planning-cycle value
+     * BestFirstSearch itself owns and evolves
      * (BestFirstSearch::getBranchCommittedPowerWatts()), not persistent
      * registry state.
      */

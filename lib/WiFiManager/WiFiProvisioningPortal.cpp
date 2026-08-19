@@ -1,10 +1,13 @@
 #include "WiFiProvisioningPortal.h"
 
+#include "MqttCredentialsStore.h"
 #include "WiFiCredentialsStore.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #ifdef ESP_PLATFORM
 #include "esp_event.h"
@@ -44,13 +47,32 @@ const char PAGE_TOP[] =
     "<title>Kilowatts Setup</title></head><body style='font-family:sans-serif;max-width:420px;margin:2em auto;padding:0 1em'>"
     "<h2>Kilowatts Central - Wi-Fi Setup</h2>";
 
-const char FORM_BODY[] =
-    "<p>Enter the household/installation Wi-Fi this Central Node should join.</p>"
+const char FORM_HEAD[] =
+    "<p>Select the household/installation Wi-Fi this Central Node should join.</p>"
     "<form method='POST' action='/save'>"
-    "<label>Network name (SSID)</label><br>"
-    "<input name='ssid' maxlength='32' required style='width:100%;padding:.5em;margin:.3em 0 1em'><br>"
+    "<label>Network name (SSID)</label><br>";
+
+/** Plain manual SSID entry, used only when the scan below found nothing to list. */
+const char FORM_SSID_MANUAL_ONLY[] =
+    "<input name='ssid' maxlength='32' required placeholder='Network name (SSID)' "
+    "style='width:100%;padding:.5em;margin:.3em 0 1em'><br>";
+
+const char FORM_TAIL[] =
     "<label>Password</label><br>"
     "<input name='password' type='password' maxlength='64' style='width:100%;padding:.5em;margin:.3em 0 1em'><br>"
+    "<h3>MQTT broker (optional)</h3>"
+    "<p>Leave blank to use the built-in cloud broker. Set these to point at a "
+    "broker on your own local network instead - useful when this site has no "
+    "reliable internet connection.</p>"
+    "<label>Broker host or IP</label><br>"
+    "<input name='mqtt_host' maxlength='127' style='width:100%;padding:.5em;margin:.3em 0 1em'><br>"
+    "<label>Broker port</label><br>"
+    "<input name='mqtt_port' maxlength='5' placeholder='1883' style='width:100%;padding:.5em;margin:.3em 0 1em'><br>"
+    "<label><input name='mqtt_tls' type='checkbox'> Use TLS</label><br><br>"
+    "<label>Broker username (optional)</label><br>"
+    "<input name='mqtt_username' maxlength='64' style='width:100%;padding:.5em;margin:.3em 0 1em'><br>"
+    "<label>Broker password (optional)</label><br>"
+    "<input name='mqtt_password' type='password' maxlength='64' style='width:100%;padding:.5em;margin:.3em 0 1em'><br>"
     "<button type='submit' style='padding:.7em 1.5em'>Save and Connect</button>"
     "</form></body></html>";
 
@@ -58,8 +80,110 @@ const char PAGE_SAVED[] =
     "Saved. Central is restarting and will attempt to join that network - "
     "reconnect your phone to your normal Wi-Fi to continue in the Kilowatts app.</p></body></html>";
 
+const char PAGE_MQTT_REJECTED[] =
+    "Wi-Fi saved, but the MQTT broker fields could not be saved (check host/port) - "
+    "Central is restarting and will use the built-in cloud broker instead.</p></body></html>";
+
 const char PAGE_REJECTED[] =
     "That SSID could not be saved (empty, or the password is too short/long).</p></body></html>";
+
+
+struct DiscoveredNetwork {
+    char ssid[33];
+    std::int8_t rssi;
+};
+
+constexpr std::size_t MAX_DISCOVERED_NETWORKS = 16U;
+DiscoveredNetwork discoveredNetworks[MAX_DISCOVERED_NETWORKS];
+std::size_t discoveredNetworkCount = 0U;
+
+
+/**
+ * Untargeted blocking scan (same esp_wifi_scan_start()/get_ap_num()/
+ * get_ap_records() pattern as WiFiManager::verifyChannelAndConnect(), just
+ * without a specific SSID filter), deduplicated by SSID keeping the
+ * strongest RSSI seen, sorted strongest-first. An ESP32 has no 5GHz radio,
+ * so a 5GHz-only network can never appear here - the installer can only
+ * pick something this device is physically capable of joining, which is
+ * the actual failure this replaces (typing in a 5GHz SSID by hand that the
+ * device could never connect to). Hidden networks (empty SSID) are
+ * skipped, since there is nothing meaningful to list or select.
+ */
+void scanNearbyNetworks()
+{
+    discoveredNetworkCount = 0U;
+
+    wifi_scan_config_t scanConfig{};
+    scanConfig.show_hidden = false;
+
+    if (esp_wifi_scan_start(&scanConfig, true) != ESP_OK) {
+        ESP_LOGW(TAG, "Network scan failed to start; falling back to manual SSID entry");
+        return;
+    }
+
+    std::uint16_t apCount = 0U;
+    esp_wifi_scan_get_ap_num(&apCount);
+    if (apCount == 0U) {
+        return;
+    }
+
+    std::vector<wifi_ap_record_t> records(apCount);
+    esp_wifi_scan_get_ap_records(&apCount, records.data());
+
+    for (std::uint16_t i = 0U; i < apCount; ++i) {
+        const char* ssid = reinterpret_cast<const char*>(records[i].ssid);
+        if (ssid[0] == '\0') {
+            continue;
+        }
+
+        bool alreadyListed = false;
+        for (std::size_t j = 0U; j < discoveredNetworkCount; ++j) {
+            if (std::strncmp(discoveredNetworks[j].ssid, ssid, sizeof(discoveredNetworks[j].ssid)) == 0) {
+                alreadyListed = true;
+                if (records[i].rssi > discoveredNetworks[j].rssi) {
+                    discoveredNetworks[j].rssi = records[i].rssi;
+                }
+                break;
+            }
+        }
+
+        if (!alreadyListed && discoveredNetworkCount < MAX_DISCOVERED_NETWORKS) {
+            std::snprintf(discoveredNetworks[discoveredNetworkCount].ssid,
+                          sizeof(discoveredNetworks[discoveredNetworkCount].ssid), "%s", ssid);
+            discoveredNetworks[discoveredNetworkCount].rssi = records[i].rssi;
+            ++discoveredNetworkCount;
+        }
+    }
+
+    std::sort(discoveredNetworks, discoveredNetworks + discoveredNetworkCount,
+              [](const DiscoveredNetwork& a, const DiscoveredNetwork& b) { return a.rssi > b.rssi; });
+
+    ESP_LOGI(TAG, "Network scan found %u nearby network(s)", static_cast<unsigned int>(discoveredNetworkCount));
+}
+
+
+/** Appends text to out with &, <, >, ", ' entity-escaped, so a raw SSID can never break out of the HTML it's embedded in. */
+void appendHtmlEscaped(char* out, std::size_t outSize, const char* text)
+{
+    std::size_t written = std::strlen(out);
+    for (const char* p = text; *p != '\0' && written + 6U < outSize; ++p) {
+        const char* entity = nullptr;
+        switch (*p) {
+            case '&': entity = "&amp;"; break;
+            case '<': entity = "&lt;"; break;
+            case '>': entity = "&gt;"; break;
+            case '"': entity = "&quot;"; break;
+            case '\'': entity = "&#39;"; break;
+            default: break;
+        }
+        if (entity != nullptr) {
+            written += static_cast<std::size_t>(std::snprintf(out + written, outSize - written, "%s", entity));
+        } else {
+            out[written++] = *p;
+            out[written] = '\0';
+        }
+    }
+}
 
 
 void scheduleRestart()
@@ -84,7 +208,26 @@ esp_err_t handleGetRoot(httpd_req_t* req)
 {
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, PAGE_TOP);
-    httpd_resp_sendstr_chunk(req, FORM_BODY);
+    httpd_resp_sendstr_chunk(req, FORM_HEAD);
+
+    if (discoveredNetworkCount == 0U) {
+        httpd_resp_sendstr_chunk(req, FORM_SSID_MANUAL_ONLY);
+    } else {
+        httpd_resp_sendstr_chunk(req, "<select name='ssid' style='width:100%;padding:.5em;margin:.3em 0 1em'>");
+        for (std::size_t i = 0U; i < discoveredNetworkCount; ++i) {
+            char escapedSsid[192] = {};
+            appendHtmlEscaped(escapedSsid, sizeof(escapedSsid), discoveredNetworks[i].ssid);
+            char optionHtml[512] = {};
+            std::snprintf(optionHtml, sizeof(optionHtml), "<option value='%s'>%s (%d dBm)</option>",
+                          escapedSsid, escapedSsid, static_cast<int>(discoveredNetworks[i].rssi));
+            httpd_resp_sendstr_chunk(req, optionHtml);
+        }
+        httpd_resp_sendstr_chunk(req, "<option value=''>Other (type below)</option></select>"
+            "<input name='ssid_manual' maxlength='32' placeholder='Only if &quot;Other&quot; selected above' "
+            "style='width:100%;padding:.5em;margin:.3em 0 1em'><br>");
+    }
+
+    httpd_resp_sendstr_chunk(req, FORM_TAIL);
     httpd_resp_sendstr_chunk(req, nullptr);
     return ESP_OK;
 }
@@ -140,7 +283,7 @@ bool extractFormField(const char* body, const char* key, char* out, std::size_t 
 
 esp_err_t handlePostSave(httpd_req_t* req)
 {
-    char body[256] = {};
+    char body[768] = {};
     const int received = httpd_req_recv(req, body, sizeof(body) - 1);
     if (received <= 0) {
         httpd_resp_send_500(req);
@@ -151,18 +294,49 @@ esp_err_t handlePostSave(httpd_req_t* req)
     char ssid[WiFiCredentialsStore::SSID_BUFFER_SIZE] = {};
     char password[WiFiCredentialsStore::PASSWORD_BUFFER_SIZE] = {};
     extractFormField(body, "ssid=", ssid, sizeof(ssid));
+    if (ssid[0] == '\0') {
+        /* The dropdown's "Other" option submits ssid= empty; the typed override lives in ssid_manual=. */
+        extractFormField(body, "ssid_manual=", ssid, sizeof(ssid));
+    }
     extractFormField(body, "password=", password, sizeof(password));
 
-    const WiFiCredentialsStore store;
-    const bool saved = store.save(ssid, password);
+    const WiFiCredentialsStore wifiStore;
+    const bool wifiSaved = wifiStore.save(ssid, password);
+
+    /*
+     * The broker fields are optional - a blank host means "keep using the
+     * compiled-in cloud broker", so nothing is written to
+     * MqttCredentialsStore in that case (leaving any previously provisioned
+     * broker, or none, exactly as it was).
+     */
+    char mqttHost[MqttCredentialsStore::HOST_BUFFER_SIZE] = {};
+    extractFormField(body, "mqtt_host=", mqttHost, sizeof(mqttHost));
+
+    bool mqttSaved = true;
+    if (mqttHost[0] != '\0') {
+        char mqttPortText[8] = {};
+        char mqttUsername[MqttCredentialsStore::USERNAME_BUFFER_SIZE] = {};
+        char mqttPassword[MqttCredentialsStore::PASSWORD_BUFFER_SIZE] = {};
+        extractFormField(body, "mqtt_port=", mqttPortText, sizeof(mqttPortText));
+        extractFormField(body, "mqtt_username=", mqttUsername, sizeof(mqttUsername));
+        extractFormField(body, "mqtt_password=", mqttPassword, sizeof(mqttPassword));
+        const bool mqttUseTls = std::strstr(body, "mqtt_tls=on") != nullptr;
+        const std::uint16_t mqttPort = static_cast<std::uint16_t>(std::atoi(mqttPortText));
+
+        const MqttCredentialsStore mqttStore;
+        mqttSaved = mqttStore.save(mqttHost, mqttPort, mqttUseTls, mqttUsername, mqttPassword);
+    }
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr_chunk(req, PAGE_TOP);
-    httpd_resp_sendstr_chunk(req, saved ? PAGE_SAVED : PAGE_REJECTED);
+    httpd_resp_sendstr_chunk(req, !wifiSaved ? PAGE_REJECTED : (mqttSaved ? PAGE_SAVED : PAGE_MQTT_REJECTED));
     httpd_resp_sendstr_chunk(req, nullptr);
 
-    if (saved) {
+    if (wifiSaved) {
         ESP_LOGI(TAG, "Wi-Fi credentials provisioned for SSID '%s'; restarting shortly", ssid);
+        if (mqttHost[0] != '\0') {
+            ESP_LOGI(TAG, "MQTT broker '%s' %s", mqttHost, mqttSaved ? "provisioned" : "rejected (invalid host/port)");
+        }
         scheduleRestart();
     } else {
         ESP_LOGW(TAG, "Rejected provisioning submission (invalid SSID/password length)");
@@ -295,6 +469,8 @@ bool WiFiProvisioningPortal::begin(std::uint8_t channel)
     esp_netif_ip_info_t ipInfo{};
     esp_netif_get_ip_info(apNetif, &ipInfo);
     portalIpAddress = ipInfo.ip.addr;
+
+    scanNearbyNetworks();
 
     httpd_config_t httpConfig = HTTPD_DEFAULT_CONFIG();
     httpConfig.server_port = HTTP_PORT;

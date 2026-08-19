@@ -4,20 +4,14 @@
  *        MQTT topic.
  *
  * SystemStateJson's one responsibility: format the already-computed
- * system-wide values the mobile application needs (Section 4 "MQTT
- * System State Must Expose What The User Actually Needs") into the
- * kilowatts/v1 JSON contract's system-state payload. It does not
- * calculate any of these values itself — BatteryStateOfCharge,
- * PowerBudgetCalculator, AvailablePowerManager, BestFirstSearch,
- * WiFiManager, MqttManager and CurrentTimeProvider all supply their own
- * already-computed results through the plain SystemStateInputs struct
- * below, so this class has zero business logic of its own and is pure,
- * hardware-free string formatting.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
+ * system-wide values the mobile application needs into the kilowatts/v1
+ * JSON contract's system-state payload. It does not calculate any of
+ * these values itself — BatteryStateOfCharge, SafePowerLimitCalculator,
+ * AvailablePowerManager, BestFirstSearch, WiFiManager, MqttManager and
+ * CurrentTimeProvider all supply their own already-computed results
+ * through the plain SystemStateInputs struct below, so this class has
+ * zero business logic of its own and is pure, hardware-free string
+ * formatting.
  */
 
 #ifndef KILOWATTS_SYSTEM_STATE_JSON_H
@@ -50,9 +44,9 @@ struct SystemStateInputs {
 
     /** Conservative estimate derived from relay confirmations and ratings, not a per-load sensor total. */
     float estimatedTotalLoadPowerWatts;
-    float availablePowerWatts;                 // P_available (Equation 4.14)
+    float availablePowerWatts;                 // P_available
     float fixedOnRunningPowerWatts;             // P_fixed
-    float powerAvailableForAutoLoadsWatts;      // P_remaining at cycle start (Equation 4.16)
+    float powerAvailableForAutoLoadsWatts;      // P_remaining at cycle start
     float remainingPowerWatts;                  // P_remaining after Best-First Search
     float committedPowerWatts;                  // P_committed after Best-First Search
 

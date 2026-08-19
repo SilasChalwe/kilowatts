@@ -1,29 +1,19 @@
 /**
  * @file NodeCommissioningRegistry.h
- * @brief Declares Central's authoritative record of every Node's identity
- *        and commissioning lifecycle.
+ * @brief Central's authoritative record of every Node's identity and
+ *        commissioning lifecycle, persisted across a reboot.
  *
- * NodeCommissioningRegistry's one responsibility: remember which physical
- * Nodes Central has ever heard from, what lifecycle state each one is
- * currently in, and their commissioned friendly name - across a reboot.
- * This is deliberately a different concern from CentralNodeRegistry, which
- * already owns planning-time domain data (real Node/Load objects, route/
- * Hop Count/last-seen) converted from received NodeReportPacket traffic;
- * this class never duplicates that data, and CentralNodeRegistry never
- * duplicates this class's identity/lifecycle data. A caller that needs
- * both (for example to publish state/nodes) joins the two by MAC address.
+ * Deliberately separate from CentralNodeRegistry, which owns planning-time
+ * domain data (Node/Load objects, routing, last-seen) converted from
+ * NodeReportPacket traffic. Neither class duplicates the other's data; a
+ * caller needing both (e.g. to publish state/nodes) joins them by MAC
+ * address.
  *
- * This class never performs ESP-NOW communication itself (see
- * CommissioningPackets/EspNowCommunication), never decides *when* a
- * commissioning command should be sent, and never validates anything about
- * GPIO, battery I2C, Branches or Loads. Smart-node load configuration is
- * owned locally by SmartNodeConfigurationStore and is cleared by that Node
- * when it confirms decommissioning.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
+ * Never performs ESP-NOW communication itself, never decides when a
+ * commissioning command should be sent, and never validates GPIO, battery
+ * I2C, Branch or Load state. Smart-node load configuration is owned
+ * locally by SmartNodeConfigurationStore and cleared by that Node when it
+ * confirms decommissioning.
  */
 
 #ifndef KILOWATTS_NODE_COMMISSIONING_REGISTRY_H
@@ -58,12 +48,10 @@ public:
     static constexpr std::size_t RESET_REASON_BUFFER_SIZE = 16U;
 
     /**
-     * Live runtime facts (see ChipInfo) - deliberately not identity/
-     * lifecycle data. Refreshed by every IdentityReportPacket (or, for
-     * Central's own record, at boot) via updateDiagnostics(), and
-     * deliberately excluded from PersistedCommissioningRecord: these are
-     * transient readings, not durable commissioning facts, so a reboot
-     * always rebuilds them fresh rather than trusting a stale flash copy.
+     * Live runtime facts, deliberately not identity/lifecycle data.
+     * Excluded from PersistedCommissioningRecord: these are transient
+     * readings, so a reboot always rebuilds them fresh rather than
+     * trusting a stale flash copy.
      */
     struct Diagnostics {
         std::uint32_t freeHeapBytes = 0U;
@@ -107,16 +95,12 @@ public:
     /**
      * Records a real IdentityReportPacket heard from macAddress.
      *
-     * A MAC address never seen before creates a new UNCOMMISSIONED record
-     * and this returns true. An existing record has its
-     * firmwareVersion/chipModel/discoveredAtMilliseconds (last-seen)
-     * refreshed and this returns false - except a DECOMMISSIONED record,
-     * which is moved to UNCOMMISSIONED instead (rediscovering a physically
-     * present, previously decommissioned device makes it eligible for
-     * re-commissioning again; NodeLifecycle only allows DECOMMISSIONED to
-     * exit toward UNCOMMISSIONED, so this is the one place that happens).
-     * A record currently CONFIGURING/COMMISSIONED/OPERATIONAL keeps its
-     * lifecycleState untouched by this call either way.
+     * A MAC never seen before creates a new UNCOMMISSIONED record (returns
+     * true). An existing record has firmwareVersion/chipModel/last-seen
+     * refreshed and returns false - except a DECOMMISSIONED record, which
+     * moves back to UNCOMMISSIONED here: the only place NodeLifecycle
+     * allows that transition, since rediscovering a physically present
+     * device makes it eligible for recommissioning.
      */
     bool recordDiscovered(const MacAddress& macAddress, NodeRole role,
                            const char* firmwareVersion, const char* chipModel,
@@ -131,12 +115,8 @@ public:
 
     /**
      * Central registers its own local identity directly as COMMISSIONED -
-     * no ESP-NOW round trip is needed for a Node to commission itself.
-     * A no-op (returns false) if a record for macAddress already exists.
-     * relayPins/relayCapabilityCount is Central's own board-declared relay
-     * GPIO inventory (see CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS),
-     * the same board-safety contract recordDiscovered() already carries
-     * for Smart Nodes.
+     * no ESP-NOW round trip is needed for a Node to commission itself. A
+     * no-op (returns false) if a record for macAddress already exists.
      */
     bool registerSelf(const MacAddress& macAddress, NodeRole role, const char* friendlyName,
                        const char* firmwareVersion, const char* chipModel,
@@ -145,64 +125,44 @@ public:
 
 
     /**
-     * Overwrites the live runtime Diagnostics for an existing record - see
-     * Diagnostics's own comment for why this is separate from
-     * recordDiscovered()/registerSelf() and never persisted.
-     *
+     * Overwrites the live runtime Diagnostics for an existing record.
      * Returns false when no record exists for macAddress.
      */
     bool updateDiagnostics(const MacAddress& macAddress, const Diagnostics& diagnostics);
 
 
     /**
-     * Begins commissioning (first time) or renaming (already commissioned)
-     * macAddress with friendlyName. Rejected (returns false, no change
-     * made) when: no record exists for macAddress (a Node must be
-     * discovered before it can be commissioned - see NodeCommissioningRegistry's
-     * own file comment), friendlyName is empty or does not fit
-     * FRIENDLY_NAME_BUFFER_SIZE, or the current lifecycleState is neither
-     * {UNCOMMISSIONED, DISCOVERED} (first commissioning) nor
-     * {COMMISSIONED, OPERATIONAL} (rename) - for example a commissioning
-     * command already in flight (CONFIGURING) or a DECOMMISSIONED record.
+     * Begins commissioning (first time) or renames (already commissioned)
+     * macAddress. Rejected when no record exists, friendlyName is invalid,
+     * or lifecycleState is neither {UNCOMMISSIONED, DISCOVERED} (first
+     * commissioning) nor {COMMISSIONED, OPERATIONAL} (rename) - e.g. a
+     * command already in flight or a DECOMMISSIONED record.
      *
-     * On acceptance: a first commissioning moves lifecycleState to
-     * CONFIGURING; a rename leaves lifecycleState unchanged. Either way,
-     * pendingFriendlyName is set and syncState becomes PENDING - the
-     * caller must still send the matching CommissionCommandPacket over
-     * ESP-NOW and later call applyCommissionResult() with the Node's own
-     * reply.
+     * On acceptance, pendingFriendlyName is set and syncState becomes
+     * PENDING; the caller must still send CommissionCommandPacket over
+     * ESP-NOW and later call applyCommissionResult() with the reply.
      */
     bool requestCommissioning(const MacAddress& macAddress, const char* friendlyName);
 
 
     /**
      * Applies a Node's own CommissionAckPacket. lifecycleState is always
-     * set to resultingState - this class trusts the Node's own report of
-     * its true local state over anything Central assumed, exactly like
-     * the commissioning flow requires (the Node itself is authoritative
-     * for whether it actually applied the change). When success is true,
+     * set to resultingState - the Node's own report of its state is
+     * authoritative over anything Central assumed. On success,
      * friendlyName is committed from pendingFriendlyName and syncState
-     * becomes SYNCED; otherwise pendingFriendlyName is discarded,
-     * friendlyName is left exactly as it was, and syncState becomes
-     * FAILED.
-     *
-     * Returns false when no record exists for macAddress.
+     * becomes SYNCED; otherwise it's discarded and syncState becomes
+     * FAILED. Returns false when no record exists for macAddress.
      */
     bool applyCommissionResult(const MacAddress& macAddress, bool success, NodeLifecycleState resultingState);
 
 
     /**
-     * Immediately marks macAddress DECOMMISSIONED at Central - Central is
-     * authoritative for whether it plans around a Node, so this does not
-     * wait for the Node's own DecommissionAckPacket (the caller still
-     * sends DecommissionCommandPacket over ESP-NOW as a best-effort
-     * notification so the Node resets its own local identity too, see
-     * NodeIdentityStore). friendlyName/pendingFriendlyName are cleared.
-     *
-     * Returns false when no record exists for macAddress, or the current
-     * lifecycleState cannot legally reach DECOMMISSIONED (see
-     * NodeLifecycle::isValidNodeLifecycleTransition() - only FACTORY
-     * cannot).
+     * Immediately marks macAddress DECOMMISSIONED at Central without
+     * waiting for the Node's own DecommissionAckPacket - Central is
+     * authoritative for whether it plans around a Node. The caller still
+     * sends DecommissionCommandPacket as a best-effort notification (see
+     * NodeIdentityStore). Returns false when no record exists, or the
+     * current lifecycleState cannot legally reach DECOMMISSIONED.
      */
     bool decommission(const MacAddress& macAddress);
 
@@ -217,19 +177,14 @@ public:
 
 
     /**
-     * Loads every persisted record from NVS (ESP32 target only) into
-     * memory, replacing whatever was previously held in memory. Only
-     * records that had reached COMMISSIONED/OPERATIONAL/DECOMMISSIONED are
-     * ever persisted (see persist()) - a transient UNCOMMISSIONED/
-     * DISCOVERED/CONFIGURING record is always rebuilt fresh from real
-     * ESP-NOW discovery after a reboot rather than restored from a stale
-     * snapshot.
+     * Loads every persisted record from NVS (ESP32 target only), replacing
+     * whatever is currently in memory. Only COMMISSIONED/OPERATIONAL/
+     * DECOMMISSIONED records are ever persisted; transient states are
+     * always rebuilt from real ESP-NOW discovery after a reboot.
      *
-     * Returns false, and leaves this object's in-memory records unchanged,
-     * on a host build, when nothing has ever been persisted, or when the
-     * persisted blob is corrupt/malformed/an unsupported schema version -
-     * a corrupt record is never silently accepted, and this never
-     * reconstructs demo records as a fallback.
+     * Returns false, leaving in-memory records unchanged, on a host build,
+     * when nothing has been persisted, or when the persisted blob is
+     * corrupt/malformed/an unsupported schema version.
      */
     bool loadPersisted();
 

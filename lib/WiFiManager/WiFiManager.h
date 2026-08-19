@@ -33,11 +33,6 @@
  * This module requires the real ESP-IDF Wi-Fi/event stack and is
  * therefore ESP32-target-only, like EspNowCommunication and ChipInfo — it
  * has no host build split and no host-native test.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 13 August 2026
  */
 
 #ifndef KILOWATTS_WIFI_MANAGER_H

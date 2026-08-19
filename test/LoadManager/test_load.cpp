@@ -4,13 +4,10 @@
  *        separation (configured mode vs planning target vs confirmed
  *        relay state/validity vs health).
  *
- * These tests exist for the correction pass described in this project's
- * "STATE AUTHORITY, ACTUATION ORDER, SAFETY RE-CHECKS, FIXED-LOAD
- * PROTECTION, NODE/SENSOR FAILURE HANDLING" specification: Load must keep
- * getMode(), getTargetRelayState(), and
+ * Load keeps getMode(), getTargetRelayState(), and
  * getConfirmedRelayState()/isConfirmedRelayStateValid() as three
  * genuinely independent pieces of state that never overwrite one
- * another, and a caller that only calls setHealth() on a failed relay
+ * another. A caller that only calls setHealth() on a failed relay
  * command (never setConfirmedRelayState()) must leave the previous
  * trusted confirmed state and its validity completely untouched — this
  * is the exact pattern src/central/main.cpp and src/smart/main.cpp are
@@ -20,11 +17,6 @@
  * This file uses a standard host int main(), not an ESP-IDF app_main(),
  * so it can be compiled and run by run_cpp_test.sh's plain g++
  * invocation — matching test/LoadFilter/test_load_filter.cpp.
- *
- * @author Chalwe Silas
- * @programme Final-Year Computer Engineering
- * @institution The Copperbelt University
- * @date 14 August 2026
  */
 
 #include "Load.h"
@@ -66,9 +58,6 @@ void printSection(const char* title) {
 const Load::MacAddress DEMO_MAC = {0x1C, 0xDB, 0xD4, 0x78, 0xE7, 0xB8};
 
 
-/**
- * TEST 1 - CONFIRMED RELAY STATE STARTS INVALID
- */
 void testConfirmedRelayStateStartsInvalid() {
     printSection("TEST 1 - CONFIRMED RELAY STATE STARTS INVALID");
 
@@ -81,9 +70,6 @@ void testConfirmedRelayStateStartsInvalid() {
 }
 
 
-/**
- * TEST 2 - SUCCESSFUL CONFIRMATION MARKS VALID
- */
 void testSuccessfulConfirmationMarksValid() {
     printSection("TEST 2 - SUCCESSFUL CONFIRMATION MARKS VALID");
 
@@ -98,10 +84,8 @@ void testSuccessfulConfirmationMarksValid() {
 }
 
 
-/**
- * TEST 3 - A FAILED RELAY COMMAND MUST NOT CHANGE THE CONFIRMED STATE
- *
- * This is the exact failure pattern a caller (RelayCommandDispatcher's
+/*
+ * This is the failure pattern a caller (RelayCommandDispatcher's
  * consumer in src/central/main.cpp / src/smart/main.cpp) must follow: on
  * a failed/timed-out relay command, only Load::setHealth() is called —
  * Load::setConfirmedRelayState() is never called. A failed
@@ -114,7 +98,6 @@ void testFailedCommandPreservesPreviousConfirmedState() {
 
     Load pump(Load::Id{DEMO_MAC, 19U}, "WaterPump", LoadPower{35.0F, 55.0F}, 4U, LoadMode::Auto::ON);
 
-    // Start ON and confirmed, as if an earlier successful command already ran.
     pump.setConfirmedRelayState(true);
     reportCheck("Setup: WaterPump starts confirmed ON", pump.getConfirmedRelayState());
     reportCheck("Setup: WaterPump starts confirmation-valid", pump.isConfirmedRelayStateValid());
@@ -138,9 +121,7 @@ void testFailedCommandPreservesPreviousConfirmedState() {
 }
 
 
-/**
- * TEST 4 - CONFIGURED MODE, TARGET STATE AND CONFIRMED STATE ARE INDEPENDENT
- *
+/*
  * Mirrors BestFirstSearch's own
  * testConfiguredModeNeverMutatedByBestFirstDecision() from the Load side:
  * setTargetRelayState() must never be observable through getMode()/isOn(),
@@ -170,11 +151,9 @@ void testTargetStateIndependentOfConfiguredMode() {
                 !pump.getConfirmedRelayState());
 }
 
-/**
- * TEST 5 - AN INVALID WIRE CONFIRMATION MUST NOT LAUNDER "UNKNOWN" INTO "OFF"
- *
- * Mirrors the exact caller contract CentralNodeRegistry::applyNodeReport()
- * now follows for a received NodeReportPacket's
+/*
+ * Mirrors the caller contract CentralNodeRegistry::applyNodeReport()
+ * follows for a received NodeReportPacket's
  * LoadReportPacket::confirmedRelayStateValid byte: setConfirmedRelayState()
  * must only be called when the wire report itself vouches for the value
  * (confirmedRelayStateValid != 0). Since CentralNodeRegistry is
@@ -222,9 +201,7 @@ void testWireConfirmationValidityGatesWhetherConfirmedStateIsApplied() {
     reportCheck("...and remains valid", fan.isConfirmedRelayStateValid());
 }
 
-/**
- * TEST 6 - INSTALLER RATINGS ARE DISTINCT FROM LIVE MEASUREMENTS
- *
+/*
  * The one-sensor design plans each Smart-node load from the installer
  * voltage/current pair. That pair must accept only a complete, finite,
  * positive rating (or the explicit legacy zero/zero absence), and must not
