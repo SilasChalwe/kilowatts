@@ -1,19 +1,7 @@
 /**
  * @file TopologyTree.h
- * @brief JSON construction for the kilowatts/v1/state/tree and
- *        kilowatts/v1/state/loads MQTT topics.
- *
- * Walks CentralNodeRegistry's known Nodes/Loads/Branches into a nested
- * tree (Central at the root, Smart Nodes nested by their real Next-Hop
- * relationship, electrical Branches as leaves) and a flat per-Load array.
- *
- * Communication topology (who forwards through whom, from
- * PlanningNode::nextHopToCentralMacAddress) is kept deliberately distinct
- * from electrical Branches (BestFirstSearch::BranchId, an owning Node's
- * relay pin): a Node's position in the tree comes from the former, while
- * the Branches listed under it come from the latter.
+ * @brief Builds the branch/node tree and flat load list for the dashboard.
  */
-
 #ifndef KILOWATTS_TOPOLOGY_TREE_H
 #define KILOWATTS_TOPOLOGY_TREE_H
 
@@ -25,81 +13,48 @@
 
 namespace kilowatts {
 
-
 class TopologyTree {
-
 public:
-
-    /**
-     * Builds the retained kilowatts/v1/state/tree JSON payload: Central
-     * at the root, every known Node nested under its real communication
-     * parent (PlanningNode::nextHopToCentralMacAddress), and every Node's
-     * electrical Branches (relay pin + Branch configuration + the Load on
-     * it) listed as that Node's leaves.
-     *
-     * A Node is reported "online": true when
-     * (nowMilliseconds - PlanningNode::lastSeenMilliseconds) is within
-     * onlineTimeoutMilliseconds; Central's own entry is always online.
-     * Guards against a routing-loop-corrupted registry the same way
-     * src/central/main.cpp's own tree printer historically did: recursion
-     * never descends further than one level per known Node.
-     */
     static std::string buildTreeJson(
         const CentralNodeRegistry& registry,
         const NodeCommissioningRegistry& commissioningRegistry,
         std::uint32_t schemaVersion,
         std::uint32_t nowMilliseconds,
-        std::uint32_t onlineTimeoutMilliseconds
-    );
+        std::uint32_t onlineTimeoutMilliseconds);
 
-
-    /**
-     * Builds the flat kilowatts/v1/state/loads JSON payload: one object
-     * per Load currently known (across every Node, Central included),
-     * carrying every field the mobile application needs to render a
-     * Load's card/row without recomputing anything.
-     */
     static std::string buildLoadsJson(
         const CentralNodeRegistry& registry,
-        std::uint32_t schemaVersion
-    );
-
+        std::uint32_t schemaVersion);
 
 private:
-
     static void appendMacAddressJson(std::string& out, const Load::MacAddress& macAddress);
-
     static const char* loadModeText(LoadMode::Value mode);
-
     static const char* loadHealthText(LoadHealth health);
-
     static const char* rejectionReasonText(std::uint8_t reason);
 
-    static void appendNodeAndChildren(
+    static void appendLoadJson(
         std::string& out,
-        const CentralNodeRegistry& registry,
-        const NodeCommissioningRegistry& commissioningRegistry,
-        const Load::MacAddress& nodeMacAddress,
-        std::uint32_t nowMilliseconds,
-        std::uint32_t onlineTimeoutMilliseconds,
-        std::size_t remainingDepthGuard
-    );
+        const Load& load,
+        const std::string& branchName);
 
-    /** Appends `"diagnostics":{...}` (or `"diagnostics":null` when nothing has ever been recorded for nodeMacAddress). */
+    static void appendLoadsForBranch(
+        std::string& out,
+        const CentralNodeRegistry::PlanningNode& branch);
+
     static void appendDiagnosticsJson(
         std::string& out,
         const NodeCommissioningRegistry& commissioningRegistry,
-        const Load::MacAddress& nodeMacAddress
-    );
+        const Load::MacAddress& nodeMacAddress);
 
-    static void appendBranchesForNode(
+    static void appendChildren(
         std::string& out,
-        const CentralNodeRegistry::PlanningNode& planningNode
-    );
-
-    static void appendLoadJson(std::string& out, const Load& load);
+        const CentralNodeRegistry& registry,
+        const NodeCommissioningRegistry& commissioningRegistry,
+        const Load::MacAddress& parentMac,
+        std::uint32_t nowMilliseconds,
+        std::uint32_t onlineTimeoutMilliseconds,
+        std::size_t depthRemaining);
 };
-
 
 } // namespace kilowatts
 
