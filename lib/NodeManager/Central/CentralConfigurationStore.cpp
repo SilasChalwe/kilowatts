@@ -1,7 +1,7 @@
 #include "CentralConfigurationStore.h"
 
-#include <cstddef>
 #include <cmath>
+#include <cstddef>
 
 #ifdef ESP_PLATFORM
 #include "nvs.h"
@@ -14,13 +14,11 @@ namespace {
 constexpr const char* NVS_NAMESPACE = "kw_central_cfg";
 constexpr const char* NVS_KEY_SCHEMA = "schema";
 constexpr const char* NVS_KEY_CONFIGURATION = "config";
-/* Version 2 adds batteryNominalVoltageVolts; a differently-sized Version 1 blob is safely rejected by loadPersisted()'s own size check, not misread. */
-constexpr std::uint8_t SCHEMA_VERSION = 2U;
+constexpr std::uint8_t SCHEMA_VERSION = 3U;
 
 #pragma pack(push, 1)
 struct PersistedConfiguration {
     std::uint8_t batteryConfigured;
-    std::uint8_t batteryI2cAddress;
     float batteryShuntResistanceOhms;
     float batteryMaximumExpectedCurrentAmps;
     float batteryEmaAlpha;
@@ -37,68 +35,75 @@ struct PersistedConfiguration {
 };
 #pragma pack(pop)
 
-CentralConfigurationStore::Configuration unconfigured()
+CentralConfigurationStore::Configuration emptyConfiguration()
 {
     return CentralConfigurationStore::Configuration{
-        CentralConfigurationStore::BatterySensorConfiguration{false, 0U, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
-        CentralConfigurationStore::SafetyPolicy{false, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
-    };
+        CentralConfigurationStore::BatterySensorConfiguration{
+            false, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
+        CentralConfigurationStore::SafetyPolicy{
+            false, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F}};
 }
 
 } // namespace
 
-CentralConfigurationStore::CentralConfigurationStore() : configuration_(unconfigured()) {}
+CentralConfigurationStore::CentralConfigurationStore()
+    : configuration_(emptyConfiguration())
+{
+}
 
 const CentralConfigurationStore::Configuration& CentralConfigurationStore::getConfiguration() const
 {
     return configuration_;
 }
 
-bool CentralConfigurationStore::isValidBatterySensor(const BatterySensorConfiguration& configuration)
+bool CentralConfigurationStore::isValidBatterySensor(const BatterySensorConfiguration& value)
 {
-    if (!configuration.configured) {
+    if (!value.configured) {
         return true;
     }
-    return configuration.i2cAddress >= 0x40U && configuration.i2cAddress <= 0x4FU &&
-           std::isfinite(configuration.shuntResistanceOhms) && configuration.shuntResistanceOhms > 0.0F &&
-           std::isfinite(configuration.maximumExpectedCurrentAmps) && configuration.maximumExpectedCurrentAmps > 0.0F &&
-           std::isfinite(configuration.emaAlpha) && configuration.emaAlpha > 0.0F && configuration.emaAlpha <= 1.0F &&
-           std::isfinite(configuration.batteryCapacityAmpHours) && configuration.batteryCapacityAmpHours > 0.0F &&
-           std::isfinite(configuration.initialStateOfChargePercent) &&
-           configuration.initialStateOfChargePercent >= 0.0F && configuration.initialStateOfChargePercent <= 100.0F &&
-           std::isfinite(configuration.nominalVoltageVolts) && configuration.nominalVoltageVolts > 0.0F;
+
+    return std::isfinite(value.shuntResistanceOhms) && value.shuntResistanceOhms > 0.0F &&
+           std::isfinite(value.maximumExpectedCurrentAmps) && value.maximumExpectedCurrentAmps > 0.0F &&
+           std::isfinite(value.emaAlpha) && value.emaAlpha > 0.0F && value.emaAlpha <= 1.0F &&
+           std::isfinite(value.batteryCapacityAmpHours) && value.batteryCapacityAmpHours > 0.0F &&
+           std::isfinite(value.initialStateOfChargePercent) &&
+           value.initialStateOfChargePercent >= 0.0F && value.initialStateOfChargePercent <= 100.0F &&
+           std::isfinite(value.nominalVoltageVolts) && value.nominalVoltageVolts > 0.0F;
 }
 
-bool CentralConfigurationStore::isValidSafetyPolicy(const SafetyPolicy& policy)
+bool CentralConfigurationStore::isValidSafetyPolicy(const SafetyPolicy& value)
 {
-    if (!policy.configured) {
+    if (!value.configured) {
         return true;
     }
-    return std::isfinite(policy.minimumStateOfChargePercent) &&
-           std::isfinite(policy.warningStateOfChargePercent) &&
-           policy.minimumStateOfChargePercent >= 0.0F && policy.warningStateOfChargePercent <= 100.0F &&
-           policy.warningStateOfChargePercent >= policy.minimumStateOfChargePercent &&
-           std::isfinite(policy.targetRuntimeHours) && policy.targetRuntimeHours > 0.0F &&
-           std::isfinite(policy.safetyFactor) && policy.safetyFactor > 0.0F && policy.safetyFactor <= 1.0F &&
-           std::isfinite(policy.maximumBatteryDischargeCurrentAmps) && policy.maximumBatteryDischargeCurrentAmps > 0.0F &&
-           std::isfinite(policy.maximumMainCurrentAmps) && policy.maximumMainCurrentAmps > 0.0F;
+
+    return std::isfinite(value.minimumStateOfChargePercent) &&
+           std::isfinite(value.warningStateOfChargePercent) &&
+           value.minimumStateOfChargePercent >= 0.0F &&
+           value.warningStateOfChargePercent <= 100.0F &&
+           value.warningStateOfChargePercent >= value.minimumStateOfChargePercent &&
+           std::isfinite(value.targetRuntimeHours) && value.targetRuntimeHours > 0.0F &&
+           std::isfinite(value.safetyFactor) && value.safetyFactor > 0.0F && value.safetyFactor <= 1.0F &&
+           std::isfinite(value.maximumBatteryDischargeCurrentAmps) &&
+           value.maximumBatteryDischargeCurrentAmps > 0.0F &&
+           std::isfinite(value.maximumMainCurrentAmps) && value.maximumMainCurrentAmps > 0.0F;
 }
 
-bool CentralConfigurationStore::setBatterySensor(const BatterySensorConfiguration& configuration)
+bool CentralConfigurationStore::setBatterySensor(const BatterySensorConfiguration& value)
 {
-    if (!isValidBatterySensor(configuration)) {
+    if (!isValidBatterySensor(value)) {
         return false;
     }
-    configuration_.batterySensor = configuration;
+    configuration_.batterySensor = value;
     return true;
 }
 
-bool CentralConfigurationStore::setSafetyPolicy(const SafetyPolicy& policy)
+bool CentralConfigurationStore::setSafetyPolicy(const SafetyPolicy& value)
 {
-    if (!isValidSafetyPolicy(policy)) {
+    if (!isValidSafetyPolicy(value)) {
         return false;
     }
-    configuration_.safetyPolicy = policy;
+    configuration_.safetyPolicy = value;
     return true;
 }
 
@@ -109,42 +114,43 @@ bool CentralConfigurationStore::loadPersisted()
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
         return false;
     }
+
     std::uint8_t schema = 0U;
     std::size_t size = sizeof(PersistedConfiguration);
-    PersistedConfiguration persisted{};
+    PersistedConfiguration stored{};
+
     esp_err_t result = nvs_get_u8(handle, NVS_KEY_SCHEMA, &schema);
     if (result == ESP_OK && schema == SCHEMA_VERSION) {
-        result = nvs_get_blob(handle, NVS_KEY_CONFIGURATION, &persisted, &size);
+        result = nvs_get_blob(handle, NVS_KEY_CONFIGURATION, &stored, &size);
     }
     nvs_close(handle);
+
     if (result != ESP_OK || size != sizeof(PersistedConfiguration)) {
         return false;
     }
 
-    const Configuration restored{
+    Configuration restored{
         BatterySensorConfiguration{
-            persisted.batteryConfigured != 0U,
-            persisted.batteryI2cAddress,
-            persisted.batteryShuntResistanceOhms,
-            persisted.batteryMaximumExpectedCurrentAmps,
-            persisted.batteryEmaAlpha,
-            persisted.batteryCapacityAmpHours,
-            persisted.batteryInitialStateOfChargePercent,
-            persisted.batteryNominalVoltageVolts,
-        },
+            stored.batteryConfigured != 0U,
+            stored.batteryShuntResistanceOhms,
+            stored.batteryMaximumExpectedCurrentAmps,
+            stored.batteryEmaAlpha,
+            stored.batteryCapacityAmpHours,
+            stored.batteryInitialStateOfChargePercent,
+            stored.batteryNominalVoltageVolts},
         SafetyPolicy{
-            persisted.safetyConfigured != 0U,
-            persisted.minimumStateOfChargePercent,
-            persisted.warningStateOfChargePercent,
-            persisted.targetRuntimeHours,
-            persisted.safetyFactor,
-            persisted.maximumBatteryDischargeCurrentAmps,
-            persisted.maximumMainCurrentAmps,
-        },
-    };
+            stored.safetyConfigured != 0U,
+            stored.minimumStateOfChargePercent,
+            stored.warningStateOfChargePercent,
+            stored.targetRuntimeHours,
+            stored.safetyFactor,
+            stored.maximumBatteryDischargeCurrentAmps,
+            stored.maximumMainCurrentAmps}};
+
     if (!isValidBatterySensor(restored.batterySensor) || !isValidSafetyPolicy(restored.safetyPolicy)) {
         return false;
     }
+
     configuration_ = restored;
     return true;
 #else
@@ -155,22 +161,21 @@ bool CentralConfigurationStore::loadPersisted()
 bool CentralConfigurationStore::persist() const
 {
 #ifdef ESP_PLATFORM
-    PersistedConfiguration persisted{};
-    persisted.batteryConfigured = configuration_.batterySensor.configured ? 1U : 0U;
-    persisted.batteryI2cAddress = configuration_.batterySensor.i2cAddress;
-    persisted.batteryShuntResistanceOhms = configuration_.batterySensor.shuntResistanceOhms;
-    persisted.batteryMaximumExpectedCurrentAmps = configuration_.batterySensor.maximumExpectedCurrentAmps;
-    persisted.batteryEmaAlpha = configuration_.batterySensor.emaAlpha;
-    persisted.batteryCapacityAmpHours = configuration_.batterySensor.batteryCapacityAmpHours;
-    persisted.batteryInitialStateOfChargePercent = configuration_.batterySensor.initialStateOfChargePercent;
-    persisted.batteryNominalVoltageVolts = configuration_.batterySensor.nominalVoltageVolts;
-    persisted.safetyConfigured = configuration_.safetyPolicy.configured ? 1U : 0U;
-    persisted.minimumStateOfChargePercent = configuration_.safetyPolicy.minimumStateOfChargePercent;
-    persisted.warningStateOfChargePercent = configuration_.safetyPolicy.warningStateOfChargePercent;
-    persisted.targetRuntimeHours = configuration_.safetyPolicy.targetRuntimeHours;
-    persisted.safetyFactor = configuration_.safetyPolicy.safetyFactor;
-    persisted.maximumBatteryDischargeCurrentAmps = configuration_.safetyPolicy.maximumBatteryDischargeCurrentAmps;
-    persisted.maximumMainCurrentAmps = configuration_.safetyPolicy.maximumMainCurrentAmps;
+    PersistedConfiguration stored{};
+    stored.batteryConfigured = configuration_.batterySensor.configured ? 1U : 0U;
+    stored.batteryShuntResistanceOhms = configuration_.batterySensor.shuntResistanceOhms;
+    stored.batteryMaximumExpectedCurrentAmps = configuration_.batterySensor.maximumExpectedCurrentAmps;
+    stored.batteryEmaAlpha = configuration_.batterySensor.emaAlpha;
+    stored.batteryCapacityAmpHours = configuration_.batterySensor.batteryCapacityAmpHours;
+    stored.batteryInitialStateOfChargePercent = configuration_.batterySensor.initialStateOfChargePercent;
+    stored.batteryNominalVoltageVolts = configuration_.batterySensor.nominalVoltageVolts;
+    stored.safetyConfigured = configuration_.safetyPolicy.configured ? 1U : 0U;
+    stored.minimumStateOfChargePercent = configuration_.safetyPolicy.minimumStateOfChargePercent;
+    stored.warningStateOfChargePercent = configuration_.safetyPolicy.warningStateOfChargePercent;
+    stored.targetRuntimeHours = configuration_.safetyPolicy.targetRuntimeHours;
+    stored.safetyFactor = configuration_.safetyPolicy.safetyFactor;
+    stored.maximumBatteryDischargeCurrentAmps = configuration_.safetyPolicy.maximumBatteryDischargeCurrentAmps;
+    stored.maximumMainCurrentAmps = configuration_.safetyPolicy.maximumMainCurrentAmps;
 
     nvs_handle_t handle = 0;
     esp_err_t result = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -178,7 +183,7 @@ bool CentralConfigurationStore::persist() const
         result = nvs_set_u8(handle, NVS_KEY_SCHEMA, SCHEMA_VERSION);
     }
     if (result == ESP_OK) {
-        result = nvs_set_blob(handle, NVS_KEY_CONFIGURATION, &persisted, sizeof(persisted));
+        result = nvs_set_blob(handle, NVS_KEY_CONFIGURATION, &stored, sizeof(stored));
     }
     if (result == ESP_OK) {
         result = nvs_commit(handle);
