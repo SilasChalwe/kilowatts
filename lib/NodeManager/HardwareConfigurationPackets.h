@@ -1,17 +1,7 @@
 /**
  * @file HardwareConfigurationPackets.h
- * @brief Rare ESP-NOW messages used to commission a Smart Node's physical
- *        relay/load channel at runtime.
- *
- * Installation topology is never compiled into firmware. Central forwards
- * one validated CONFIGURE_LOAD MQTT command to the addressed Smart Node;
- * the Node validates it against its board-declared relay capabilities,
- * applies it locally and persists it before replying with this ACK. The
- * final cost-conscious design has one INA219 only at Central's battery bus;
- * Smart-node load values are installer-entered electrical ratings, not
- * individual live measurements.
+ * @brief ESP-NOW packets for adding and removing loads on Smart Nodes.
  */
-
 #ifndef KILOWATTS_HARDWARE_CONFIGURATION_PACKETS_H
 #define KILOWATTS_HARDWARE_CONFIGURATION_PACKETS_H
 
@@ -32,14 +22,6 @@ enum class HardwareConfigurationFailureReason : std::uint8_t {
     CAPACITY_REACHED = 8U
 };
 
-/**
- * Wire-only representation of every fact needed to create one load channel
- * on the target Smart Node. nominalVoltageVolts and nominalCurrentAmps are
- * installation/nameplate values supplied by the installer; their product is
- * the conservative planned running power. They are not a sensor reading.
- * The enclosing ESP-NOW header already identifies that target, so this
- * packet intentionally contains no Node MAC address.
- */
 struct ConfigureLoadCommandPacket {
     std::uint32_t commandId;
     char loadName[16];
@@ -49,7 +31,6 @@ struct ConfigureLoadCommandPacket {
     std::uint16_t priority;
     float nominalVoltageVolts;
     float nominalCurrentAmps;
-    float branchMaximumCurrentAmps;
     float startupWatts;
     std::uint8_t scheduleEnabled;
     std::uint8_t scheduleHour;
@@ -63,10 +44,26 @@ struct ConfigureLoadAcknowledgementPacket {
     std::uint8_t failureReason;
 };
 
+struct RemoveLoadCommandPacket {
+    std::uint32_t commandId;
+    std::uint8_t relayPin;
+};
+
+struct RemoveLoadAcknowledgementPacket {
+    std::uint32_t commandId;
+    std::uint8_t relayPin;
+    std::uint8_t success;
+    std::uint8_t failureReason;
+};
+
 static_assert(std::is_trivially_copyable<ConfigureLoadCommandPacket>::value,
-              "ConfigureLoadCommandPacket must be safe to send over ESP-NOW");
+              "ConfigureLoadCommandPacket must be safe for ESP-NOW");
 static_assert(std::is_trivially_copyable<ConfigureLoadAcknowledgementPacket>::value,
-              "ConfigureLoadAcknowledgementPacket must be safe to send over ESP-NOW");
+              "ConfigureLoadAcknowledgementPacket must be safe for ESP-NOW");
+static_assert(std::is_trivially_copyable<RemoveLoadCommandPacket>::value,
+              "RemoveLoadCommandPacket must be safe for ESP-NOW");
+static_assert(std::is_trivially_copyable<RemoveLoadAcknowledgementPacket>::value,
+              "RemoveLoadAcknowledgementPacket must be safe for ESP-NOW");
 
 } // namespace kilowatts
 

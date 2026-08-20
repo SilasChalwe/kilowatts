@@ -1,153 +1,125 @@
 /**
  * @file INA219Monitor.cpp
- * @brief Implements management of every INA219 current/power sensor wired
- *        to the current Node.
- *
- * This file is split by ESP_PLATFORM, the macro ESP-IDF defines for every
- * source file it builds:
- *
- * - Sensor registration and lookup (addSensor() and friends) is plain,
- *   hardware-free C++ and is always compiled, so it can be exercised by a
- *   host-native test (see test/INA219Monitor/) with no ESP32 involved.
- * - Real I2C register communication is compiled only under ESP_PLATFORM,
- *   using ESP-IDF's new I2C master driver (driver/i2c_master.h). A host
- *   build's version of every hardware-touching method simply returns
- *   false without fabricating a measurement or a device presence.
- *
- * Register map and conversions are from the Texas Instruments INA219
- * datasheet (SBOS448).
+ * @brief Single battery-bus INA219 reader.
  */
-
 #include "INA219Monitor.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 
 #ifdef ESP_PLATFORM
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "nvs.h"
-#include "nvs_flash.h"
 #endif
 
 namespace kilowatts {
 
-
-#ifndef __INTELLISENSE__
-static_assert(sizeof(std::uint32_t) == sizeof(float), "float must be 32 bits to round-trip through NVS u32 storage");
-#endif
-
-
-#ifdef ESP_PLATFORM
-static const char *TAG = "INA219_MONITOR";
-#endif
-
-
 namespace {
 
-/*
- * The INA219's real, datasheet-defined I2C address space: 16 addresses
- * selectable through the A0/A1 pins.
- */
-constexpr std::uint8_t INA219_MINIMUM_I2C_ADDRESS = 0x40U;
-constexpr std::uint8_t INA219_MAXIMUM_I2C_ADDRESS = 0x4FU;
-
-/*
- * Maximum shunt voltage measurable with the Configuration register value
- * this module writes (PGA = /8, see CONFIGURATION_REGISTER_VALUE below).
- */
+constexpr std::uint8_t INA219_I2C_ADDRESS = 0x40U;
 constexpr float MAXIMUM_SHUNT_VOLTAGE_VOLTS = 0.32F;
-
-/* Fixed internal scaling constant from the Calibration register formula. */
 constexpr float CALIBRATION_SCALING_CONSTANT = 0.04096F;
 
-/* Power register LSB is always 20x the Current register LSB. */
-constexpr float POWER_LSB_SCALE = 20.0F;
-
-
-bool isFinitePositive(float value)
-{
-    return std::isfinite(value) && value > 0.0F;
-}
-
+/*
+ * Current bench mode. Change only this file when the real INA219 is ready.
+ * false = read the physical INA219 at 0x40.
+ */
+constexpr bool USE_SIMULATED_READING = true;
+constexpr LoadMeasurements SIMULATED_READING{15.0F, 3.0F, 45.0F};
 
 #ifdef ESP_PLATFORM
+static const char* TAG = "INA219";
 
 constexpr std::uint8_t REGISTER_CONFIGURATION = 0x00U;
-constexpr std::uint8_t REGISTER_SHUNT_VOLTAGE = 0x01U;
-constexpr std::uint8_t REGISTER_BUS_VOLTAGE   = 0x02U;
-constexpr std::uint8_t REGISTER_POWER         = 0x03U;
-constexpr std::uint8_t REGISTER_CURRENT       = 0x04U;
-constexpr std::uint8_t REGISTER_CALIBRATION   = 0x05U;
-
-/*
- * Power-on-reset default of the Configuration register (datasheet Table
- * 4), written explicitly rather than relied on implicitly: BRNG=1 (32V bus
- * range), PGA=11 (/8, +-320mV shunt full-scale), BADC=SADC=0011 (12-bit,
- * 532us conversion), MODE=111 (shunt and bus voltage, continuous).
- */
+constexpr std::uint8_t REGISTER_BUS_VOLTAGE = 0x02U;
+constexpr std::uint8_t REGISTER_CALIBRATION = 0x05U;
+constexpr std::uint8_t REGISTER_CURRENT = 0x04U;
 constexpr std::uint16_t CONFIGURATION_REGISTER_VALUE = 0x399FU;
-
-/* Shunt Voltage register LSB, fixed regardless of the PGA setting. */
-constexpr float SHUNT_VOLTAGE_LSB_VOLTS = 0.00001F;
-
-/* Bus Voltage register LSB, applied after discarding the 3 status bits. */
 constexpr float BUS_VOLTAGE_LSB_VOLTS = 0.004F;
-
-/* Bus Voltage register bit 1: set when the chip's own math overflowed. */
 constexpr std::uint16_t BUS_VOLTAGE_OVERFLOW_FLAG = 0x0002U;
+constexpr int I2C_TIMEOUT_MS = 100;
 
-constexpr int I2C_TRANSACTION_TIMEOUT_MS = 100;
-
-/*
- * NVS keys are limited to 15 characters, so each key is a one-letter
- * field tag followed by the sensor's two-digit hex I2C address (e.g.
- * "v40" for the voltage offset of the sensor at 0x40).
- */
 constexpr const char* NVS_NAMESPACE = "kw_ina219";
+constexpr const char* NVS_KEY_VOLTAGE_OFFSET = "v_offset";
+constexpr const char* NVS_KEY_CURRENT_OFFSET = "i_offset";
+constexpr const char* NVS_KEY_CURRENT_SCALE = "i_scale";
 
-void makeCalibrationNvsKey(char key[16], char fieldTag, std::uint8_t i2cAddress)
+bool writeRegister(i2c_master_dev_handle_t device, std::uint8_t reg, std::uint16_t value)
 {
-    std::snprintf(key, 16, "%c%02X", fieldTag, static_cast<unsigned int>(i2cAddress));
+    const std::uint8_t bytes[3]{
+        reg,
+        static_cast<std::uint8_t>((value >> 8U) & 0xFFU),
+        static_cast<std::uint8_t>(value & 0xFFU)};
+    return i2c_master_transmit(device, bytes, sizeof(bytes), I2C_TIMEOUT_MS) == ESP_OK;
 }
 
-#endif // ESP_PLATFORM
+bool readRegister(i2c_master_dev_handle_t device, std::uint8_t reg, std::uint16_t& value)
+{
+    std::uint8_t bytes[2]{};
+    if (i2c_master_transmit_receive(device, &reg, 1U, bytes, sizeof(bytes), I2C_TIMEOUT_MS) != ESP_OK) {
+        return false;
+    }
+    value = static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[0]) << 8U) | bytes[1]);
+    return true;
+}
+
+bool writeFloat(nvs_handle_t handle, const char* key, float value)
+{
+    std::uint32_t bits = 0U;
+    static_assert(sizeof(bits) == sizeof(value), "float must be 32 bits");
+    std::memcpy(&bits, &value, sizeof(value));
+    return nvs_set_u32(handle, key, bits) == ESP_OK;
+}
+
+bool readFloat(nvs_handle_t handle, const char* key, float& value)
+{
+    std::uint32_t bits = 0U;
+    if (nvs_get_u32(handle, key, &bits) != ESP_OK) {
+        return false;
+    }
+    static_assert(sizeof(bits) == sizeof(value), "float must be 32 bits");
+    std::memcpy(&value, &bits, sizeof(value));
+    return std::isfinite(value);
+}
+#endif
 
 } // namespace
-
 
 const char* toText(MeasurementSource source)
 {
     switch (source) {
         case MeasurementSource::NONE: return "NONE";
+        case MeasurementSource::SIMULATED: return "SIMULATED";
         case MeasurementSource::HARDWARE: return "HARDWARE";
     }
-
     return "UNKNOWN";
 }
 
-
 INA219Monitor::INA219Monitor()
-    : sensors_(),
-      busHandle_(nullptr),
+    : configuration_{0.0F, 0.0F, 1.0F},
+      calibration_{0.0F, 0.0F, 1.0F},
+      filteredMeasurements_{0.0F, 0.0F, 0.0F},
       busInitialized_(false),
-      busClockSpeedHz_(0U)
+      sensorConfigured_(false),
+      hasFilteredMeasurement_(false),
+      busClockSpeedHz_(0U),
+      calibrationRegisterValue_(0U),
+      currentLsbAmps_(0.0F),
+      busHandle_(nullptr),
+      deviceHandle_(nullptr),
+      lastMeasurementSource_(MeasurementSource::NONE)
 {
 }
-
 
 INA219Monitor::~INA219Monitor()
 {
 #ifdef ESP_PLATFORM
-    for (RegisteredSensor& sensor : sensors_) {
-        if (sensor.deviceHandle != nullptr) {
-            i2c_master_bus_rm_device(reinterpret_cast<i2c_master_dev_handle_t>(sensor.deviceHandle));
-            sensor.deviceHandle = nullptr;
-        }
+    if (deviceHandle_ != nullptr) {
+        i2c_master_bus_rm_device(reinterpret_cast<i2c_master_dev_handle_t>(deviceHandle_));
+        deviceHandle_ = nullptr;
     }
-
     if (busHandle_ != nullptr) {
         i2c_del_master_bus(reinterpret_cast<i2c_master_bus_handle_t>(busHandle_));
         busHandle_ = nullptr;
@@ -155,432 +127,242 @@ INA219Monitor::~INA219Monitor()
 #endif
 }
 
-
-bool INA219Monitor::isI2CAddressRegistered(std::uint8_t i2cAddress) const
-{
-    return findSensor(i2cAddress) != nullptr;
-}
-
-
-bool INA219Monitor::isRelayPinRegistered(std::uint8_t relayPin) const
-{
-    return findSensorByRelayPin(relayPin) != nullptr;
-}
-
-
-INA219Monitor::RegisteredSensor* INA219Monitor::findMutableSensor(std::uint8_t i2cAddress)
-{
-    for (RegisteredSensor& sensor : sensors_) {
-        if (sensor.configuration.i2cAddress == i2cAddress) {
-            return &sensor;
-        }
-    }
-
-    return nullptr;
-}
-
-
-const INA219Monitor::RegisteredSensor* INA219Monitor::findSensor(std::uint8_t i2cAddress) const
-{
-    for (const RegisteredSensor& sensor : sensors_) {
-        if (sensor.configuration.i2cAddress == i2cAddress) {
-            return &sensor;
-        }
-    }
-
-    return nullptr;
-}
-
-
-bool INA219Monitor::initializeBus(const I2CBusConfiguration& busConfiguration)
+bool INA219Monitor::initializeBus(const I2CBusConfiguration& configuration)
 {
 #ifdef ESP_PLATFORM
     if (busInitialized_) {
-        ESP_LOGW(TAG, "I2C bus already initialised; ignoring repeated initializeBus() call");
         return true;
     }
 
-    i2c_master_bus_config_t masterBusConfig{};
-    masterBusConfig.i2c_port = static_cast<i2c_port_num_t>(busConfiguration.i2cPortNumber);
-    masterBusConfig.sda_io_num = static_cast<gpio_num_t>(busConfiguration.serialDataPin);
-    masterBusConfig.scl_io_num = static_cast<gpio_num_t>(busConfiguration.serialClockPin);
-    masterBusConfig.clk_source = I2C_CLK_SRC_DEFAULT;
-    masterBusConfig.glitch_ignore_cnt = 7U;
-    masterBusConfig.flags.enable_internal_pullup = 1U;
+    i2c_master_bus_config_t bus{};
+    bus.i2c_port = static_cast<i2c_port_num_t>(configuration.i2cPortNumber);
+    bus.sda_io_num = static_cast<gpio_num_t>(configuration.serialDataPin);
+    bus.scl_io_num = static_cast<gpio_num_t>(configuration.serialClockPin);
+    bus.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus.glitch_ignore_cnt = 7U;
+    bus.flags.enable_internal_pullup = 1U;
 
-    i2c_master_bus_handle_t newBusHandle = nullptr;
-    const esp_err_t result = i2c_new_master_bus(&masterBusConfig, &newBusHandle);
-
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to initialise I2C bus (port=%u sda=%u scl=%u): %s",
-                 static_cast<unsigned int>(busConfiguration.i2cPortNumber),
-                 static_cast<unsigned int>(busConfiguration.serialDataPin),
-                 static_cast<unsigned int>(busConfiguration.serialClockPin),
-                 esp_err_to_name(result));
+    i2c_master_bus_handle_t handle = nullptr;
+    if (i2c_new_master_bus(&bus, &handle) != ESP_OK) {
         return false;
     }
 
-    busHandle_ = newBusHandle;
+    busHandle_ = handle;
+    busClockSpeedHz_ = configuration.clockSpeedHz;
     busInitialized_ = true;
-    busClockSpeedHz_ = busConfiguration.clockSpeedHz;
     return true;
 #else
-    (void)busConfiguration;
+    (void)configuration;
     return false;
 #endif
 }
 
-
-bool INA219Monitor::addSensor(const INA219SensorConfiguration& sensorConfiguration)
+bool INA219Monitor::isValidSensorConfiguration(const SensorConfiguration& configuration)
 {
-    if (sensorConfiguration.i2cAddress < INA219_MINIMUM_I2C_ADDRESS ||
-        sensorConfiguration.i2cAddress > INA219_MAXIMUM_I2C_ADDRESS) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor: I2C address 0x%02X is outside the INA219 address space (0x40-0x4F)",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
+    if (!std::isfinite(configuration.shuntResistanceOhms) || configuration.shuntResistanceOhms <= 0.0F ||
+        !std::isfinite(configuration.maximumExpectedCurrentAmps) || configuration.maximumExpectedCurrentAmps <= 0.0F ||
+        !std::isfinite(configuration.emaAlpha) || configuration.emaAlpha <= 0.0F || configuration.emaAlpha > 1.0F) {
         return false;
     }
 
-    if (isI2CAddressRegistered(sensorConfiguration.i2cAddress)) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor: I2C address 0x%02X is already registered",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
+    return configuration.shuntResistanceOhms * configuration.maximumExpectedCurrentAmps <=
+           MAXIMUM_SHUNT_VOLTAGE_VOLTS;
+}
+
+bool INA219Monitor::configureSensor(const SensorConfiguration& configuration)
+{
+    if (!isValidSensorConfiguration(configuration)) {
         return false;
     }
 
-    if (isRelayPinRegistered(sensorConfiguration.relayPin)) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor 0x%02X: relay pin %u already has a registered sensor",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress),
-                 static_cast<unsigned int>(sensorConfiguration.relayPin));
-#endif
-        return false;
-    }
-
-    if (!isFinitePositive(sensorConfiguration.shuntResistanceOhms) ||
-        !isFinitePositive(sensorConfiguration.maximumExpectedCurrentAmps)) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor 0x%02X: shuntResistanceOhms and maximumExpectedCurrentAmps must both be positive",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
-        return false;
-    }
-
-    const float maximumShuntVoltageVolts =
-        sensorConfiguration.maximumExpectedCurrentAmps * sensorConfiguration.shuntResistanceOhms;
-
-    if (maximumShuntVoltageVolts > MAXIMUM_SHUNT_VOLTAGE_VOLTS) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor 0x%02X: maximumExpectedCurrentAmps x shuntResistanceOhms exceeds the measurable shunt-voltage range",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
-        return false;
-    }
-
-    if (!std::isfinite(sensorConfiguration.emaAlpha) ||
-        sensorConfiguration.emaAlpha <= 0.0F ||
-        sensorConfiguration.emaAlpha > 1.0F) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor 0x%02X: emaAlpha=%.3f must satisfy 0 < alpha <= 1",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress), sensorConfiguration.emaAlpha);
-#endif
-        return false;
-    }
-
-    RegisteredSensor sensor{};
-    sensor.configuration = sensorConfiguration;
-    sensor.currentLsbAmps = sensorConfiguration.maximumExpectedCurrentAmps / 32768.0F;
-
-    const float calibrationValue =
-        CALIBRATION_SCALING_CONSTANT / (sensor.currentLsbAmps * sensorConfiguration.shuntResistanceOhms);
+    const float currentLsb = configuration.maximumExpectedCurrentAmps / 32768.0F;
+    const float calibrationValue = CALIBRATION_SCALING_CONSTANT /
+        (currentLsb * configuration.shuntResistanceOhms);
 
     if (!std::isfinite(calibrationValue) || calibrationValue <= 0.0F || calibrationValue > 65535.0F) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected sensor 0x%02X: computed calibration value does not fit the 16-bit Calibration register",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
         return false;
     }
 
-    sensor.calibrationRegisterValue = static_cast<std::uint16_t>(calibrationValue);
-    sensor.powerLsbWatts = POWER_LSB_SCALE * sensor.currentLsbAmps;
-    sensor.deviceHandle = nullptr;
-    sensor.calibration = INA219Calibration{0.0F, 0.0F, 1.0F};
-    sensor.filteredMeasurements = LoadMeasurements{0.0F, 0.0F, 0.0F};
-    sensor.hasFilteredMeasurement = false;
-    sensor.lastMeasurementSource = MeasurementSource::NONE;
+    configuration_ = configuration;
+    currentLsbAmps_ = currentLsb;
+    calibrationRegisterValue_ = static_cast<std::uint16_t>(calibrationValue);
+    calibration_ = Calibration{0.0F, 0.0F, 1.0F};
+    filteredMeasurements_ = LoadMeasurements{0.0F, 0.0F, 0.0F};
+    hasFilteredMeasurement_ = false;
+    lastMeasurementSource_ = MeasurementSource::NONE;
+    sensorConfigured_ = true;
 
-    sensors_.push_back(sensor);
+    loadPersistedCalibration();
 
-    if (!configureSensorHardware(sensors_.back())) {
-#ifdef ESP_PLATFORM
-        ESP_LOGW(TAG, "Sensor 0x%02X registered but did not respond during initial configuration; presence is retried on read",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
-    }
-
-    if (!loadPersistedCalibration(sensors_.back())) {
-#ifdef ESP_PLATFORM
-        ESP_LOGI(TAG, "Sensor 0x%02X starting with identity calibration (no valid persisted calibration found)",
-                 static_cast<unsigned int>(sensorConfiguration.i2cAddress));
-#endif
-    }
-
-    return true;
-}
-
-
-bool INA219Monitor::removeSensor(std::uint8_t i2cAddress)
-{
-    for (std::size_t index = 0U; index < sensors_.size(); ++index) {
-        RegisteredSensor& sensor = sensors_[index];
-        if (sensor.configuration.i2cAddress != i2cAddress) {
-            continue;
-        }
-
-#ifdef ESP_PLATFORM
-        if (sensor.deviceHandle != nullptr) {
-            const esp_err_t result = i2c_master_bus_rm_device(
-                reinterpret_cast<i2c_master_dev_handle_t>(sensor.deviceHandle));
-            if (result != ESP_OK) {
-                ESP_LOGE(TAG, "Could not remove INA219 0x%02X while rolling back configuration: %s",
-                         static_cast<unsigned int>(i2cAddress), esp_err_to_name(result));
-            }
-            sensor.deviceHandle = nullptr;
-        }
-#endif
-
-        sensors_.erase(sensors_.begin() + static_cast<std::ptrdiff_t>(index));
+    if (USE_SIMULATED_READING) {
         return true;
     }
 
-    return false;
+    return configureHardware();
 }
 
-
-std::size_t INA219Monitor::getNumberOfSensors() const
+bool INA219Monitor::isConfigured() const
 {
-    return sensors_.size();
+    return sensorConfigured_;
 }
 
-
-const INA219Monitor::INA219SensorConfiguration* INA219Monitor::getSensor(std::size_t sensorIndex) const
-{
-    if (sensorIndex >= sensors_.size()) {
-        return nullptr;
-    }
-
-    return &sensors_[sensorIndex].configuration;
-}
-
-
-const INA219Monitor::INA219SensorConfiguration* INA219Monitor::findSensorByI2CAddress(std::uint8_t i2cAddress) const
-{
-    const RegisteredSensor* sensor = findSensor(i2cAddress);
-    return sensor != nullptr ? &sensor->configuration : nullptr;
-}
-
-
-const INA219Monitor::INA219SensorConfiguration* INA219Monitor::findSensorByRelayPin(std::uint8_t relayPin) const
-{
-    for (const RegisteredSensor& sensor : sensors_) {
-        if (sensor.configuration.relayPin == relayPin) {
-            return &sensor.configuration;
-        }
-    }
-
-    return nullptr;
-}
-
-
-bool INA219Monitor::isSensorPresent(std::uint8_t i2cAddress) const
-{
-    // TEMPORARY TEST STUB - forces "detected" for bench-testing the downstream
-    // chain (SoC/power-limit/dashboard). Revert before the real demo.
-    (void)i2cAddress;
-    return true;
-}
-
-
-bool INA219Monitor::readMeasurements(std::uint8_t i2cAddress, LoadMeasurements& measurements) const
+bool INA219Monitor::configureHardware()
 {
 #ifdef ESP_PLATFORM
-    /*
-     * TEMPORARY SENSOR BYPASS.
-     * For now, the rest of the system is allowed to behave as though the
-     * INA219 returned a successful measurement.
-     *
-     * When the real sensor is ready, comment out/remove ONLY this temporary
-     * block so execution continues into the original INA219 code below.
-     */
-    measurements.voltageVolts = 15.0F;
-    measurements.currentAmps = 3.0F;
-    measurements.powerWatts = 45.0F;
-
-    ESP_LOGI(TAG,
-             "SENSOR_SAMPLE i2c=0x%02X V=%.3fV I=%.3fA P=%.3fW (TEMPORARY BYPASS)",
-             static_cast<unsigned int>(i2cAddress),
-             static_cast<double>(measurements.voltageVolts),
-             static_cast<double>(measurements.currentAmps),
-             static_cast<double>(measurements.powerWatts));
-
-    return true;
-
-    const RegisteredSensor* sensor = findSensor(i2cAddress);
-    if (sensor == nullptr) {
-        ESP_LOGW(TAG, "Cannot read sensor 0x%02X: not registered", static_cast<unsigned int>(i2cAddress));
+    if (!busInitialized_ || busHandle_ == nullptr || !sensorConfigured_) {
         return false;
     }
 
-    if (sensor->deviceHandle == nullptr) {
-        ESP_LOGW(TAG, "Cannot read sensor 0x%02X: not configured on the bus",
-                 static_cast<unsigned int>(i2cAddress));
+    if (deviceHandle_ == nullptr) {
+        i2c_device_config_t device{};
+        device.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        device.device_address = INA219_I2C_ADDRESS;
+        device.scl_speed_hz = busClockSpeedHz_;
+
+        i2c_master_dev_handle_t handle = nullptr;
+        if (i2c_master_bus_add_device(
+                reinterpret_cast<i2c_master_bus_handle_t>(busHandle_), &device, &handle) != ESP_OK) {
+            return false;
+        }
+        deviceHandle_ = handle;
+    }
+
+    const auto device = reinterpret_cast<i2c_master_dev_handle_t>(deviceHandle_);
+    return writeRegister(device, REGISTER_CONFIGURATION, CONFIGURATION_REGISTER_VALUE) &&
+           writeRegister(device, REGISTER_CALIBRATION, calibrationRegisterValue_);
+#else
+    return false;
+#endif
+}
+
+bool INA219Monitor::isSensorPresent() const
+{
+    if (!sensorConfigured_) {
         return false;
     }
 
-    std::uint16_t busVoltageRaw = 0U;
-    std::uint16_t shuntVoltageRaw = 0U;
+    if (USE_SIMULATED_READING) {
+        return true;
+    }
+
+#ifdef ESP_PLATFORM
+    if (!busInitialized_ || busHandle_ == nullptr) {
+        return false;
+    }
+    return i2c_master_probe(
+               reinterpret_cast<i2c_master_bus_handle_t>(busHandle_),
+               INA219_I2C_ADDRESS,
+               I2C_TIMEOUT_MS) == ESP_OK;
+#else
+    return false;
+#endif
+}
+
+bool INA219Monitor::readHardwareMeasurements(LoadMeasurements& measurements) const
+{
+#ifdef ESP_PLATFORM
+    if (!sensorConfigured_ || deviceHandle_ == nullptr || !isSensorPresent()) {
+        return false;
+    }
+
+    const auto device = reinterpret_cast<i2c_master_dev_handle_t>(deviceHandle_);
+    std::uint16_t busRaw = 0U;
     std::uint16_t currentRaw = 0U;
-    std::uint16_t powerRaw = 0U;
 
-    if (!readRegister(*sensor, REGISTER_BUS_VOLTAGE, busVoltageRaw)) {
-        ESP_LOGW(TAG, "Sensor 0x%02X did not respond while reading the Bus Voltage register",
-                 static_cast<unsigned int>(i2cAddress));
+    if (!readRegister(device, REGISTER_BUS_VOLTAGE, busRaw) ||
+        !readRegister(device, REGISTER_CURRENT, currentRaw) ||
+        (busRaw & BUS_VOLTAGE_OVERFLOW_FLAG) != 0U) {
         return false;
     }
 
-    if ((busVoltageRaw & BUS_VOLTAGE_OVERFLOW_FLAG) != 0U) {
-        ESP_LOGW(TAG, "Sensor 0x%02X reports a math overflow; discarding this reading",
-                 static_cast<unsigned int>(i2cAddress));
+    const auto signedCurrent = static_cast<std::int16_t>(currentRaw);
+    LoadMeasurements raw{};
+    raw.voltageVolts = static_cast<float>(busRaw >> 3U) * BUS_VOLTAGE_LSB_VOLTS;
+    raw.currentAmps = static_cast<float>(signedCurrent) * currentLsbAmps_;
+    raw.powerWatts = raw.voltageVolts * raw.currentAmps;
+
+    if (!std::isfinite(raw.voltageVolts) || !std::isfinite(raw.currentAmps) || !std::isfinite(raw.powerWatts)) {
         return false;
     }
 
-    if (!readRegister(*sensor, REGISTER_SHUNT_VOLTAGE, shuntVoltageRaw)) {
-        ESP_LOGW(TAG, "Sensor 0x%02X did not respond while reading the Shunt Voltage register",
-                 static_cast<unsigned int>(i2cAddress));
-        return false;
-    }
-
-    const float shuntVoltageVolts = std::fabs(
-        static_cast<float>(static_cast<std::int16_t>(shuntVoltageRaw)) * SHUNT_VOLTAGE_LSB_VOLTS);
-
-    if (shuntVoltageVolts >= MAXIMUM_SHUNT_VOLTAGE_VOLTS) {
-        ESP_LOGW(TAG, "Sensor 0x%02X shunt voltage is at its measurable limit; discarding this reading",
-                 static_cast<unsigned int>(i2cAddress));
-        return false;
-    }
-
-    if (!readRegister(*sensor, REGISTER_CURRENT, currentRaw) ||
-        !readRegister(*sensor, REGISTER_POWER, powerRaw)) {
-        ESP_LOGW(TAG, "Sensor 0x%02X did not respond while reading the Current/Power registers",
-                 static_cast<unsigned int>(i2cAddress));
-        return false;
-    }
-
-    LoadMeasurements rawMeasurements{};
-    rawMeasurements.voltageVolts = static_cast<float>(busVoltageRaw >> 3) * BUS_VOLTAGE_LSB_VOLTS;
-    rawMeasurements.currentAmps = static_cast<float>(static_cast<std::int16_t>(currentRaw)) * sensor->currentLsbAmps;
-    rawMeasurements.powerWatts = static_cast<float>(powerRaw) * sensor->powerLsbWatts;
-
-    measurements = applyCalibration(rawMeasurements, sensor->calibration);
-    sensor->lastMeasurementSource = MeasurementSource::HARDWARE;
-
-    ESP_LOGI(TAG, "SENSOR_SAMPLE source=HARDWARE i2c=0x%02X V=%.3fV I=%.3fA P=%.3fW",
-             static_cast<unsigned int>(i2cAddress),
-             static_cast<double>(measurements.voltageVolts),
-             static_cast<double>(measurements.currentAmps),
-             static_cast<double>(measurements.powerWatts));
-
+    measurements = raw;
     return true;
 #else
-    (void)i2cAddress;
     (void)measurements;
     return false;
-#endif // ESP_PLATFORM
+#endif
 }
 
-
-MeasurementSource INA219Monitor::getLastMeasurementSource(std::uint8_t i2cAddress) const
+LoadMeasurements INA219Monitor::applyCalibration(const LoadMeasurements& raw, const Calibration& calibration)
 {
-    const RegisteredSensor* sensor = findSensor(i2cAddress);
-    return sensor != nullptr ? sensor->lastMeasurementSource : MeasurementSource::NONE;
+    LoadMeasurements corrected{};
+    corrected.voltageVolts = raw.voltageVolts + calibration.voltageOffsetVolts;
+    corrected.currentAmps = (raw.currentAmps + calibration.currentOffsetAmps) * calibration.currentScaleFactor;
+    corrected.powerWatts = corrected.voltageVolts * corrected.currentAmps;
+    return corrected;
 }
 
-
-bool INA219Monitor::readMeasurementsForRelayPin(std::uint8_t relayPin, LoadMeasurements& measurements) const
+bool INA219Monitor::readMeasurements(LoadMeasurements& measurements) const
 {
-    const INA219SensorConfiguration* sensorConfiguration = findSensorByRelayPin(relayPin);
-    if (sensorConfiguration == nullptr) {
+    if (!sensorConfigured_) {
         return false;
     }
 
-    return readMeasurements(sensorConfiguration->i2cAddress, measurements);
-}
-
-
-bool INA219Monitor::readFilteredMeasurements(std::uint8_t i2cAddress, LoadMeasurements& filteredMeasurements)
-{
-    RegisteredSensor* sensor = findMutableSensor(i2cAddress);
-    if (sensor == nullptr) {
-        return false;
-    }
-
-    LoadMeasurements rawMeasurements{};
-    if (!readMeasurements(i2cAddress, rawMeasurements)) {
-        return false;
-    }
-
-    if (!sensor->hasFilteredMeasurement) {
-        /* First successful reading seeds the filter: P_bar(0) = P(0). */
-        sensor->filteredMeasurements = rawMeasurements;
-        sensor->hasFilteredMeasurement = true;
+    LoadMeasurements raw{};
+    if (USE_SIMULATED_READING) {
+        raw = SIMULATED_READING;
+        lastMeasurementSource_ = MeasurementSource::SIMULATED;
     } else {
-        sensor->filteredMeasurements = applyExponentialMovingAverage(
-            sensor->filteredMeasurements, rawMeasurements, sensor->configuration.emaAlpha);
+        if (!readHardwareMeasurements(raw)) {
+            return false;
+        }
+        lastMeasurementSource_ = MeasurementSource::HARDWARE;
     }
 
-    filteredMeasurements = sensor->filteredMeasurements;
+    const LoadMeasurements corrected = applyCalibration(raw, calibration_);
+    if (!std::isfinite(corrected.voltageVolts) || !std::isfinite(corrected.currentAmps) ||
+        !std::isfinite(corrected.powerWatts)) {
+        return false;
+    }
+
+    measurements = corrected;
     return true;
 }
 
-
-bool INA219Monitor::readFilteredMeasurementsForRelayPin(std::uint8_t relayPin, LoadMeasurements& filteredMeasurements)
+LoadMeasurements INA219Monitor::applyExponentialMovingAverage(
+    const LoadMeasurements& previous,
+    const LoadMeasurements& current,
+    float alpha)
 {
-    const INA219SensorConfiguration* sensorConfiguration = findSensorByRelayPin(relayPin);
-    if (sensorConfiguration == nullptr) {
+    const float a = std::max(0.0F, std::min(alpha, 1.0F));
+    const float b = 1.0F - a;
+    return LoadMeasurements{
+        (a * current.voltageVolts) + (b * previous.voltageVolts),
+        (a * current.currentAmps) + (b * previous.currentAmps),
+        (a * current.powerWatts) + (b * previous.powerWatts)};
+}
+
+bool INA219Monitor::readFilteredMeasurements(LoadMeasurements& measurements)
+{
+    LoadMeasurements current{};
+    if (!readMeasurements(current)) {
         return false;
     }
 
-    return readFilteredMeasurements(sensorConfiguration->i2cAddress, filteredMeasurements);
+    filteredMeasurements_ = hasFilteredMeasurement_
+        ? applyExponentialMovingAverage(filteredMeasurements_, current, configuration_.emaAlpha)
+        : current;
+    hasFilteredMeasurement_ = true;
+    measurements = filteredMeasurements_;
+    return true;
 }
 
-
-LoadMeasurements INA219Monitor::applyExponentialMovingAverage(
-    const LoadMeasurements& previousFilteredMeasurements,
-    const LoadMeasurements& newRawMeasurements,
-    float alpha)
+MeasurementSource INA219Monitor::getLastMeasurementSource() const
 {
-    const float clampedAlpha = std::isfinite(alpha) ? std::max(0.0F, std::min(alpha, 1.0F)) : 1.0F;
-
-    /* P_bar(t) = alpha P(t) + (1 - alpha) P_bar(t-1). */
-    LoadMeasurements filtered{};
-    filtered.voltageVolts =
-        (clampedAlpha * newRawMeasurements.voltageVolts) +
-        ((1.0F - clampedAlpha) * previousFilteredMeasurements.voltageVolts);
-    filtered.currentAmps =
-        (clampedAlpha * newRawMeasurements.currentAmps) +
-        ((1.0F - clampedAlpha) * previousFilteredMeasurements.currentAmps);
-    filtered.powerWatts =
-        (clampedAlpha * newRawMeasurements.powerWatts) +
-        ((1.0F - clampedAlpha) * previousFilteredMeasurements.powerWatts);
-
-    return filtered;
+    return lastMeasurementSource_;
 }
 
-
-bool INA219Monitor::isValidCalibration(const INA219Calibration& calibration)
+bool INA219Monitor::isValidCalibration(const Calibration& calibration)
 {
     return std::isfinite(calibration.voltageOffsetVolts) &&
            std::isfinite(calibration.currentOffsetAmps) &&
@@ -588,309 +370,76 @@ bool INA219Monitor::isValidCalibration(const INA219Calibration& calibration)
            calibration.currentScaleFactor > 0.0F;
 }
 
-
-LoadMeasurements INA219Monitor::applyCalibration(
-    const LoadMeasurements& rawMeasurements,
-    const INA219Calibration& calibration)
+bool INA219Monitor::setCalibration(const Calibration& calibration)
 {
-    LoadMeasurements corrected{};
-    corrected.voltageVolts = rawMeasurements.voltageVolts + calibration.voltageOffsetVolts;
-    corrected.currentAmps = (rawMeasurements.currentAmps + calibration.currentOffsetAmps) * calibration.currentScaleFactor;
-
-    /*
-     * Power is recomputed from the corrected voltage/current rather than
-     * scaling the sensor's own raw Power register, since an offset/scale
-     * correction on V or I alone would otherwise leave power silently
-     * uncorrected.
-     */
-    corrected.powerWatts = corrected.voltageVolts * corrected.currentAmps;
-
-    return corrected;
-}
-
-
-bool INA219Monitor::setCalibration(std::uint8_t i2cAddress, const INA219Calibration& calibration)
-{
-    RegisteredSensor* sensor = findMutableSensor(i2cAddress);
-    if (sensor == nullptr) {
-#ifdef ESP_PLATFORM
-        ESP_LOGW(TAG, "Cannot set calibration for 0x%02X: not registered", static_cast<unsigned int>(i2cAddress));
-#endif
+    if (!sensorConfigured_ || !isValidCalibration(calibration)) {
         return false;
     }
-
-    if (!isValidCalibration(calibration)) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(TAG, "Rejected calibration for 0x%02X: voltageOffset=%.4f currentOffset=%.4f currentScale=%.4f",
-                 static_cast<unsigned int>(i2cAddress),
-                 static_cast<double>(calibration.voltageOffsetVolts),
-                 static_cast<double>(calibration.currentOffsetAmps),
-                 static_cast<double>(calibration.currentScaleFactor));
-#endif
-        return false;
-    }
-
-    sensor->calibration = calibration;
-
-#ifdef ESP_PLATFORM
-    const bool persisted = persistCalibration(*sensor);
-    ESP_LOGI(TAG, "Calibration set for 0x%02X: voltageOffset=%.4fV currentOffset=%.4fA currentScale=%.4f persisted=%s",
-             static_cast<unsigned int>(i2cAddress),
-             static_cast<double>(calibration.voltageOffsetVolts),
-             static_cast<double>(calibration.currentOffsetAmps),
-             static_cast<double>(calibration.currentScaleFactor),
-             persisted ? "Yes" : "No");
-#else
-    persistCalibration(*sensor);
-#endif
-
-    return true;
+    calibration_ = calibration;
+    return persistCalibration();
 }
 
-
-bool INA219Monitor::getCalibration(std::uint8_t i2cAddress, INA219Calibration& calibration) const
+INA219Monitor::Calibration INA219Monitor::getCalibration() const
 {
-    const RegisteredSensor* sensor = findSensor(i2cAddress);
-    if (sensor == nullptr) {
-        return false;
-    }
-
-    calibration = sensor->calibration;
-    return true;
+    return calibration_;
 }
 
-
-bool INA219Monitor::loadPersistedCalibration(RegisteredSensor& sensor)
+bool INA219Monitor::loadPersistedCalibration()
 {
 #ifdef ESP_PLATFORM
     nvs_handle_t handle = 0;
-    esp_err_t result = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (result != ESP_OK) {
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
         return false;
     }
 
-    INA219Calibration restored{0.0F, 0.0F, 1.0F};
-    char key[16] = {};
-    bool everyFieldFound = true;
-
-    auto readFloatField = [&](char fieldTag, float& value) {
-        makeCalibrationNvsKey(key, fieldTag, sensor.configuration.i2cAddress);
-        std::uint32_t rawBits = 0U;
-        const esp_err_t fieldResult = nvs_get_u32(handle, key, &rawBits);
-        if (fieldResult != ESP_OK) {
-            everyFieldFound = false;
-            return;
-        }
-        std::memcpy(&value, &rawBits, sizeof(value));
-    };
-
-    readFloatField('v', restored.voltageOffsetVolts);
-    readFloatField('i', restored.currentOffsetAmps);
-    readFloatField('s', restored.currentScaleFactor);
-
+    Calibration restored{};
+    const bool ok = readFloat(handle, NVS_KEY_VOLTAGE_OFFSET, restored.voltageOffsetVolts) &&
+                    readFloat(handle, NVS_KEY_CURRENT_OFFSET, restored.currentOffsetAmps) &&
+                    readFloat(handle, NVS_KEY_CURRENT_SCALE, restored.currentScaleFactor) &&
+                    isValidCalibration(restored);
     nvs_close(handle);
 
-    if (!everyFieldFound) {
-        return false;
+    if (ok) {
+        calibration_ = restored;
     }
-
-    if (!isValidCalibration(restored)) {
-        ESP_LOGW(TAG, "Discarding corrupt persisted calibration for 0x%02X",
-                 static_cast<unsigned int>(sensor.configuration.i2cAddress));
-        return false;
-    }
-
-    sensor.calibration = restored;
-    ESP_LOGI(TAG, "Restored persisted calibration for 0x%02X: voltageOffset=%.4fV currentOffset=%.4fA currentScale=%.4f",
-             static_cast<unsigned int>(sensor.configuration.i2cAddress),
-             static_cast<double>(restored.voltageOffsetVolts),
-             static_cast<double>(restored.currentOffsetAmps),
-             static_cast<double>(restored.currentScaleFactor));
-    return true;
+    return ok;
 #else
-    (void)sensor;
     return false;
 #endif
 }
 
-
-bool INA219Monitor::persistCalibration(const RegisteredSensor& sensor) const
+bool INA219Monitor::persistCalibration() const
 {
 #ifdef ESP_PLATFORM
     nvs_handle_t handle = 0;
-    esp_err_t result = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Could not open NVS to persist calibration for 0x%02X: %s",
-                 static_cast<unsigned int>(sensor.configuration.i2cAddress), esp_err_to_name(result));
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         return false;
     }
 
-    char key[16] = {};
-    bool everyFieldWritten = true;
-
-    auto writeFloatField = [&](char fieldTag, float value) {
-        makeCalibrationNvsKey(key, fieldTag, sensor.configuration.i2cAddress);
-        std::uint32_t rawBits = 0U;
-        std::memcpy(&rawBits, &value, sizeof(value));
-        if (nvs_set_u32(handle, key, rawBits) != ESP_OK) {
-            everyFieldWritten = false;
-        }
-    };
-
-    writeFloatField('v', sensor.calibration.voltageOffsetVolts);
-    writeFloatField('i', sensor.calibration.currentOffsetAmps);
-    writeFloatField('s', sensor.calibration.currentScaleFactor);
-
-    if (everyFieldWritten) {
-        result = nvs_commit(handle);
-        everyFieldWritten = (result == ESP_OK);
-    }
-
+    const bool wrote = writeFloat(handle, NVS_KEY_VOLTAGE_OFFSET, calibration_.voltageOffsetVolts) &&
+                       writeFloat(handle, NVS_KEY_CURRENT_OFFSET, calibration_.currentOffsetAmps) &&
+                       writeFloat(handle, NVS_KEY_CURRENT_SCALE, calibration_.currentScaleFactor);
+    const bool committed = wrote && nvs_commit(handle) == ESP_OK;
     nvs_close(handle);
-    return everyFieldWritten;
+    return committed;
 #else
-    (void)sensor;
-    return false;
+    return true;
 #endif
 }
-
 
 void INA219Monitor::printDiagnosticReport() const
 {
 #ifdef ESP_PLATFORM
-    ESP_LOGI(TAG, "INA219 DEVICES");
-    ESP_LOGI(TAG, "--------------------------------------------------------------");
-    ESP_LOGI(TAG, "%-9s %-11s %-12s %-9s %-9s %-9s", "Address", "Relay Pin", "Status", "Voltage", "Current", "Power");
-
-    for (const RegisteredSensor& sensor : sensors_) {
-        const unsigned int i2cAddress = static_cast<unsigned int>(sensor.configuration.i2cAddress);
-        const unsigned int relayPin = static_cast<unsigned int>(sensor.configuration.relayPin);
-
-        if (!isSensorPresent(sensor.configuration.i2cAddress)) {
-            ESP_LOGI(TAG, "0x%02X      %-11u NOT FOUND", i2cAddress, relayPin);
-            continue;
-        }
-
-        LoadMeasurements measurements{};
-        if (readMeasurements(sensor.configuration.i2cAddress, measurements)) {
-            ESP_LOGI(TAG, "0x%02X      %-11u FOUND        %6.2f V  %6.2f A  %6.2f W",
-                     i2cAddress, relayPin,
-                     static_cast<double>(measurements.voltageVolts),
-                     static_cast<double>(measurements.currentAmps),
-                     static_cast<double>(measurements.powerWatts));
-        } else {
-            ESP_LOGI(TAG, "0x%02X      %-11u FOUND        READ FAILED", i2cAddress, relayPin);
-        }
+    LoadMeasurements measurements{};
+    const bool ok = readMeasurements(measurements);
+    ESP_LOGI(TAG, "Sensor: %s source=%s", ok ? "READY" : "NOT READY", toText(lastMeasurementSource_));
+    if (ok) {
+        ESP_LOGI(TAG, "Battery: %.2f V  %.2f A  %.2f W",
+                 static_cast<double>(measurements.voltageVolts),
+                 static_cast<double>(measurements.currentAmps),
+                 static_cast<double>(measurements.powerWatts));
     }
-
-    ESP_LOGI(TAG, "--------------------------------------------------------------");
 #endif
 }
-
-
-bool INA219Monitor::configureSensorHardware(RegisteredSensor& sensor)
-{
-#ifdef ESP_PLATFORM
-    if (!busInitialized_) {
-        ESP_LOGE(TAG, "Cannot configure sensor 0x%02X: I2C bus has not been initialised",
-                 static_cast<unsigned int>(sensor.configuration.i2cAddress));
-        return false;
-    }
-
-    i2c_device_config_t deviceConfig{};
-    deviceConfig.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-    deviceConfig.device_address = sensor.configuration.i2cAddress;
-    deviceConfig.scl_speed_hz = busClockSpeedHz_;
-
-    i2c_master_dev_handle_t deviceHandle = nullptr;
-    const esp_err_t addResult = i2c_master_bus_add_device(
-        reinterpret_cast<i2c_master_bus_handle_t>(busHandle_), &deviceConfig, &deviceHandle);
-
-    if (addResult != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add I2C device 0x%02X to the bus: %s",
-                 static_cast<unsigned int>(sensor.configuration.i2cAddress), esp_err_to_name(addResult));
-        return false;
-    }
-
-    sensor.deviceHandle = deviceHandle;
-
-    if (!writeRegister(sensor, REGISTER_CONFIGURATION, CONFIGURATION_REGISTER_VALUE)) {
-        ESP_LOGE(TAG, "Sensor 0x%02X did not acknowledge the Configuration register",
-                 static_cast<unsigned int>(sensor.configuration.i2cAddress));
-        return false;
-    }
-
-    if (!writeRegister(sensor, REGISTER_CALIBRATION, sensor.calibrationRegisterValue)) {
-        ESP_LOGE(TAG, "Sensor 0x%02X did not acknowledge the Calibration register",
-                 static_cast<unsigned int>(sensor.configuration.i2cAddress));
-        return false;
-    }
-
-    return true;
-#else
-    (void)sensor;
-    return false;
-#endif
-}
-
-
-bool INA219Monitor::writeRegister(const RegisteredSensor& sensor, std::uint8_t registerAddress, std::uint16_t value) const
-{
-#ifdef ESP_PLATFORM
-    if (sensor.deviceHandle == nullptr) {
-        return false;
-    }
-
-    const std::uint8_t writeBuffer[3] = {
-        registerAddress,
-        static_cast<std::uint8_t>((value >> 8) & 0xFFU),
-        static_cast<std::uint8_t>(value & 0xFFU)
-    };
-
-    const esp_err_t result = i2c_master_transmit(
-        reinterpret_cast<i2c_master_dev_handle_t>(sensor.deviceHandle),
-        writeBuffer, sizeof(writeBuffer),
-        I2C_TRANSACTION_TIMEOUT_MS);
-
-    return result == ESP_OK;
-#else
-    (void)sensor;
-    (void)registerAddress;
-    (void)value;
-    return false;
-#endif
-}
-
-
-bool INA219Monitor::readRegister(const RegisteredSensor& sensor, std::uint8_t registerAddress, std::uint16_t& value) const
-{
-#ifdef ESP_PLATFORM
-    if (sensor.deviceHandle == nullptr) {
-        return false;
-    }
-
-    const std::uint8_t writeBuffer[1] = { registerAddress };
-    std::uint8_t readBuffer[2] = { 0U, 0U };
-
-    const esp_err_t result = i2c_master_transmit_receive(
-        reinterpret_cast<i2c_master_dev_handle_t>(sensor.deviceHandle),
-        writeBuffer, sizeof(writeBuffer),
-        readBuffer, sizeof(readBuffer),
-        I2C_TRANSACTION_TIMEOUT_MS);
-
-    if (result != ESP_OK) {
-        return false;
-    }
-
-    value = static_cast<std::uint16_t>((static_cast<std::uint16_t>(readBuffer[0]) << 8) | readBuffer[1]);
-    return true;
-#else
-    (void)sensor;
-    (void)registerAddress;
-    (void)value;
-    return false;
-#endif
-}
-
 
 } // namespace kilowatts

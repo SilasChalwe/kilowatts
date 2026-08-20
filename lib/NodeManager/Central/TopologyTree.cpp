@@ -6,48 +6,29 @@
 
 namespace kilowatts {
 
-
 namespace {
 
-void appendEscapedJsonString(std::string& out, const std::string& value)
+void appendString(std::string& out, const std::string& value)
 {
     out.push_back('"');
-
     for (char c : value) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20U) {
-                    char escaped[8] = {};
-                    std::snprintf(escaped, sizeof(escaped), "\\u%04x", static_cast<unsigned int>(c));
-                    out += escaped;
-                } else {
-                    out.push_back(c);
-                }
-                break;
+        if (c == '"' || c == '\\') {
+            out.push_back('\\');
         }
+        out.push_back(c);
     }
-
     out.push_back('"');
 }
 
 } // namespace
 
-
-void TopologyTree::appendMacAddressJson(std::string& out, const Load::MacAddress& macAddress)
+void TopologyTree::appendMacAddressJson(std::string& out, const Load::MacAddress& mac)
 {
-    char text[18] = {};
+    char text[18]{};
     std::snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
-                  macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5]);
-    out += "\"";
-    out += text;
-    out += "\"";
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    appendString(out, text);
 }
-
 
 const char* TopologyTree::loadModeText(LoadMode::Value mode)
 {
@@ -56,10 +37,9 @@ const char* TopologyTree::loadModeText(LoadMode::Value mode)
         case LoadMode::Value::FIXED_ON: return "FIXED_ON";
         case LoadMode::Value::AUTO_OFF: return "AUTO_OFF";
         case LoadMode::Value::AUTO_ON: return "AUTO_ON";
-        default: return "UNKNOWN";
     }
+    return "UNKNOWN";
 }
-
 
 const char* TopologyTree::loadHealthText(LoadHealth health)
 {
@@ -67,10 +47,9 @@ const char* TopologyTree::loadHealthText(LoadHealth health)
         case LoadHealth::AVAILABLE: return "AVAILABLE";
         case LoadHealth::FAULTED: return "FAULTED";
         case LoadHealth::UNAVAILABLE: return "UNAVAILABLE";
-        default: return "UNKNOWN";
     }
+    return "UNKNOWN";
 }
-
 
 const char* TopologyTree::rejectionReasonText(std::uint8_t reason)
 {
@@ -80,25 +59,26 @@ const char* TopologyTree::rejectionReasonText(std::uint8_t reason)
         case BestFirstSearch::POWER_LIMIT_EXCEEDED: return "POWER_LIMIT_EXCEEDED";
         case BestFirstSearch::BATTERY_CURRENT_LIMIT: return "BATTERY_CURRENT_LIMIT";
         case BestFirstSearch::MAIN_LIMIT_EXCEEDED: return "MAIN_LIMIT_EXCEEDED";
-        case BestFirstSearch::BRANCH_LIMIT_EXCEEDED: return "BRANCH_LIMIT_EXCEEDED";
-        default: return "UNKNOWN";
     }
+    return "UNKNOWN";
 }
 
-
-void TopologyTree::appendLoadJson(std::string& out, const Load& load)
+void TopologyTree::appendLoadJson(
+    std::string& out,
+    const Load& load,
+    const std::string& branchName)
 {
     const LoadPower power = load.getPower();
     const LoadElectricalRatings ratings = load.getElectricalRatings();
     const AutoSchedule schedule = load.getSchedule();
 
-    out += "{";
-    out += "\"relayPin\":";
-    out += std::to_string(static_cast<unsigned int>(load.getRelayPin()));
-    out += ",\"name\":";
-    appendEscapedJsonString(out, load.getName());
+    out += "{\"name\":";
+    appendString(out, load.getName());
+    out += ",\"branchName\":";
+    appendString(out, branchName);
     out += ",\"nodeMac\":";
     appendMacAddressJson(out, load.getMacAddress());
+    out += ",\"relayPin\":" + std::to_string(static_cast<unsigned int>(load.getRelayPin()));
     out += ",\"mode\":\"";
     out += loadModeText(load.getMode());
     out += "\",\"targetOn\":";
@@ -107,160 +87,122 @@ void TopologyTree::appendLoadJson(std::string& out, const Load& load)
     out += load.getConfirmedRelayState() ? "true" : "false";
     out += ",\"confirmedStateValid\":";
     out += load.isConfirmedRelayStateValid() ? "true" : "false";
-    out += ",\"priority\":";
-    out += std::to_string(static_cast<unsigned int>(load.getPriority()));
+    out += ",\"health\":\"";
+    out += loadHealthText(load.getHealth());
+    out += "\",\"priority\":" + std::to_string(static_cast<unsigned int>(load.getPriority()));
+    out += ",\"runningWatts\":" + std::to_string(static_cast<double>(power.runningWatts));
     out += ",\"startupWatts\":" + std::to_string(static_cast<double>(power.startupWatts));
     out += ",\"nominalVoltageVolts\":" + std::to_string(static_cast<double>(ratings.nominalVoltageVolts));
     out += ",\"nominalCurrentAmps\":" + std::to_string(static_cast<double>(ratings.nominalCurrentAmps));
-    out += ",\"nominalPowerWatts\":" + std::to_string(static_cast<double>(power.runningWatts));
-    out += ",\"perLoadMeasurementAvailable\":false";
-    out += ",\"scheduleEnabled\":";
+    out += ",\"schedule\":{\"enabled\":";
     out += schedule.enabled ? "true" : "false";
-    out += ",\"scheduleHour\":" + std::to_string(static_cast<unsigned int>(schedule.hour));
-    out += ",\"scheduleMinute\":" + std::to_string(static_cast<unsigned int>(schedule.minute));
-    out += ",\"health\":\"";
-    out += loadHealthText(load.getHealth());
-    out += "\",\"rejectionReason\":\"";
+    out += ",\"hour\":" + std::to_string(static_cast<unsigned int>(schedule.hour));
+    out += ",\"minute\":" + std::to_string(static_cast<unsigned int>(schedule.minute));
+    out += "},\"bestFirstRejectionReason\":\"";
     out += rejectionReasonText(load.getLastBestFirstRejectionReason());
     out += "\"}";
 }
 
-
-void TopologyTree::appendBranchesForNode(std::string& out, const CentralNodeRegistry::PlanningNode& planningNode)
+void TopologyTree::appendLoadsForBranch(
+    std::string& out,
+    const CentralNodeRegistry::PlanningNode& branch)
 {
-    out += "\"branches\":[";
-
-    for (std::size_t i = 0U; i < planningNode.node.getNumberOfLoads(); ++i) {
-        const Load* load = planningNode.node.getLoad(i);
+    out += "\"loads\":[";
+    bool first = true;
+    for (std::size_t index = 0U; index < branch.node.getNumberOfLoads(); ++index) {
+        const Load* load = branch.node.getLoad(index);
         if (load == nullptr) {
             continue;
         }
-
-        if (i > 0U) {
+        if (!first) {
             out += ",";
         }
-
-        float maximumCurrentAmps = 0.0F;
-        bool hasBranchConfiguration = false;
-        for (const CentralNodeRegistry::BranchConfiguration& branch : planningNode.branchConfigurations) {
-            if (branch.relayPin == load->getRelayPin()) {
-                maximumCurrentAmps = branch.maximumCurrentAmps;
-                hasBranchConfiguration = true;
-                break;
-            }
-        }
-
-        out += "{\"type\":\"branch\",\"nodeMac\":";
-        appendMacAddressJson(out, planningNode.node.getMacAddress());
-        out += ",\"relayPin\":" + std::to_string(static_cast<unsigned int>(load->getRelayPin()));
-        out += ",\"maximumCurrentAmps\":" + std::to_string(static_cast<double>(maximumCurrentAmps));
-        out += ",\"maximumCurrentConfigured\":";
-        out += hasBranchConfiguration ? "true" : "false";
-        out += ",\"load\":";
-        appendLoadJson(out, *load);
-        out += "}";
+        first = false;
+        appendLoadJson(out, *load, branch.nodeName);
     }
-
     out += "]";
 }
-
 
 void TopologyTree::appendDiagnosticsJson(
     std::string& out,
     const NodeCommissioningRegistry& commissioningRegistry,
-    const Load::MacAddress& nodeMacAddress)
+    const Load::MacAddress& mac)
 {
-    const NodeCommissioningRegistry::CommissioningRecord* record =
-        commissioningRegistry.findByMac(nodeMacAddress);
-
+    const NodeCommissioningRegistry::CommissioningRecord* record = commissioningRegistry.findByMac(mac);
     out += "\"diagnostics\":";
     if (record == nullptr) {
         out += "null";
         return;
     }
 
-    const NodeCommissioningRegistry::Diagnostics& diagnostics = record->diagnostics;
-
-    out += "{\"firmware_version\":";
-    appendEscapedJsonString(out, std::string(record->firmwareVersion));
-    out += ",\"chip_model\":";
-    appendEscapedJsonString(out, std::string(record->chipModel));
-    out += ",\"silicon_revision\":" + std::to_string(static_cast<unsigned int>(diagnostics.siliconRevision));
-    out += ",\"cpu_cores\":" + std::to_string(static_cast<unsigned int>(diagnostics.cpuCores));
-    out += ",\"flash_size_bytes\":" + std::to_string(static_cast<unsigned long>(diagnostics.flashSizeBytes));
-    out += ",\"psram_size_bytes\":" + std::to_string(static_cast<unsigned long>(diagnostics.psramSizeBytes));
-    out += ",\"free_heap_bytes\":" + std::to_string(static_cast<unsigned long>(diagnostics.freeHeapBytes));
-    out += ",\"min_free_heap_bytes\":" + std::to_string(static_cast<unsigned long>(diagnostics.minFreeHeapBytes));
-    out += ",\"reset_reason\":";
-    appendEscapedJsonString(out, std::string(diagnostics.resetReason));
+    const auto& d = record->diagnostics;
+    out += "{\"firmwareVersion\":";
+    appendString(out, record->firmwareVersion);
+    out += ",\"chipModel\":";
+    appendString(out, record->chipModel);
+    out += ",\"freeHeapBytes\":" + std::to_string(d.freeHeapBytes);
+    out += ",\"minFreeHeapBytes\":" + std::to_string(d.minFreeHeapBytes);
+    out += ",\"flashSizeBytes\":" + std::to_string(d.flashSizeBytes);
+    out += ",\"psramSizeBytes\":" + std::to_string(d.psramSizeBytes);
+    out += ",\"cpuCores\":" + std::to_string(static_cast<unsigned int>(d.cpuCores));
+    out += ",\"resetReason\":";
+    appendString(out, d.resetReason);
     out += "}";
 }
 
-
-void TopologyTree::appendNodeAndChildren(
+void TopologyTree::appendChildren(
     std::string& out,
     const CentralNodeRegistry& registry,
     const NodeCommissioningRegistry& commissioningRegistry,
-    const Load::MacAddress& nodeMacAddress,
+    const Load::MacAddress& parentMac,
     std::uint32_t nowMilliseconds,
     std::uint32_t onlineTimeoutMilliseconds,
-    std::size_t remainingDepthGuard)
+    std::size_t depthRemaining)
 {
     out += "\"children\":[";
+    bool first = true;
 
-    bool firstChild = true;
-
-    for (std::size_t i = 0U; i < registry.getNumberOfNodes(); ++i) {
-        const CentralNodeRegistry::PlanningNode* planningNode = registry.getNode(i);
-        if (planningNode == nullptr || planningNode->isCentralNode) {
+    for (std::size_t index = 0U; index < registry.getNumberOfNodes(); ++index) {
+        const auto* branch = registry.getNode(index);
+        if (branch == nullptr || branch->isCentralNode ||
+            branch->nextHopToCentralMacAddress != parentMac) {
             continue;
         }
 
-        if (planningNode->nextHopToCentralMacAddress != nodeMacAddress) {
-            continue;
-        }
-
-        if (!firstChild) {
+        if (!first) {
             out += ",";
         }
-        firstChild = false;
+        first = false;
 
-        const std::uint32_t elapsedMilliseconds = nowMilliseconds - planningNode->lastSeenMilliseconds;
-        const bool online = elapsedMilliseconds <= onlineTimeoutMilliseconds;
+        const bool online =
+            (nowMilliseconds - branch->lastSeenMilliseconds) <= onlineTimeoutMilliseconds;
 
-        out += "{\"type\":\"smartNode\",\"name\":";
-        appendEscapedJsonString(out, planningNode->nodeName);
+        out += "{\"type\":\"branch\",\"nodeRole\":\"SMART\",\"name\":";
+        appendString(out, branch->nodeName);
         out += ",\"mac\":";
-        appendMacAddressJson(out, planningNode->node.getMacAddress());
+        appendMacAddressJson(out, branch->node.getMacAddress());
         out += ",\"parentMac\":";
-        appendMacAddressJson(out, planningNode->nextHopToCentralMacAddress);
-        out += ",\"hopCountToCentral\":" + std::to_string(static_cast<unsigned int>(planningNode->hopCountToCentral));
+        appendMacAddressJson(out, branch->nextHopToCentralMacAddress);
+        out += ",\"hopCountToCentral\":" + std::to_string(branch->hopCountToCentral);
         out += ",\"online\":";
         out += online ? "true" : "false";
         out += ",";
-        appendDiagnosticsJson(out, commissioningRegistry, planningNode->node.getMacAddress());
+        appendDiagnosticsJson(out, commissioningRegistry, branch->node.getMacAddress());
         out += ",";
-        appendBranchesForNode(out, *planningNode);
+        appendLoadsForBranch(out, *branch);
         out += ",";
 
-        /*
-         * A legitimate chain visits every known Node at most once, so
-         * remainingDepthGuard reaching zero can only mean a corrupted
-         * Next-Hop relationship (a routing loop), never a real topology.
-         */
-        if (remainingDepthGuard == 0U) {
-            out += "\"children\":[]";
+        if (depthRemaining > 0U) {
+            appendChildren(out, registry, commissioningRegistry, branch->node.getMacAddress(),
+                           nowMilliseconds, onlineTimeoutMilliseconds, depthRemaining - 1U);
         } else {
-            appendNodeAndChildren(out, registry, commissioningRegistry, planningNode->node.getMacAddress(),
-                                   nowMilliseconds, onlineTimeoutMilliseconds, remainingDepthGuard - 1U);
+            out += "\"children\":[]";
         }
-
         out += "}";
     }
 
     out += "]";
 }
-
 
 std::string TopologyTree::buildTreeJson(
     const CentralNodeRegistry& registry,
@@ -269,76 +211,62 @@ std::string TopologyTree::buildTreeJson(
     std::uint32_t nowMilliseconds,
     std::uint32_t onlineTimeoutMilliseconds)
 {
-    std::string json;
-    json.reserve(1024);
-
-    json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"central\":";
-
     const CentralNodeRegistry::PlanningNode* central = nullptr;
-    for (std::size_t i = 0U; i < registry.getNumberOfNodes(); ++i) {
-        const CentralNodeRegistry::PlanningNode* candidate = registry.getNode(i);
+    for (std::size_t index = 0U; index < registry.getNumberOfNodes(); ++index) {
+        const auto* candidate = registry.getNode(index);
         if (candidate != nullptr && candidate->isCentralNode) {
             central = candidate;
             break;
         }
     }
 
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"central\":";
     if (central == nullptr) {
-        json += "null}";
-        return json;
+        return json + "null}";
     }
 
-    json += "{\"type\":\"central\",\"name\":";
-    appendEscapedJsonString(json, central->nodeName);
+    json += "{\"type\":\"branch\",\"nodeRole\":\"CENTRAL\",\"name\":";
+    appendString(json, central->nodeName);
     json += ",\"mac\":";
     appendMacAddressJson(json, central->node.getMacAddress());
     json += ",\"online\":true,";
     appendDiagnosticsJson(json, commissioningRegistry, central->node.getMacAddress());
     json += ",";
-    appendBranchesForNode(json, *central);
+    appendLoadsForBranch(json, *central);
     json += ",";
-
-    appendNodeAndChildren(json, registry, commissioningRegistry, central->node.getMacAddress(),
-                           nowMilliseconds, onlineTimeoutMilliseconds, registry.getNumberOfNodes());
-
+    appendChildren(json, registry, commissioningRegistry, central->node.getMacAddress(),
+                   nowMilliseconds, onlineTimeoutMilliseconds, registry.getNumberOfNodes());
     json += "}}";
     return json;
 }
 
-
-std::string TopologyTree::buildLoadsJson(const CentralNodeRegistry& registry, std::uint32_t schemaVersion)
+std::string TopologyTree::buildLoadsJson(
+    const CentralNodeRegistry& registry,
+    std::uint32_t schemaVersion)
 {
-    std::string json;
-    json.reserve(1024);
-
-    json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"loads\":[";
-
-    bool firstLoad = true;
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"loads\":[";
+    bool first = true;
 
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
-        const CentralNodeRegistry::PlanningNode* planningNode = registry.getNode(nodeIndex);
-        if (planningNode == nullptr) {
+        const auto* branch = registry.getNode(nodeIndex);
+        if (branch == nullptr) {
             continue;
         }
-
-        for (std::size_t loadIndex = 0U; loadIndex < planningNode->node.getNumberOfLoads(); ++loadIndex) {
-            const Load* load = planningNode->node.getLoad(loadIndex);
+        for (std::size_t loadIndex = 0U; loadIndex < branch->node.getNumberOfLoads(); ++loadIndex) {
+            const Load* load = branch->node.getLoad(loadIndex);
             if (load == nullptr) {
                 continue;
             }
-
-            if (!firstLoad) {
+            if (!first) {
                 json += ",";
             }
-            firstLoad = false;
-
-            appendLoadJson(json, *load);
+            first = false;
+            appendLoadJson(json, *load, branch->nodeName);
         }
     }
 
     json += "]}";
     return json;
 }
-
 
 } // namespace kilowatts

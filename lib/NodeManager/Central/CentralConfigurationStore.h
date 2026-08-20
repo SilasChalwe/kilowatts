@@ -1,9 +1,7 @@
 /**
  * @file CentralConfigurationStore.h
- * @brief Central-owned, installation-specific battery sensor and safety
- *        policy configuration persisted in NVS.
+ * @brief Persists battery and safety settings owned by Central.
  */
-
 #ifndef KILOWATTS_CENTRAL_CONFIGURATION_STORE_H
 #define KILOWATTS_CENTRAL_CONFIGURATION_STORE_H
 
@@ -12,17 +10,14 @@
 namespace kilowatts {
 
 class CentralConfigurationStore {
-
 public:
     struct BatterySensorConfiguration {
         bool configured;
-        std::uint8_t i2cAddress;
         float shuntResistanceOhms;
         float maximumExpectedCurrentAmps;
         float emaAlpha;
         float batteryCapacityAmpHours;
         float initialStateOfChargePercent;
-        /** Installer-entered nameplate voltage (e.g. 12/24/48V), never assumed by firmware. See CentralNodeConfig::NOMINAL_BATTERY_VOLTAGE_VOLTS for the pre-commissioning-only default. */
         float nominalVoltageVolts;
     };
 

@@ -4,74 +4,86 @@
 
 namespace kilowatts {
 
-
 namespace {
 
-void appendEscapedJsonString(std::string& out, const char* value)
+void appendString(std::string& out, const char* value)
 {
     out.push_back('"');
-
-    for (const char* c = value; c != nullptr && *c != '\0'; ++c) {
-        switch (*c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(*c) < 0x20U) {
-                    char escaped[8] = {};
-                    std::snprintf(escaped, sizeof(escaped), "\\u%04x", static_cast<unsigned int>(*c));
-                    out += escaped;
-                } else {
-                    out.push_back(*c);
-                }
-                break;
+    if (value != nullptr) {
+        for (const char* c = value; *c != '\0'; ++c) {
+            if (*c == '"' || *c == '\\') {
+                out.push_back('\\');
+            }
+            out.push_back(*c);
         }
     }
-
     out.push_back('"');
 }
 
-void appendRelayCapabilitiesJson(std::string& out, const NodeCommissioningRegistry::CommissioningRecord& record)
+bool pinIsUsed(const CentralNodeRegistry::PlanningNode* node, std::uint8_t pin)
 {
-    out += "[";
-    for (std::size_t index = 0U; index < record.relayCapabilityCount; ++index) {
-        if (index > 0U) {
-            out += ",";
+    if (node == nullptr) {
+        return false;
+    }
+    for (std::size_t i = 0U; i < node->node.getNumberOfLoads(); ++i) {
+        const Load* load = node->node.getLoad(i);
+        if (load != nullptr && load->getRelayPin() == pin) {
+            return true;
         }
-        out += std::to_string(static_cast<unsigned int>(record.relayPins[index]));
+    }
+    return false;
+}
+
+void appendRelayPins(
+    std::string& out,
+    const NodeCommissioningRegistry::CommissioningRecord& record,
+    const CentralNodeRegistry::PlanningNode* node)
+{
+    out += "\"usedRelayPins\":[";
+    bool first = true;
+    for (std::size_t i = 0U; i < record.relayCapabilityCount; ++i) {
+        const std::uint8_t pin = record.relayPins[i];
+        if (!pinIsUsed(node, pin)) {
+            continue;
+        }
+        if (!first) out += ",";
+        first = false;
+        out += std::to_string(static_cast<unsigned int>(pin));
+    }
+    out += "],\"availableRelayPins\":[";
+    first = true;
+    for (std::size_t i = 0U; i < record.relayCapabilityCount; ++i) {
+        const std::uint8_t pin = record.relayPins[i];
+        if (pinIsUsed(node, pin)) {
+            continue;
+        }
+        if (!first) out += ",";
+        first = false;
+        out += std::to_string(static_cast<unsigned int>(pin));
     }
     out += "]";
 }
 
-
-/**
- * Live runtime facts (see NodeCommissioningRegistry::Diagnostics) - zero-
- * valued until this Node's first IDENTITY_REPORT/self-diagnostics update,
- * same as the in-memory struct itself. temperatureCelsius is only
- * meaningful when temperatureAvailable is true (not every chip target has
- * a temperature sensor peripheral - see ChipInfo::getTemperatureCelsius()).
- */
-void appendDiagnosticsJson(std::string& out, const NodeCommissioningRegistry::Diagnostics& diagnostics)
+void appendDiagnostics(
+    std::string& out,
+    const NodeCommissioningRegistry::Diagnostics& d)
 {
-    char numberBuffer[32] = {};
-
-    out += "{\"freeHeapBytes\":" + std::to_string(diagnostics.freeHeapBytes);
-    out += ",\"minFreeHeapBytes\":" + std::to_string(diagnostics.minFreeHeapBytes);
-    out += ",\"flashSizeBytes\":" + std::to_string(diagnostics.flashSizeBytes);
-    out += ",\"psramSizeBytes\":" + std::to_string(diagnostics.psramSizeBytes);
-    out += ",\"siliconRevision\":" + std::to_string(static_cast<unsigned int>(diagnostics.siliconRevision));
-    out += ",\"cpuCores\":" + std::to_string(static_cast<unsigned int>(diagnostics.cpuCores));
-    out += ",\"cpuFrequencyMhz\":" + std::to_string(diagnostics.cpuFrequencyMhz);
+    out += "{\"freeHeapBytes\":" + std::to_string(d.freeHeapBytes);
+    out += ",\"minFreeHeapBytes\":" + std::to_string(d.minFreeHeapBytes);
+    out += ",\"flashSizeBytes\":" + std::to_string(d.flashSizeBytes);
+    out += ",\"psramSizeBytes\":" + std::to_string(d.psramSizeBytes);
+    out += ",\"siliconRevision\":" + std::to_string(static_cast<unsigned int>(d.siliconRevision));
+    out += ",\"cpuCores\":" + std::to_string(static_cast<unsigned int>(d.cpuCores));
+    out += ",\"cpuFrequencyMhz\":" + std::to_string(d.cpuFrequencyMhz);
     out += ",\"resetReason\":";
-    appendEscapedJsonString(out, diagnostics.resetReason);
+    appendString(out, d.resetReason);
     out += ",\"temperatureAvailable\":";
-    out += diagnostics.temperatureAvailable ? "true" : "false";
+    out += d.temperatureAvailable ? "true" : "false";
     out += ",\"temperatureCelsius\":";
-    if (diagnostics.temperatureAvailable) {
-        std::snprintf(numberBuffer, sizeof(numberBuffer), "%.2f", static_cast<double>(diagnostics.temperatureCelsius));
-        out += numberBuffer;
+    if (d.temperatureAvailable) {
+        char value[24]{};
+        std::snprintf(value, sizeof(value), "%.2f", static_cast<double>(d.temperatureCelsius));
+        out += value;
     } else {
         out += "null";
     }
@@ -80,29 +92,23 @@ void appendDiagnosticsJson(std::string& out, const NodeCommissioningRegistry::Di
 
 } // namespace
 
-
-void NodeRegistryJson::appendMacAddressJson(std::string& out, const MacAddress& macAddress)
+void NodeRegistryJson::appendMacAddressJson(std::string& out, const MacAddress& mac)
 {
-    char text[18] = {};
+    char text[18]{};
     std::snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
-                  macAddress[0], macAddress[1], macAddress[2], macAddress[3], macAddress[4], macAddress[5]);
-    out += "\"";
-    out += text;
-    out += "\"";
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    appendString(out, text);
 }
 
-
-const char* NodeRegistryJson::syncStateText(NodeCommissioningRegistry::SyncState syncState)
+const char* NodeRegistryJson::syncStateText(NodeCommissioningRegistry::SyncState state)
 {
-    switch (syncState) {
+    switch (state) {
         case NodeCommissioningRegistry::SyncState::SYNCED: return "SYNCED";
         case NodeCommissioningRegistry::SyncState::PENDING: return "PENDING";
         case NodeCommissioningRegistry::SyncState::FAILED: return "FAILED";
     }
-
     return "UNKNOWN";
 }
-
 
 std::string NodeRegistryJson::buildStateNodesJson(
     const NodeCommissioningRegistry& commissioningRegistry,
@@ -111,58 +117,51 @@ std::string NodeRegistryJson::buildStateNodesJson(
     std::uint32_t nowMilliseconds,
     std::uint32_t onlineTimeoutMilliseconds)
 {
-    std::string json;
-    json.reserve(512);
-
-    json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"nodes\":[";
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"nodes\":[";
+    bool first = true;
 
     for (std::size_t i = 0U; i < commissioningRegistry.getCount(); ++i) {
-        const NodeCommissioningRegistry::CommissioningRecord* record = commissioningRegistry.getRecord(i);
+        const auto* record = commissioningRegistry.getRecord(i);
         if (record == nullptr) {
             continue;
         }
+        if (!first) json += ",";
+        first = false;
 
-        if (i > 0U) {
-            json += ",";
-        }
+        const auto* planningNode = centralNodeRegistry.findNodeByMacAddress(record->macAddress);
+        const bool isCentral = planningNode != nullptr && planningNode->isCentralNode;
 
         json += "{\"mac\":";
         appendMacAddressJson(json, record->macAddress);
         json += ",\"role\":\"";
         json += toText(record->role);
-        json += "\",\"name\":";
-        appendEscapedJsonString(json, record->friendlyName);
+        json += "\",\"branchName\":";
+        appendString(json, record->friendlyName);
         json += ",\"lifecycleState\":\"";
         json += toText(record->lifecycleState);
         json += "\",\"syncState\":\"";
         json += syncStateText(record->syncState);
         json += "\",\"firmwareVersion\":";
-        appendEscapedJsonString(json, record->firmwareVersion);
+        appendString(json, record->firmwareVersion);
         json += ",\"chipModel\":";
-        appendEscapedJsonString(json, record->chipModel);
-        json += ",\"relayCapabilities\":";
-        appendRelayCapabilitiesJson(json, *record);
+        appendString(json, record->chipModel);
+        json += ",\"loadCount\":" + std::to_string(planningNode != nullptr ? planningNode->node.getNumberOfLoads() : 0U) + ",";
+        appendRelayPins(json, *record, planningNode);
         json += ",\"diagnostics\":";
-        appendDiagnosticsJson(json, record->diagnostics);
-
-        const CentralNodeRegistry::PlanningNode* planningNode =
-            centralNodeRegistry.findNodeByMacAddress(record->macAddress);
+        appendDiagnostics(json, record->diagnostics);
 
         if (planningNode == nullptr) {
-            json += ",\"online\":null,\"hopCountToCentral\":null,\"nextHopMac\":null,\"lastSeenMilliseconds\":null";
-        } else if (planningNode->isCentralNode) {
+            json += ",\"online\":null,\"hopCountToCentral\":null,\"nextHopMac\":null";
+        } else if (isCentral) {
             json += ",\"online\":true,\"hopCountToCentral\":0,\"nextHopMac\":null";
-            json += ",\"lastSeenMilliseconds\":" + std::to_string(planningNode->lastSeenMilliseconds);
         } else {
-            const std::uint32_t elapsedMilliseconds = nowMilliseconds - planningNode->lastSeenMilliseconds;
-            const bool online = elapsedMilliseconds <= onlineTimeoutMilliseconds;
-
+            const bool online =
+                (nowMilliseconds - planningNode->lastSeenMilliseconds) <= onlineTimeoutMilliseconds;
             json += ",\"online\":";
             json += online ? "true" : "false";
-            json += ",\"hopCountToCentral\":" + std::to_string(static_cast<unsigned int>(planningNode->hopCountToCentral));
+            json += ",\"hopCountToCentral\":" + std::to_string(planningNode->hopCountToCentral);
             json += ",\"nextHopMac\":";
             appendMacAddressJson(json, planningNode->nextHopToCentralMacAddress);
-            json += ",\"lastSeenMilliseconds\":" + std::to_string(planningNode->lastSeenMilliseconds);
         }
 
         json += "}";
@@ -171,49 +170,40 @@ std::string NodeRegistryJson::buildStateNodesJson(
     json += "]}";
     return json;
 }
-
 
 std::string NodeRegistryJson::buildConfigNodesJson(
     const NodeCommissioningRegistry& commissioningRegistry,
+    const CentralNodeRegistry& centralNodeRegistry,
     std::uint32_t schemaVersion)
 {
-    std::string json;
-    json.reserve(256);
-
-    json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"nodes\":[";
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"nodes\":[";
+    bool first = true;
 
     for (std::size_t i = 0U; i < commissioningRegistry.getCount(); ++i) {
-        const NodeCommissioningRegistry::CommissioningRecord* record = commissioningRegistry.getRecord(i);
+        const auto* record = commissioningRegistry.getRecord(i);
         if (record == nullptr) {
             continue;
         }
+        if (!first) json += ",";
+        first = false;
 
-        if (i > 0U) {
-            json += ",";
-        }
+        const auto* planningNode = centralNodeRegistry.findNodeByMacAddress(record->macAddress);
 
         json += "{\"mac\":";
         appendMacAddressJson(json, record->macAddress);
         json += ",\"role\":\"";
         json += toText(record->role);
-        json += "\",\"name\":";
-        appendEscapedJsonString(json, record->friendlyName);
+        json += "\",\"branchName\":";
+        appendString(json, record->friendlyName);
         json += ",\"lifecycleState\":\"";
         json += toText(record->lifecycleState);
-        json += "\",\"syncState\":\"";
-        json += syncStateText(record->syncState);
-        json += "\",\"firmwareVersion\":";
-        appendEscapedJsonString(json, record->firmwareVersion);
-        json += ",\"chipModel\":";
-        appendEscapedJsonString(json, record->chipModel);
-        json += ",\"relayCapabilities\":";
-        appendRelayCapabilitiesJson(json, *record);
+        json += "\",\"loadCount\":" + std::to_string(planningNode != nullptr ? planningNode->node.getNumberOfLoads() : 0U) + ",";
+        appendRelayPins(json, *record, planningNode);
         json += "}";
     }
 
     json += "]}";
     return json;
 }
-
 
 } // namespace kilowatts

@@ -6,27 +6,17 @@
 #include <cstring>
 
 #ifdef ESP_PLATFORM
-#include "esp_log.h"
 #include "nvs.h"
-#include "nvs_flash.h"
 #endif
 
 namespace kilowatts {
 
-
-// ---------------------------------------------------------------------------
-// BatteryStateOfCharge
-// ---------------------------------------------------------------------------
-
-#ifdef ESP_PLATFORM
-static const char *SOC_TAG = "BATTERY_SOC";
-
 namespace {
+#ifdef ESP_PLATFORM
 constexpr const char* SOC_NVS_NAMESPACE = "kw_battery";
-constexpr const char* SOC_NVS_KEY_STATE_OF_CHARGE = "soc";
-} // namespace
+constexpr const char* SOC_NVS_KEY = "soc";
 #endif
-
+}
 
 const char* toText(StateOfChargeSource source)
 {
@@ -36,10 +26,8 @@ const char* toText(StateOfChargeSource source)
         case StateOfChargeSource::INITIAL_COMMISSIONING: return "INITIAL_COMMISSIONING";
         case StateOfChargeSource::COULOMB_COUNTING: return "COULOMB_COUNTING";
     }
-
     return "UNKNOWN";
 }
-
 
 BatteryStateOfCharge::BatteryStateOfCharge()
     : initialized_(false),
@@ -49,176 +37,118 @@ BatteryStateOfCharge::BatteryStateOfCharge()
 {
 }
 
-
 float BatteryStateOfCharge::clampPercent(float value)
 {
     return std::max(0.0F, std::min(value, 100.0F));
 }
 
-
-bool BatteryStateOfCharge::initialize(float batteryCapacityAmpHours, float defaultStateOfChargePercent)
+bool BatteryStateOfCharge::initialize(float capacityAmpHours, float startingPercent)
 {
-    if (!std::isfinite(batteryCapacityAmpHours) || batteryCapacityAmpHours <= 0.0F ||
-        !std::isfinite(defaultStateOfChargePercent) ||
-        defaultStateOfChargePercent < 0.0F || defaultStateOfChargePercent > 100.0F) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(SOC_TAG, "initialize() rejected: capacity=%.3fAh defaultSoC=%.1f%%",
-                 static_cast<double>(batteryCapacityAmpHours), static_cast<double>(defaultStateOfChargePercent));
-#endif
+    if (!std::isfinite(capacityAmpHours) || capacityAmpHours <= 0.0F ||
+        !std::isfinite(startingPercent) || startingPercent < 0.0F || startingPercent > 100.0F) {
         return false;
     }
 
-    batteryCapacityAmpHours_ = batteryCapacityAmpHours;
+    batteryCapacityAmpHours_ = capacityAmpHours;
 
-    float persistedStateOfCharge = 0.0F;
-    if (loadPersistedStateOfChargePercent(persistedStateOfCharge)) {
-        stateOfChargePercent_ = persistedStateOfCharge;
+    float persistedPercent = 0.0F;
+    if (loadPersistedStateOfChargePercent(persistedPercent)) {
+        stateOfChargePercent_ = persistedPercent;
         source_ = StateOfChargeSource::PERSISTED;
-#ifdef ESP_PLATFORM
-        ESP_LOGI(SOC_TAG, "BATTERY_SOC: valid persisted record found; SoC=%.2f%% source=PERSISTED capacity=%.3fAh",
-                 static_cast<double>(stateOfChargePercent_), static_cast<double>(batteryCapacityAmpHours_));
-#endif
     } else {
-        stateOfChargePercent_ = defaultStateOfChargePercent;
+        stateOfChargePercent_ = startingPercent;
         source_ = StateOfChargeSource::INITIAL_COMMISSIONING;
-#ifdef ESP_PLATFORM
-        ESP_LOGI(SOC_TAG, "BATTERY_SOC: No valid persisted SoC estimate; SoC=%.2f%% source=INITIAL_COMMISSIONING capacity=%.3fAh",
-                 static_cast<double>(stateOfChargePercent_), static_cast<double>(batteryCapacityAmpHours_));
-#endif
     }
 
     initialized_ = true;
     return true;
 }
 
+bool BatteryStateOfCharge::update(float currentAmps, float seconds)
+{
+    if (!initialized_ || !std::isfinite(currentAmps) ||
+        !std::isfinite(seconds) || seconds <= 0.0F) {
+        return false;
+    }
+
+    const float percentUsed =
+        (100.0F * currentAmps * seconds) / (3600.0F * batteryCapacityAmpHours_);
+
+    stateOfChargePercent_ = clampPercent(stateOfChargePercent_ - percentUsed);
+    source_ = StateOfChargeSource::COULOMB_COUNTING;
+    return true;
+}
 
 bool BatteryStateOfCharge::isInitialized() const
 {
     return initialized_;
 }
 
-
 bool BatteryStateOfCharge::isValid() const
 {
     return source_ != StateOfChargeSource::UNKNOWN;
 }
-
-
-StateOfChargeSource BatteryStateOfCharge::getSource() const
-{
-    return source_;
-}
-
-
-bool BatteryStateOfCharge::update(float batteryCurrentAmps, float deltaTimeSeconds)
-{
-    if (!initialized_ ||
-        !std::isfinite(batteryCurrentAmps) ||
-        !std::isfinite(deltaTimeSeconds) || deltaTimeSeconds <= 0.0F) {
-        return false;
-    }
-
-    /*
-     * Discharge current is positive, so a positive I_B reduces SoC and a
-     * negative (charging) I_B increases it.
-     */
-    const float dischargedPercent =
-        (100.0F * batteryCurrentAmps * deltaTimeSeconds) / (3600.0F * batteryCapacityAmpHours_);
-
-    stateOfChargePercent_ = clampPercent(stateOfChargePercent_ - dischargedPercent);
-    source_ = StateOfChargeSource::COULOMB_COUNTING;
-
-    return true;
-}
-
 
 float BatteryStateOfCharge::getStateOfChargePercent() const
 {
     return stateOfChargePercent_;
 }
 
+StateOfChargeSource BatteryStateOfCharge::getSource() const
+{
+    return source_;
+}
 
 bool BatteryStateOfCharge::persist() const
 {
-    if (!initialized_) {
-        return false;
-    }
-
-    return persistStateOfChargePercent(stateOfChargePercent_);
+    return initialized_ && persistStateOfChargePercent(stateOfChargePercent_);
 }
 
-
-bool BatteryStateOfCharge::loadPersistedStateOfChargePercent(float& stateOfChargePercent) const
+bool BatteryStateOfCharge::loadPersistedStateOfChargePercent(float& percent) const
 {
 #ifdef ESP_PLATFORM
     nvs_handle_t handle = 0;
-    esp_err_t result = nvs_open(SOC_NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (result != ESP_OK) {
+    if (nvs_open(SOC_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
         return false;
     }
 
-    std::uint32_t rawBits = 0U;
-    result = nvs_get_u32(handle, SOC_NVS_KEY_STATE_OF_CHARGE, &rawBits);
+    std::uint32_t bits = 0U;
+    const esp_err_t result = nvs_get_u32(handle, SOC_NVS_KEY, &bits);
     nvs_close(handle);
-
     if (result != ESP_OK) {
         return false;
     }
 
-    float restored = 0.0F;
-    static_assert(sizeof(rawBits) == sizeof(restored), "float must be 32 bits to round-trip through NVS u32 storage");
-    std::memcpy(&restored, &rawBits, sizeof(restored));
-
-    if (!std::isfinite(restored) || restored < 0.0F || restored > 100.0F) {
-        ESP_LOGW(SOC_TAG, "Discarding corrupt persisted SoC value");
-        return false;
-    }
-
-    stateOfChargePercent = restored;
-    return true;
+    std::memcpy(&percent, &bits, sizeof(percent));
+    return std::isfinite(percent) && percent >= 0.0F && percent <= 100.0F;
 #else
-    (void)stateOfChargePercent;
+    (void)percent;
     return false;
 #endif
 }
 
-
-bool BatteryStateOfCharge::persistStateOfChargePercent(float stateOfChargePercent) const
+bool BatteryStateOfCharge::persistStateOfChargePercent(float percent) const
 {
 #ifdef ESP_PLATFORM
+    std::uint32_t bits = 0U;
+    std::memcpy(&bits, &percent, sizeof(percent));
+
     nvs_handle_t handle = 0;
-    esp_err_t result = nvs_open(SOC_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (result != ESP_OK) {
-        ESP_LOGW(SOC_TAG, "Could not open NVS to persist SoC: %s", esp_err_to_name(result));
+    if (nvs_open(SOC_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
         return false;
     }
 
-    std::uint32_t rawBits = 0U;
-    static_assert(sizeof(rawBits) == sizeof(stateOfChargePercent), "float must be 32 bits to round-trip through NVS u32 storage");
-    std::memcpy(&rawBits, &stateOfChargePercent, sizeof(stateOfChargePercent));
-
-    result = nvs_set_u32(handle, SOC_NVS_KEY_STATE_OF_CHARGE, rawBits);
+    esp_err_t result = nvs_set_u32(handle, SOC_NVS_KEY, bits);
     if (result == ESP_OK) {
         result = nvs_commit(handle);
     }
-
     nvs_close(handle);
     return result == ESP_OK;
 #else
-    (void)stateOfChargePercent;
-    return false;
+    (void)percent;
+    return true;
 #endif
 }
-
-
-// ---------------------------------------------------------------------------
-// SafePowerLimitCalculator
-// ---------------------------------------------------------------------------
-
-#ifdef ESP_PLATFORM
-static const char *POWER_LIMIT_TAG = "SAFE_POWER_LIMIT_CALCULATOR";
-#endif
-
 
 SafePowerLimitCalculator::SafePowerLimitCalculator()
     : hasResult_(false),
@@ -231,215 +161,65 @@ SafePowerLimitCalculator::SafePowerLimitCalculator()
 {
 }
 
-
 bool SafePowerLimitCalculator::isFinitePercent(float value)
 {
     return std::isfinite(value) && value >= 0.0F && value <= 100.0F;
 }
-
 
 bool SafePowerLimitCalculator::isFinitePositive(float value)
 {
     return std::isfinite(value) && value > 0.0F;
 }
 
-
 bool SafePowerLimitCalculator::isFiniteNonNegative(float value)
 {
     return std::isfinite(value) && value >= 0.0F;
 }
 
-
-bool SafePowerLimitCalculator::calculate(const Inputs& inputs)
+bool SafePowerLimitCalculator::calculate(const Inputs& in)
 {
-    if (!isFinitePercent(inputs.stateOfChargePercent) ||
-        !isFinitePercent(inputs.minimumStateOfChargePercent) ||
-        !isFinitePositive(inputs.nominalBatteryVoltageVolts) ||
-        !isFinitePositive(inputs.batteryCapacityAmpHours) ||
-        !isFinitePositive(inputs.targetRuntimeHours) ||
-        !isFinitePositive(inputs.batteryBusVoltageVolts) ||
-        !isFiniteNonNegative(inputs.maximumBatteryDischargeCurrentAmps) ||
-        !isFiniteNonNegative(inputs.maximumMainCurrentAmps) ||
-        !std::isfinite(inputs.safetyFactor) ||
-        inputs.safetyFactor <= 0.0F || inputs.safetyFactor > 1.0F) {
-#ifdef ESP_PLATFORM
-        ESP_LOGW(POWER_LIMIT_TAG, "calculate() rejected: SoC=%.1f%% SoCmin=%.1f%% Vnom=%.2fV CB=%.2fAh Ttarget=%.2fh VB=%.2fV IBmax=%.2fA Imainmax=%.2fA rho=%.3f",
-                 static_cast<double>(inputs.stateOfChargePercent),
-                 static_cast<double>(inputs.minimumStateOfChargePercent),
-                 static_cast<double>(inputs.nominalBatteryVoltageVolts),
-                 static_cast<double>(inputs.batteryCapacityAmpHours),
-                 static_cast<double>(inputs.targetRuntimeHours),
-                 static_cast<double>(inputs.batteryBusVoltageVolts),
-                 static_cast<double>(inputs.maximumBatteryDischargeCurrentAmps),
-                 static_cast<double>(inputs.maximumMainCurrentAmps),
-                 static_cast<double>(inputs.safetyFactor));
-#endif
+    if (!isFinitePercent(in.stateOfChargePercent) ||
+        !isFinitePercent(in.minimumStateOfChargePercent) ||
+        !isFinitePositive(in.nominalBatteryVoltageVolts) ||
+        !isFinitePositive(in.batteryCapacityAmpHours) ||
+        !isFinitePositive(in.targetRuntimeHours) ||
+        !isFinitePositive(in.batteryBusVoltageVolts) ||
+        !isFiniteNonNegative(in.maximumBatteryDischargeCurrentAmps) ||
+        !isFiniteNonNegative(in.maximumMainCurrentAmps) ||
+        !std::isfinite(in.safetyFactor) || in.safetyFactor <= 0.0F || in.safetyFactor > 1.0F) {
         return false;
     }
 
-    const float ratedEnergyWattHours = inputs.nominalBatteryVoltageVolts * inputs.batteryCapacityAmpHours;
+    const float ratedEnergy = in.nominalBatteryVoltageVolts * in.batteryCapacityAmpHours;
+    const float usableFraction = std::max(
+        0.0F,
+        (in.stateOfChargePercent - in.minimumStateOfChargePercent) / 100.0F);
+    const float usableEnergy = ratedEnergy * usableFraction;
+    const float runtimePower = usableEnergy / in.targetRuntimeHours;
+    const float batteryLimit = in.batteryBusVoltageVolts * in.maximumBatteryDischargeCurrentAmps;
+    const float mainLimit = in.batteryBusVoltageVolts * in.maximumMainCurrentAmps;
+    const float availablePower = in.safetyFactor * std::min(runtimePower, std::min(batteryLimit, mainLimit));
 
-    const float usableEnergyWattHours =
-        ratedEnergyWattHours * std::max(0.0F, (inputs.stateOfChargePercent - inputs.minimumStateOfChargePercent) / 100.0F);
-
-    const float runtimePowerWatts = usableEnergyWattHours / inputs.targetRuntimeHours;
-
-    const float maximumBatteryPowerWatts = inputs.batteryBusVoltageVolts * inputs.maximumBatteryDischargeCurrentAmps;
-
-    const float maximumMainPowerWatts = inputs.batteryBusVoltageVolts * inputs.maximumMainCurrentAmps;
-
-    const float availablePowerWatts =
-        inputs.safetyFactor * std::min(runtimePowerWatts, std::min(maximumBatteryPowerWatts, maximumMainPowerWatts));
-
-    if (!std::isfinite(ratedEnergyWattHours) || !std::isfinite(usableEnergyWattHours) ||
-        !std::isfinite(runtimePowerWatts) || !std::isfinite(maximumBatteryPowerWatts) ||
-        !std::isfinite(maximumMainPowerWatts) || !std::isfinite(availablePowerWatts)) {
-#ifdef ESP_PLATFORM
-        ESP_LOGE(POWER_LIMIT_TAG, "calculate() produced a non-finite result; rejecting");
-#endif
+    if (!std::isfinite(availablePower)) {
         return false;
     }
 
-    ratedEnergyWattHours_ = ratedEnergyWattHours;
-    usableEnergyWattHours_ = usableEnergyWattHours;
-    runtimePowerWatts_ = runtimePowerWatts;
-    maximumBatteryPowerWatts_ = maximumBatteryPowerWatts;
-    maximumMainPowerWatts_ = maximumMainPowerWatts;
-    availablePowerWatts_ = availablePowerWatts;
+    ratedEnergyWattHours_ = ratedEnergy;
+    usableEnergyWattHours_ = usableEnergy;
+    runtimePowerWatts_ = runtimePower;
+    maximumBatteryPowerWatts_ = batteryLimit;
+    maximumMainPowerWatts_ = mainLimit;
+    availablePowerWatts_ = availablePower;
     hasResult_ = true;
-
-#ifdef ESP_PLATFORM
-    ESP_LOGI(POWER_LIMIT_TAG, "Erated=%.2fWh Eusable=%.2fWh Pruntime=%.2fW Pbatmax=%.2fW Pmainmax=%.2fW Pavailable=%.2fW",
-             static_cast<double>(ratedEnergyWattHours_),
-             static_cast<double>(usableEnergyWattHours_),
-             static_cast<double>(runtimePowerWatts_),
-             static_cast<double>(maximumBatteryPowerWatts_),
-             static_cast<double>(maximumMainPowerWatts_),
-             static_cast<double>(availablePowerWatts_));
-#endif
-
     return true;
 }
 
-
-bool SafePowerLimitCalculator::hasResult() const
-{
-    return hasResult_;
-}
-
-
-float SafePowerLimitCalculator::getRatedEnergyWattHours() const
-{
-    return ratedEnergyWattHours_;
-}
-
-
-float SafePowerLimitCalculator::getUsableEnergyWattHours() const
-{
-    return usableEnergyWattHours_;
-}
-
-
-float SafePowerLimitCalculator::getRuntimePowerWatts() const
-{
-    return runtimePowerWatts_;
-}
-
-
-float SafePowerLimitCalculator::getMaximumBatteryPowerWatts() const
-{
-    return maximumBatteryPowerWatts_;
-}
-
-
-float SafePowerLimitCalculator::getMaximumMainPowerWatts() const
-{
-    return maximumMainPowerWatts_;
-}
-
-
-float SafePowerLimitCalculator::getAvailablePowerWatts() const
-{
-    return availablePowerWatts_;
-}
-
-
-// ---------------------------------------------------------------------------
-// AvailablePowerManager
-// ---------------------------------------------------------------------------
-
-namespace {
-
-bool isValidTotalAvailablePower(float totalAvailablePowerWatts)
-{
-    return std::isfinite(totalAvailablePowerWatts) && totalAvailablePowerWatts >= 0.0F;
-}
-
-
-float calculateFixedOnRunningPowerWatts(const LoadFilter& loadFilter)
-{
-    float fixedOnRunningPowerWatts = 0.0F;
-
-    for (std::size_t i = 0; i < loadFilter.getNumberOfFixedOnLoads(); ++i) {
-        const Load* fixedOnLoad = loadFilter.getFixedOnLoad(i);
-        if (fixedOnLoad != nullptr) {
-            fixedOnRunningPowerWatts += fixedOnLoad->getPower().runningWatts;
-        }
-    }
-
-    return fixedOnRunningPowerWatts;
-}
-
-} // namespace
-
-
-AvailablePowerManager::AvailablePowerManager()
-    : totalAvailablePowerWatts_(0.0F),
-      fixedOnRunningPowerWatts_(0.0F),
-      powerAvailableForAutoLoadsWatts_(0.0F)
-{
-}
-
-
-bool AvailablePowerManager::calculateAvailablePower(
-    float totalAvailablePowerWatts,
-    const LoadFilter& loadFilter)
-{
-    if (!isValidTotalAvailablePower(totalAvailablePowerWatts)) {
-        return false;
-    }
-
-    const float fixedOnRunningPowerWatts = calculateFixedOnRunningPowerWatts(loadFilter);
-
-    float powerAvailableForAutoLoadsWatts = totalAvailablePowerWatts - fixedOnRunningPowerWatts;
-    if (powerAvailableForAutoLoadsWatts < 0.0F) {
-        powerAvailableForAutoLoadsWatts = 0.0F;
-    }
-
-    totalAvailablePowerWatts_ = totalAvailablePowerWatts;
-    fixedOnRunningPowerWatts_ = fixedOnRunningPowerWatts;
-    powerAvailableForAutoLoadsWatts_ = powerAvailableForAutoLoadsWatts;
-
-    return true;
-}
-
-
-float AvailablePowerManager::getTotalAvailablePowerWatts() const
-{
-    return totalAvailablePowerWatts_;
-}
-
-
-float AvailablePowerManager::getFixedOnRunningPowerWatts() const
-{
-    return fixedOnRunningPowerWatts_;
-}
-
-
-float AvailablePowerManager::getPowerAvailableForAutoLoadsWatts() const
-{
-    return powerAvailableForAutoLoadsWatts_;
-}
-
+bool SafePowerLimitCalculator::hasResult() const { return hasResult_; }
+float SafePowerLimitCalculator::getRatedEnergyWattHours() const { return ratedEnergyWattHours_; }
+float SafePowerLimitCalculator::getUsableEnergyWattHours() const { return usableEnergyWattHours_; }
+float SafePowerLimitCalculator::getRuntimePowerWatts() const { return runtimePowerWatts_; }
+float SafePowerLimitCalculator::getMaximumBatteryPowerWatts() const { return maximumBatteryPowerWatts_; }
+float SafePowerLimitCalculator::getMaximumMainPowerWatts() const { return maximumMainPowerWatts_; }
+float SafePowerLimitCalculator::getAvailablePowerWatts() const { return availablePowerWatts_; }
 
 } // namespace kilowatts
