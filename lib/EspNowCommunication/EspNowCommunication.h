@@ -284,7 +284,10 @@ public:
      * containing std::string must first be converted into a
      * transmission packet structure.
      */
-    template <typename Payload>
+    template <
+        typename Payload,
+        typename = std::enable_if_t<!std::is_pointer<Payload>::value>
+    >
     bool sendTo(
         const MacAddress& nextHopMacAddress,
         const MacAddress& destinationMacAddress,
@@ -318,7 +321,10 @@ public:
     );
 
 
-    template <typename Payload>
+    template <
+        typename Payload,
+        typename = std::enable_if_t<!std::is_pointer<Payload>::value>
+    >
     bool sendToCentral(
         MessageType messageType,
         const Payload& payload,
