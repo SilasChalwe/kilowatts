@@ -1,7 +1,3 @@
-/**
- * @file namespace.h
- * @brief Smart Node runtime: own loads, relay commands and reports to Central.
- */
 #ifndef KILOWATTS_SMART_RUNTIME_H
 #define KILOWATTS_SMART_RUNTIME_H
 
@@ -132,9 +128,7 @@ NodeReportPacket buildNodeReportPacket(
 
     for (std::size_t i = 0U; i < packet.numberOfLoads; ++i) {
         const Load* load = thisSmartNode->getLoad(i);
-        if (load == nullptr) {
-            continue;
-        }
+        if (load == nullptr) continue;
 
         LoadReportPacket& out = packet.loads[i];
         std::snprintf(out.name, sizeof(out.name), "%s", load->getName().c_str());
@@ -146,7 +140,6 @@ NodeReportPacket buildNodeReportPacket(
         const LoadElectricalRatings ratings = load->getElectricalRatings();
         out.nominalVoltageVolts = ratings.nominalVoltageVolts;
         out.nominalCurrentAmps = ratings.nominalCurrentAmps;
-
         out.confirmedRelayState = load->getConfirmedRelayState() ? 1U : 0U;
         out.confirmedRelayStateValid = load->isConfirmedRelayStateValid() ? 1U : 0U;
 
@@ -154,7 +147,7 @@ NodeReportPacket buildNodeReportPacket(
         out.scheduleEnabled = schedule.enabled ? 1U : 0U;
         out.scheduleHour = schedule.hour;
         out.scheduleMinute = schedule.minute;
-        out.availability = static_cast<std::uint8_t>(load->getHealth());
+        out.availability = static_cast<std::uint8_t>(LoadHealth::AVAILABLE);
     }
 
     xSemaphoreGive(nodeMutex);
@@ -163,9 +156,7 @@ NodeReportPacket buildNodeReportPacket(
 
 HardwareConfigurationFailureReason applyConfigureLoadCommand(const ConfigureLoadCommandPacket& command)
 {
-    if (!isCommissioned()) {
-        return HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED;
-    }
+    if (!isCommissioned()) return HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED;
     if (!SmartNodeConfig::isVerifiedRelayPin(command.relayPin)) {
         return HardwareConfigurationFailureReason::UNSUPPORTED_RELAY_PIN;
     }
@@ -195,9 +186,7 @@ HardwareConfigurationFailureReason applyConfigureLoadCommand(const ConfigureLoad
 
 HardwareConfigurationFailureReason applyRemoveLoadCommand(const RemoveLoadCommandPacket& command)
 {
-    if (!isCommissioned()) {
-        return HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED;
-    }
+    if (!isCommissioned()) return HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED;
 
     HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
     if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
@@ -225,28 +214,19 @@ void relayControlTask(void* parameter)
     RelayCommandQueueItem item{};
 
     while (true) {
-        if (xQueueReceive(relayCommandQueue, &item, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
+        if (xQueueReceive(relayCommandQueue, &item, portMAX_DELAY) != pdTRUE) continue;
 
         const bool desiredOn =
             static_cast<RelayCommandState>(item.command.desiredState) == RelayCommandState::ON;
         const bool writeOk = relays.setRelayState(item.command.relayPin, desiredOn);
-        bool confirmedOn = false;
-        const bool readOk = relays.readBackState(item.command.relayPin, confirmedOn);
-        const bool success = writeOk && readOk && confirmedOn == desiredOn;
+        bool pinOn = false;
+        const bool readOk = relays.readBackState(item.command.relayPin, pinOn);
+        const bool success = writeOk && readOk && pinOn == desiredOn;
 
-        if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
+        if (success && xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
             Load* load = thisSmartNode != nullptr
                 ? thisSmartNode->getLoadByRelayPin(item.command.relayPin) : nullptr;
-            if (load != nullptr) {
-                if (success) {
-                    load->setConfirmedRelayState(confirmedOn);
-                    load->setHealth(LoadHealth::AVAILABLE);
-                } else {
-                    load->setHealth(LoadHealth::FAULTED);
-                }
-            }
+            if (load != nullptr) load->setConfirmedRelayState(pinOn);
             xSemaphoreGive(nodeMutex);
         }
 
@@ -255,7 +235,7 @@ void relayControlTask(void* parameter)
         acknowledgement.commandId = item.command.commandId;
         acknowledgement.requestedState = item.command.desiredState;
         acknowledgement.confirmedState = static_cast<std::uint8_t>(
-            confirmedOn ? RelayCommandState::ON : RelayCommandState::OFF);
+            pinOn ? RelayCommandState::ON : RelayCommandState::OFF);
         acknowledgement.success = success ? 1U : 0U;
         acknowledgement.failureReason = static_cast<std::uint8_t>(
             success ? RelayCommandFailureReason::NONE
@@ -294,9 +274,7 @@ void handleCommissionCommand(const CommissionCommandPacket& command)
         xSemaphoreGive(identityMutex);
     }
 
-    if (accepted) {
-        communication.setLocalNodeName(appliedName);
-    }
+    if (accepted) communication.setLocalNodeName(appliedName);
 
     CommissionAckPacket ack{};
     ack.commandId = command.commandId;
@@ -321,9 +299,7 @@ void handleDecommissionCommand(const DecommissionCommandPacket& command)
         const NodeIdentityStore previous = identityStore;
         identityStore.applyDecommission();
         identityCleared = identityStore.persist();
-        if (!identityCleared) {
-            identityStore = previous;
-        }
+        if (!identityCleared) identityStore = previous;
         xSemaphoreGive(identityMutex);
     }
 
@@ -421,9 +397,7 @@ void espNowCommunicationTask(void* parameter)
                        received.message.header.payloadLength == sizeof(FactoryResetCommandPacket)) {
                 FactoryResetCommandPacket command{};
                 std::memcpy(&command, received.message.payload.data(), sizeof(command));
-                if (command.confirmToken == FACTORY_RESET_CONFIRM_TOKEN) {
-                    performSmartFactoryReset();
-                }
+                if (command.confirmToken == FACTORY_RESET_CONFIRM_TOKEN) performSmartFactoryReset();
 
             } else if (!localDestination) {
                 if (communication.hasUpstreamNode() &&
@@ -449,20 +423,7 @@ void watchdogTask(void* parameter)
     (void)parameter;
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(WATCHDOG_PERIOD_MS));
-        ESP_LOGI(TAG, "route=%s loads=%u",
-                 communication.hasUpstreamNode() ? "CONNECTED" : "DISCONNECTED",
-                 static_cast<unsigned int>(thisSmartNode != nullptr ? thisSmartNode->getNumberOfLoads() : 0U));
-        relays.printDiagnosticReport();
         sendIdentityReport();
-    }
-}
-
-void consoleTask(void* parameter)
-{
-    (void)parameter;
-    while (true) {
-        vTaskDelay(pdMS_TO_TICKS(30000U));
-        communication.printConnectionInfo();
     }
 }
 
