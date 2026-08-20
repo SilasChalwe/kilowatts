@@ -1,5 +1,4 @@
 /** NVS persistence for an installer-provisioned MQTT broker connection. Wins over KilowattsSecrets.h's cloud broker when present (see checkMqttStartTrigger()). */
-
 #ifndef KILOWATTS_MQTT_CREDENTIALS_STORE_H
 #define KILOWATTS_MQTT_CREDENTIALS_STORE_H
 

@@ -1,6 +1,6 @@
 
 /**
- * @file main.cpp
+ * @file namespace.h
  * @brief Central Node orchestration entry point.
  *
  * This file only instantiates real modules, creates the FreeRTOS
@@ -51,8 +51,6 @@
 #include "ChipInfo.h"
 #include "CommissioningPackets.h"
 #include "CurrentTimeProvider.h"
-#include "DevelopmentPackets.h"
-#include "DevelopmentSession.h"
 #include "EspNowCommunication.h"
 #include "FirmwareVersion.h"
 #include "HardwareConfigurationPackets.h"
@@ -164,22 +162,13 @@ NodeLoadHardwareStore centralLoadHardwareStore;
  */
 NodeCommissioningRegistry commissioningRegistry;
 
-/**
- * This Node's explicit runtime Development Session - always PRODUCTION on
- * boot, never inferred from missing hardware or a compile-time flag. Only
- * handleDevelopmentCommand() ever calls
- * start()/end()/setSensorOverride()/clearSensorOverride().
- */
-DevelopmentSession developmentSession;
-
 SemaphoreHandle_t stateMutex = nullptr;
 SemaphoreHandle_t optimizationTriggerSemaphore = nullptr;
 
 /**
  * Central has no battery sensor by default. It becomes configured only when
  * a persisted installer configuration has first registered and probed the
- * real INA219 (or while an explicit Development Session is active). Guarded
- * by stateMutex.
+ * real INA219. Guarded by stateMutex.
  */
 bool batterySensorConfigured = false;
 std::uint8_t batterySensorI2CAddress = 0U;
@@ -1426,8 +1415,6 @@ void runOptimizationCycle()
             currentTimeProvider.getCurrentTimeSource() == TimeSource::NTP ? "NTP" :
             (currentTimeProvider.getCurrentTimeSource() == TimeSource::MANUAL ? "MANUAL" : "NONE");
         systemState.lastOptimizationEpochSeconds = lastOptimizationEpochSeconds;
-        systemState.operatingEnvironmentText = toText(developmentSession.getEnvironment());
-        systemState.developmentSessionActive = developmentSession.isActive();
         systemState.faultCount = faultCount;
         systemState.faultSummaryText = !batteryStateKnown
             ? (!batterySensorConfigured ? "Battery sensor not configured; Auto-load allocation restricted"
@@ -1798,24 +1785,6 @@ void espNowCommunicationTask(void *parameter)
                      static_cast<unsigned int>(acknowledgement.failureReason));
 
         } else if (destinationIsLocal &&
-                   received.message.header.messageType == EspNowCommunication::MessageType::DEV_ACK &&
-                   received.message.header.payloadLength == sizeof(DevAckPacket)) {
-
-            DevAckPacket acknowledgement{};
-            std::memcpy(&acknowledgement, received.message.payload.data(), sizeof(acknowledgement));
-
-            char targetText[18] = {};
-            formatMacAddressText(targetText, sizeof(targetText), received.message.header.originMacAddress);
-            const bool success = acknowledgement.success != 0U;
-
-            mqttManager.publishAcknowledgement(acknowledgement.commandId, "DEVELOPMENT",
-                                                success ? AckStatus::APPLIED : AckStatus::FAILED,
-                                                success ? "applied" : "rejected by Node", targetText);
-
-            ESP_LOGI(TAG, "DEV_ACK: mac=%s success=%s environment=%s", targetText, success ? "Yes" : "No",
-                     toText(static_cast<OperatingEnvironment>(acknowledgement.resultingEnvironment)));
-
-        } else if (destinationIsLocal &&
                    received.message.header.messageType == EspNowCommunication::MessageType::FACTORY_RESET_ACK &&
                    received.message.header.payloadLength == sizeof(FactoryResetAckPacket)) {
 
@@ -1827,9 +1796,9 @@ void espNowCommunicationTask(void *parameter)
 
             /*
              * Only ever sent on rejection - a successful remote factory
-             * reset reboots the Node immediately instead of replying (see
-             * DevelopmentPackets.h). This ACK therefore only ever reports
-             * FAILED/REJECTED, never APPLIED.
+             * reset reboots the Node immediately instead of replying.
+             * This ACK therefore only ever reports FAILED/REJECTED, never
+             * APPLIED.
              */
             mqttManager.publishAcknowledgement(acknowledgement.commandId, "FACTORY_RESET_NODE",
                                                 AckStatus::FAILED, "rejected or failed on Node", targetText);
@@ -2085,182 +2054,6 @@ LoadCommandResult handleSystemCommand(void *context, const SystemCommandRequest 
 
 
 /**
- * MQTT development-command handler: the only path that can ever start a
- * Development Session or arm a simulated sensor value on this system -
- * never automatic. A command targeting Central's own MAC is applied
- * directly; a command targeting a remote Node is relayed over ESP-NOW
- * exactly like a commissioning command (see handleConfigCommand()).
- */
-LoadCommandResult handleDevelopmentCommand(void *context, const DevelopmentCommandRequest &request)
-{
-    (void)context;
-
-    LoadCommandResult result{};
-    result.accepted = false;
-    result.reason[0] = '\0';
-
-    const EspNowCommunication::MacAddress localMac = communication.getLocalMacAddress();
-
-    if (request.targetNodeMacAddress != localMac) {
-        if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT ||
-            request.action == DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE) {
-            std::snprintf(result.reason, sizeof(result.reason),
-                          "Smart Nodes have no INA219; development sensor input is Central battery-only");
-            return result;
-        }
-
-        EspNowCommunication::MacAddress nextHopMac{};
-        bool routeFound = false;
-
-        if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) == pdTRUE) {
-            routeFound = findNextHopFromCentral(localMac, request.targetNodeMacAddress, registry, nextHopMac);
-            xSemaphoreGive(stateMutex);
-        }
-
-        if (!routeFound) {
-            std::snprintf(result.reason, sizeof(result.reason), "no known route to target Node");
-            return result;
-        }
-
-        bool sent = false;
-        if (request.action == DevelopmentCommandAction::START_SESSION ||
-            request.action == DevelopmentCommandAction::END_SESSION) {
-            DevSessionCommandPacket packet{};
-            packet.commandId = request.commandId;
-            packet.action = static_cast<std::uint8_t>(
-                request.action == DevelopmentCommandAction::START_SESSION ? DevSessionAction::START : DevSessionAction::END);
-            sent = communication.sendTo(nextHopMac, request.targetNodeMacAddress,
-                                         EspNowCommunication::MessageType::DEV_SESSION_COMMAND, packet);
-        } else if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT ||
-                   request.action == DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE) {
-            DevSensorInputCommandPacket packet{};
-            packet.commandId = request.commandId;
-            packet.i2cAddress = request.i2cAddress;
-            packet.clearOverride = request.action == DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE ? 1U : 0U;
-            packet.voltageVolts = request.voltageVolts;
-            packet.currentAmps = request.currentAmps;
-            sent = communication.sendTo(nextHopMac, request.targetNodeMacAddress,
-                                         EspNowCommunication::MessageType::DEV_SENSOR_INPUT_COMMAND, packet);
-        } else {
-            std::snprintf(result.reason, sizeof(result.reason), "unrecognised action");
-            return result;
-        }
-
-        result.accepted = sent;
-        std::snprintf(result.reason, sizeof(result.reason),
-                      sent ? "dispatched to Node; awaiting confirmation" : "failed to send development command");
-        return result;
-    }
-
-    /* Targeting Central itself. */
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
-        std::snprintf(result.reason, sizeof(result.reason), "internal: could not acquire state lock");
-        return result;
-    }
-
-    bool success = false;
-
-    switch (request.action) {
-        case DevelopmentCommandAction::START_SESSION:
-            success = developmentSession.start();
-            ESP_LOGW(TAG, "DEV_SESSION_START: node=Central result=%s", success ? "OK" : "ALREADY_ACTIVE");
-            std::snprintf(result.reason, sizeof(result.reason), success ? "session started" : "a session is already active");
-            break;
-
-        case DevelopmentCommandAction::END_SESSION:
-            success = developmentSession.end();
-            if (success && batterySensorConfigured) {
-                sensors.clearDevelopmentOverride(batterySensorI2CAddress);
-                ESP_LOGW(TAG, "DEV_SESSION_END: node=Central battery sensor 0x%02X released; battery NOT_CONFIGURED again",
-                         static_cast<unsigned int>(batterySensorI2CAddress));
-                batterySensorConfigured = false;
-            } else {
-                ESP_LOGW(TAG, "DEV_SESSION_END: node=Central result=%s", success ? "OK" : "NOT_ACTIVE");
-            }
-            std::snprintf(result.reason, sizeof(result.reason), success ? "session ended" : "no session was active");
-            break;
-
-        case DevelopmentCommandAction::SET_SENSOR_INPUT: {
-            if (!developmentSession.isActive()) {
-                std::snprintf(result.reason, sizeof(result.reason), "no active Development Session; call START_SESSION first");
-                break;
-            }
-            if (!request.hasSensorInput) {
-                std::snprintf(result.reason, sizeof(result.reason), "voltageVolts/currentAmps required");
-                break;
-            }
-
-            if (sensors.findSensorByI2CAddress(request.i2cAddress) == nullptr) {
-                sensors.addSensor(INA219Monitor::INA219SensorConfiguration{
-                    request.i2cAddress, BATTERY_RELAY_PIN_SENTINEL, 0.005F, 60.0F, 0.2F
-                });
-                ESP_LOGW(TAG, "DEV_SENSOR_REGISTER: node=Central i2c=0x%02X (temporary, Development-Session-only registration)",
-                         static_cast<unsigned int>(request.i2cAddress));
-            }
-
-            const LoadMeasurements rawOverride{
-                request.voltageVolts, request.currentAmps, request.voltageVolts * request.currentAmps
-            };
-            ESP_LOGW(TAG, "DEV_INPUT node=Central i2c=0x%02X V=%.3f I=%.3f",
-                     static_cast<unsigned int>(request.i2cAddress),
-                     static_cast<double>(request.voltageVolts), static_cast<double>(request.currentAmps));
-
-            success = sensors.setDevelopmentOverride(request.i2cAddress, rawOverride);
-            developmentSession.setSensorOverride(request.i2cAddress, request.voltageVolts, request.currentAmps);
-
-            batterySensorConfigured = true;
-            batterySensorI2CAddress = request.i2cAddress;
-            if (!batteryStateOfCharge.isInitialized()) {
-                const CentralConfigurationStore::BatterySensorConfiguration battery =
-                    centralConfigurationStore.getConfiguration().batterySensor;
-                batteryStateOfCharge.initialize(
-                    battery.configured ? battery.batteryCapacityAmpHours : CentralNodeConfig::BATTERY_CAPACITY_AMP_HOURS,
-                    battery.configured ? battery.initialStateOfChargePercent : CentralNodeConfig::DEFAULT_STATE_OF_CHARGE_PERCENT);
-            }
-
-            std::snprintf(result.reason, sizeof(result.reason), success ? "sensor input armed" : "failed to arm sensor override");
-            break;
-        }
-
-        case DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE:
-            success = developmentSession.clearSensorOverride(request.i2cAddress) &&
-                      sensors.clearDevelopmentOverride(request.i2cAddress);
-            std::snprintf(result.reason, sizeof(result.reason),
-                          success ? "override cleared" : "no override was armed for this address");
-            break;
-
-        default:
-            std::snprintf(result.reason, sizeof(result.reason), "unrecognised action");
-            break;
-    }
-
-    xSemaphoreGive(stateMutex);
-
-    /*
-     * A mode change (Production <-> Development) is otherwise only
-     * visible on the next state/system publish, up to
-     * OPTIMIZATION_PERIOD_MILLISECONDS later - publish it as its own
-     * event too so a dashboard can flag it immediately rather than
-     * waiting for the next periodic snapshot. Sensor-override actions
-     * (SET_SENSOR_INPUT/CLEAR_SENSOR_OVERRIDE) are already logged
-     * verbosely to serial on every call and are not the mode change
-     * itself, so they do not get their own event here.
-     */
-    if (success && (request.action == DevelopmentCommandAction::START_SESSION ||
-                     request.action == DevelopmentCommandAction::END_SESSION)) {
-        char targetText[18] = {};
-        formatMacAddressText(targetText, sizeof(targetText), localMac);
-        mqttManager.publishEvent(
-            request.action == DevelopmentCommandAction::START_SESSION ? "DEV_SESSION_STARTED" : "DEV_SESSION_ENDED",
-            targetText, nullptr);
-    }
-
-    result.accepted = success;
-    return result;
-}
-
-
-/**
  * One concise, authoritative boot-state block - every value here is read
  * live from the modules that own it, never hardcoded text.
  */
@@ -2273,7 +2066,6 @@ void printCentralBootSummary(const EspNowCommunication::MacAddress& localMac)
     const std::size_t localLoadCount = localNode != nullptr ? localNode->node.getNumberOfLoads() : 0U;
 
     ESP_LOGI(TAG, "========== KILOWATTS CENTRAL BOOT STATE ==========");
-    ESP_LOGI(TAG, "Environment           : %s", toText(developmentSession.getEnvironment()));
     ESP_LOGI(TAG, "MAC                   : %s", macText);
     ESP_LOGI(TAG, "Firmware Version      : %s", KILOWATTS_FIRMWARE_VERSION);
     ESP_LOGI(TAG, "Commissioning State   : %s", toText(NodeLifecycleState::COMMISSIONED));
@@ -2290,7 +2082,6 @@ void printCentralBootSummary(const EspNowCommunication::MacAddress& localMac)
         ESP_LOGI(TAG, "SoC                   : UNKNOWN");
     }
     ESP_LOGI(TAG, "SoC Valid             : %s", batteryStateOfCharge.isValid() ? "Yes" : "No");
-    ESP_LOGI(TAG, "Development Session   : %s", developmentSession.isActive() ? "ACTIVE" : "INACTIVE");
     ESP_LOGI(TAG, "Physical Actuation    : ENABLED");
     ESP_LOGI(TAG, "===================================================");
 }
@@ -2299,22 +2090,19 @@ void printCentralBootSummary(const EspNowCommunication::MacAddress& localMac)
 /**
  * Minimal engineering test console: reads simple line commands from the
  * same UART the log output already uses, and calls exactly the same
- * handler functions the MQTT commands/development and commands/system
- * paths call - never a second, divergent code path. This exists so
- * Development Session and factory reset are verifiable on real hardware
- * even when Wi-Fi/MQTT connectivity is unavailable; it is not a
+ * handler function the MQTT commands/system path calls - never a second,
+ * divergent code path. This exists so factory reset is verifiable on real
+ * hardware even when Wi-Fi/MQTT connectivity is unavailable; it is not a
  * production control surface.
  *
- * Commands: dev_start | dev_set <hexI2cAddress> <voltage> <current> |
- * dev_clear <hexI2cAddress> | dev_end | factory_reset
+ * Commands: factory_reset
  */
 void consoleTask(void *parameter)
 {
     (void)parameter;
 
     char line[160];
-    ESP_LOGI(TAG, "CONSOLE: engineering test console ready "
-                  "(dev_start | dev_set <hexI2c> <V> <I> | dev_clear <hexI2c> | dev_end | factory_reset)");
+    ESP_LOGI(TAG, "CONSOLE: engineering test console ready (factory_reset)");
 
     while (true) {
         if (std::fgets(line, sizeof(line), stdin) == nullptr) {
@@ -2330,52 +2118,7 @@ void consoleTask(void *parameter)
             continue;
         }
 
-        const EspNowCommunication::MacAddress localMac = communication.getLocalMacAddress();
-        unsigned int i2cAddress = 0U;
-        float voltageVolts = 0.0F;
-        float currentAmps = 0.0F;
-
-        if (std::strcmp(line, "dev_start") == 0) {
-            DevelopmentCommandRequest request{};
-            request.commandId = static_cast<std::uint32_t>(xTaskGetTickCount());
-            request.targetNodeMacAddress = localMac;
-            request.action = DevelopmentCommandAction::START_SESSION;
-            const LoadCommandResult result = handleDevelopmentCommand(nullptr, request);
-            ESP_LOGI(TAG, "CONSOLE: dev_start -> accepted=%s reason=%s", result.accepted ? "Yes" : "No", result.reason);
-
-        } else if (std::strcmp(line, "dev_end") == 0) {
-            DevelopmentCommandRequest request{};
-            request.commandId = static_cast<std::uint32_t>(xTaskGetTickCount());
-            request.targetNodeMacAddress = localMac;
-            request.action = DevelopmentCommandAction::END_SESSION;
-            const LoadCommandResult result = handleDevelopmentCommand(nullptr, request);
-            ESP_LOGI(TAG, "CONSOLE: dev_end -> accepted=%s reason=%s", result.accepted ? "Yes" : "No", result.reason);
-
-        } else if (std::sscanf(line, "dev_set %x %f %f", &i2cAddress, &voltageVolts, &currentAmps) == 3) {
-            DevelopmentCommandRequest request{};
-            request.commandId = static_cast<std::uint32_t>(xTaskGetTickCount());
-            request.targetNodeMacAddress = localMac;
-            request.action = DevelopmentCommandAction::SET_SENSOR_INPUT;
-            request.hasSensorInput = true;
-            request.i2cAddress = static_cast<std::uint8_t>(i2cAddress);
-            request.voltageVolts = voltageVolts;
-            request.currentAmps = currentAmps;
-            const LoadCommandResult result = handleDevelopmentCommand(nullptr, request);
-            ESP_LOGI(TAG, "CONSOLE: dev_set 0x%02X -> accepted=%s reason=%s",
-                     i2cAddress, result.accepted ? "Yes" : "No", result.reason);
-
-        } else if (std::sscanf(line, "dev_clear %x", &i2cAddress) == 1) {
-            DevelopmentCommandRequest request{};
-            request.commandId = static_cast<std::uint32_t>(xTaskGetTickCount());
-            request.targetNodeMacAddress = localMac;
-            request.action = DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE;
-            request.hasSensorInput = true;
-            request.i2cAddress = static_cast<std::uint8_t>(i2cAddress);
-            const LoadCommandResult result = handleDevelopmentCommand(nullptr, request);
-            ESP_LOGI(TAG, "CONSOLE: dev_clear 0x%02X -> accepted=%s reason=%s",
-                     i2cAddress, result.accepted ? "Yes" : "No", result.reason);
-
-        } else if (std::strcmp(line, "factory_reset") == 0) {
+        if (std::strcmp(line, "factory_reset") == 0) {
             SystemCommandRequest request{};
             request.commandId = static_cast<std::uint32_t>(xTaskGetTickCount());
             request.action = SystemCommandAction::FACTORY_RESET_CENTRAL;
@@ -2535,15 +2278,15 @@ LoadCommandResult handleConfigCommand(void *context, const ConfigCommandRequest 
          * Central's own directly-wired Loads never go over ESP-NOW - this
          * completes synchronously, unlike the Smart Node path below which
          * only dispatches a command and waits for a later
-         * CONFIGURE_LOAD_ACK. nodeDeclaresRelayPin() reuses Central's own
-         * commissioning record (registered with its own VERIFIED_RELAY_GPIO_PINS
-         * capability list, see registerSelf() in app_main()) so an
-         * installer cannot target a GPIO this board never declared safe.
+         * CONFIGURE_LOAD_ACK. Checks CentralNodeConfig::isVerifiedRelayPin()
+         * directly - the same compiled-in board profile Smart Node checks
+         * via SmartNodeConfig::isVerifiedRelayPin() - rather than a
+         * commissioning-registry record, since that record is only ever
+         * written once by registerSelf() and never refreshed on later
+         * boots, so it must never be this check's source of truth.
          */
         if (request.nodeMacAddress == localMac) {
-            const NodeCommissioningRegistry::CommissioningRecord* centralRecord =
-                commissioningRegistry.findByMac(localMac);
-            if (centralRecord == nullptr || !nodeDeclaresRelayPin(*centralRecord, request.relayPin)) {
+            if (!CentralNodeConfig::isVerifiedRelayPin(request.relayPin)) {
                 std::snprintf(result.reason, sizeof(result.reason),
                               "relay GPIO is not declared safe by Central's own board profile");
                 xSemaphoreGive(stateMutex);

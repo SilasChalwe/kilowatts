@@ -45,6 +45,39 @@ void appendRelayCapabilitiesJson(std::string& out, const NodeCommissioningRegist
     out += "]";
 }
 
+
+/**
+ * Live runtime facts (see NodeCommissioningRegistry::Diagnostics) - zero-
+ * valued until this Node's first IDENTITY_REPORT/self-diagnostics update,
+ * same as the in-memory struct itself. temperatureCelsius is only
+ * meaningful when temperatureAvailable is true (not every chip target has
+ * a temperature sensor peripheral - see ChipInfo::getTemperatureCelsius()).
+ */
+void appendDiagnosticsJson(std::string& out, const NodeCommissioningRegistry::Diagnostics& diagnostics)
+{
+    char numberBuffer[32] = {};
+
+    out += "{\"freeHeapBytes\":" + std::to_string(diagnostics.freeHeapBytes);
+    out += ",\"minFreeHeapBytes\":" + std::to_string(diagnostics.minFreeHeapBytes);
+    out += ",\"flashSizeBytes\":" + std::to_string(diagnostics.flashSizeBytes);
+    out += ",\"psramSizeBytes\":" + std::to_string(diagnostics.psramSizeBytes);
+    out += ",\"siliconRevision\":" + std::to_string(static_cast<unsigned int>(diagnostics.siliconRevision));
+    out += ",\"cpuCores\":" + std::to_string(static_cast<unsigned int>(diagnostics.cpuCores));
+    out += ",\"cpuFrequencyMhz\":" + std::to_string(diagnostics.cpuFrequencyMhz);
+    out += ",\"resetReason\":";
+    appendEscapedJsonString(out, diagnostics.resetReason);
+    out += ",\"temperatureAvailable\":";
+    out += diagnostics.temperatureAvailable ? "true" : "false";
+    out += ",\"temperatureCelsius\":";
+    if (diagnostics.temperatureAvailable) {
+        std::snprintf(numberBuffer, sizeof(numberBuffer), "%.2f", static_cast<double>(diagnostics.temperatureCelsius));
+        out += numberBuffer;
+    } else {
+        out += "null";
+    }
+    out += "}";
+}
+
 } // namespace
 
 
@@ -109,6 +142,8 @@ std::string NodeRegistryJson::buildStateNodesJson(
         appendEscapedJsonString(json, record->chipModel);
         json += ",\"relayCapabilities\":";
         appendRelayCapabilitiesJson(json, *record);
+        json += ",\"diagnostics\":";
+        appendDiagnosticsJson(json, record->diagnostics);
 
         const CentralNodeRegistry::PlanningNode* planningNode =
             centralNodeRegistry.findNodeByMacAddress(record->macAddress);

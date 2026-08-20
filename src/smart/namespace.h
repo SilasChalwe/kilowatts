@@ -37,8 +37,6 @@
 #include "ChipInfo.h"
 #include "CommissioningPackets.h"
 #include "CurrentTimeProvider.h"
-#include "DevelopmentPackets.h"
-#include "DevelopmentSession.h"
 #include "EspNowCommunication.h"
 #include "FirmwareVersion.h"
 #include "HardwareConfigurationPackets.h"
@@ -103,16 +101,6 @@ RelayController relays;
 ChipInfo chipInfo;
 NodeIdentityStore identityStore;
 NodeLoadHardwareStore smartNodeConfigurationStore;
-
-/**
- * This Node's explicit runtime Development Session - always PRODUCTION on
- * boot, never inferred from missing hardware or a compile-time flag. Smart
- * Nodes have no individual current sensor in the final design, so a
- * received DEV_SESSION_COMMAND can only start/end the session; battery
- * sensor simulation remains Central-only. Guarded by identityMutex, the
- * same mutex used for this Node's other session-level state (identityStore).
- */
-DevelopmentSession developmentSession;
 
 Node *thisSmartNode = nullptr;
 SemaphoreHandle_t nodeMutex = nullptr;
@@ -341,51 +329,12 @@ void sendIdentityReport()
     packet.siliconRevision = static_cast<std::uint16_t>(chipInfo.getSiliconRevision());
     packet.cpuCores = static_cast<std::uint8_t>(chipInfo.getCpuCores());
     chipInfo.getResetReasonText(packet.resetReason, sizeof(packet.resetReason));
+    packet.cpuFrequencyMhz = chipInfo.getCpuFrequencyMhz();
+    packet.temperatureAvailable = chipInfo.getTemperatureCelsius(packet.temperatureCelsius) ? 1U : 0U;
 
     const bool sent = communication.sendToCentral(EspNowCommunication::MessageType::IDENTITY_REPORT, packet);
     ESP_LOGI(TAG, "IDENTITY_REPORT name='%s' state=%s %s", communication.getLocalNodeName(),
              toText(lifecycleState), sent ? "SENT" : "FAILED (no upstream route yet)");
-}
-
-
-struct DevCommandOutcome {
-    bool success;
-    char reason[64];
-};
-
-
-/**
- * Applies a locally-targeted Development Session command — Smart Nodes can
- * start/end an explicit session, but may not simulate per-load electrical
- * measurements because the only INA219 belongs to Central's battery bus.
- * Called from both the ESP-NOW receive dispatch and consoleTask(), never
- * through a divergent path.
- */
-DevCommandOutcome applyStartDevelopmentSession()
-{
-    DevCommandOutcome outcome{};
-    if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
-        outcome.success = developmentSession.start();
-        xSemaphoreGive(identityMutex);
-    }
-    ESP_LOGW(TAG, "DEV_SESSION_START: node=%s result=%s", communication.getLocalNodeName(),
-             outcome.success ? "OK" : "ALREADY_ACTIVE");
-    std::snprintf(outcome.reason, sizeof(outcome.reason), outcome.success ? "session started" : "a session is already active");
-    return outcome;
-}
-
-
-DevCommandOutcome applyEndDevelopmentSession()
-{
-    DevCommandOutcome outcome{};
-    if (xSemaphoreTake(identityMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
-        outcome.success = developmentSession.end();
-        xSemaphoreGive(identityMutex);
-    }
-    ESP_LOGW(TAG, "DEV_SESSION_END: node=%s result=%s", communication.getLocalNodeName(),
-             outcome.success ? "OK" : "NOT_ACTIVE");
-    std::snprintf(outcome.reason, sizeof(outcome.reason), outcome.success ? "session ended" : "no session was active");
-    return outcome;
 }
 
 
@@ -681,37 +630,6 @@ void espNowCommunicationTask(void *parameter)
                 }
 
             } else if (destinationIsLocal &&
-                       received.message.header.messageType == EspNowCommunication::MessageType::DEV_SESSION_COMMAND &&
-                       received.message.header.payloadLength == sizeof(DevSessionCommandPacket)) {
-
-                DevSessionCommandPacket command{};
-                std::memcpy(&command, received.message.payload.data(), sizeof(command));
-
-                const DevCommandOutcome outcome =
-                    static_cast<DevSessionAction>(command.action) == DevSessionAction::START
-                        ? applyStartDevelopmentSession() : applyEndDevelopmentSession();
-
-                DevAckPacket acknowledgement{};
-                acknowledgement.commandId = command.commandId;
-                acknowledgement.success = outcome.success ? 1U : 0U;
-                acknowledgement.resultingEnvironment = static_cast<std::uint8_t>(developmentSession.getEnvironment());
-                communication.sendToCentral(EspNowCommunication::MessageType::DEV_ACK, acknowledgement);
-
-            } else if (destinationIsLocal &&
-                       received.message.header.messageType == EspNowCommunication::MessageType::DEV_SENSOR_INPUT_COMMAND &&
-                       received.message.header.payloadLength == sizeof(DevSensorInputCommandPacket)) {
-
-                DevSensorInputCommandPacket command{};
-                std::memcpy(&command, received.message.payload.data(), sizeof(command));
-                ESP_LOGW(TAG, "DEV_SENSOR_INPUT commandId=%u rejected: Smart Nodes have no INA219; battery sensor is Central-only",
-                         static_cast<unsigned int>(command.commandId));
-                DevAckPacket acknowledgement{};
-                acknowledgement.commandId = command.commandId;
-                acknowledgement.success = 0U;
-                acknowledgement.resultingEnvironment = static_cast<std::uint8_t>(developmentSession.getEnvironment());
-                communication.sendToCentral(EspNowCommunication::MessageType::DEV_ACK, acknowledgement);
-
-            } else if (destinationIsLocal &&
                        received.message.header.messageType == EspNowCommunication::MessageType::FACTORY_RESET_COMMAND &&
                        received.message.header.payloadLength == sizeof(FactoryResetCommandPacket)) {
 
@@ -822,7 +740,6 @@ void printSmartBootSummary(const EspNowCommunication::MacAddress& localMac)
     const std::size_t loadCount = thisSmartNode != nullptr ? thisSmartNode->getNumberOfLoads() : 0U;
 
     ESP_LOGI(TAG, "========== KILOWATTS SMART NODE BOOT STATE ==========");
-    ESP_LOGI(TAG, "Environment           : %s", toText(developmentSession.getEnvironment()));
     ESP_LOGI(TAG, "MAC                   : %s", macText);
     ESP_LOGI(TAG, "Firmware Version      : %s", KILOWATTS_FIRMWARE_VERSION);
     ESP_LOGI(TAG, "Commissioning State   : %s", toText(identityStore.getLifecycleState()));
@@ -830,7 +747,6 @@ void printSmartBootSummary(const EspNowCommunication::MacAddress& localMac)
     ESP_LOGI(TAG, "Local Branches        : %u", static_cast<unsigned int>(loadCount));
     ESP_LOGI(TAG, "Local Loads           : %u", static_cast<unsigned int>(loadCount));
     ESP_LOGI(TAG, "Upstream Route        : %s", communication.hasUpstreamNode() ? "KNOWN" : "NONE YET");
-    ESP_LOGI(TAG, "Development Session   : %s", developmentSession.isActive() ? "ACTIVE" : "INACTIVE");
     ESP_LOGI(TAG, "Verified Relay GPIOs  : %u (only these can actuate)",
              static_cast<unsigned int>(SmartNodeConfig::getVerifiedRelayPinCount()));
     ESP_LOGI(TAG, "======================================================");
@@ -840,21 +756,19 @@ void printSmartBootSummary(const EspNowCommunication::MacAddress& localMac)
 /**
  * Minimal engineering test console (mirrors src/central/main.cpp's own
  * consoleTask() exactly — see its documentation for why this exists: the
- * only way to verify Development Session / factory reset behaviour on
- * real hardware when Wi-Fi/MQTT connectivity is unavailable. Calls exactly
- * the same local functions a received DEV_SESSION_COMMAND/
- * DEV_SENSOR_INPUT_COMMAND/FACTORY_RESET_COMMAND would call - never a
- * second, divergent code path. Not a production control surface.
+ * only way to verify factory reset behaviour on real hardware when
+ * Wi-Fi/MQTT connectivity is unavailable. Calls exactly the same local
+ * function a received FACTORY_RESET_COMMAND would call - never a second,
+ * divergent code path. Not a production control surface.
  *
- * Commands: dev_start | dev_end | factory_reset
+ * Commands: factory_reset
  */
 void consoleTask(void *parameter)
 {
     (void)parameter;
 
     char line[160];
-    ESP_LOGI(TAG, "CONSOLE: engineering test console ready "
-                  "(dev_start | dev_end | factory_reset)");
+    ESP_LOGI(TAG, "CONSOLE: engineering test console ready (factory_reset)");
 
     while (true) {
         if (std::fgets(line, sizeof(line), stdin) == nullptr) {
@@ -870,15 +784,7 @@ void consoleTask(void *parameter)
             continue;
         }
 
-        if (std::strcmp(line, "dev_start") == 0) {
-            const DevCommandOutcome outcome = applyStartDevelopmentSession();
-            ESP_LOGI(TAG, "CONSOLE: dev_start -> accepted=%s reason=%s", outcome.success ? "Yes" : "No", outcome.reason);
-
-        } else if (std::strcmp(line, "dev_end") == 0) {
-            const DevCommandOutcome outcome = applyEndDevelopmentSession();
-            ESP_LOGI(TAG, "CONSOLE: dev_end -> accepted=%s reason=%s", outcome.success ? "Yes" : "No", outcome.reason);
-
-        } else if (std::strcmp(line, "factory_reset") == 0) {
+        if (std::strcmp(line, "factory_reset") == 0) {
             ESP_LOGW(TAG, "CONSOLE: factory_reset requested - rebooting now");
             performSmartFactoryReset(); // never returns
 

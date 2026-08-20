@@ -26,7 +26,6 @@
  *   kilowatts/v1/commands/load    Application publishes, Central subscribes, QoS 1
  *   kilowatts/v1/commands/system  Application publishes, Central subscribes, QoS 1
  *   kilowatts/v1/commands/config  Application publishes, Central subscribes, QoS 1
- *   kilowatts/v1/commands/development  Application publishes, Central subscribes, QoS 1
  *   kilowatts/v1/acks             Central publishes, not retained, QoS 1
  *
  * Every acknowledgement on kilowatts/v1/acks carries commandId, commandType,
@@ -225,43 +224,6 @@ struct ConfigCommandRequest {
 using ConfigCommandHandler = LoadCommandResult (*)(void* context, const ConfigCommandRequest& request);
 
 
-/**
- * kilowatts/v1/commands/development: the only way a Node's
- * OperatingEnvironment ever becomes DEVELOPMENT, and the only way a
- * sensor ever gets a simulated voltage/current override — never
- * automatic, never compile-time.
- */
-enum class DevelopmentCommandAction : std::uint8_t {
-    UNKNOWN = 0U,
-    START_SESSION = 1U,
-    END_SESSION = 2U,
-    SET_SENSOR_INPUT = 3U,
-    CLEAR_SENSOR_OVERRIDE = 4U
-};
-
-
-/**
- * targetNodeMacAddress selects which Node this command applies to (Central
- * itself, or a remote Smart Node reached over ESP-NOW — see
- * src/central/main.cpp's handleDevelopmentCommand()). hasSensorInput/
- * i2cAddress/voltageVolts/currentAmps are only meaningful for
- * SET_SENSOR_INPUT/CLEAR_SENSOR_OVERRIDE.
- */
-struct DevelopmentCommandRequest {
-    std::uint32_t commandId;
-    DevelopmentCommandAction action;
-    Load::MacAddress targetNodeMacAddress;
-
-    bool hasSensorInput;
-    std::uint8_t i2cAddress;
-    float voltageVolts;
-    float currentAmps;
-};
-
-
-using DevelopmentCommandHandler = LoadCommandResult (*)(void* context, const DevelopmentCommandRequest& request);
-
-
 /** Machine-readable outcome for one kilowatts/v1/acks entry. */
 enum class AckStatus : std::uint8_t {
     ACCEPTED = 0U,
@@ -301,7 +263,6 @@ public:
     static constexpr const char* TOPIC_COMMANDS_LOAD = "commands/load";
     static constexpr const char* TOPIC_COMMANDS_SYSTEM = "commands/system";
     static constexpr const char* TOPIC_COMMANDS_CONFIG = "commands/config";
-    static constexpr const char* TOPIC_COMMANDS_DEVELOPMENT = "commands/development";
     static constexpr const char* TOPIC_ACKS = "acks";
 
 
@@ -326,9 +287,6 @@ public:
 
     /** Registers the handler invoked for every syntactically valid kilowatts/v1/commands/config message. */
     void setConfigCommandHandler(ConfigCommandHandler handler, void* context);
-
-    /** Registers the handler invoked for every syntactically valid kilowatts/v1/commands/development message. */
-    void setDevelopmentCommandHandler(DevelopmentCommandHandler handler, void* context);
 
 
     /**
@@ -393,7 +351,6 @@ private:
     void handleLoadCommandMessage(const char* data, std::size_t dataLength);
     void handleSystemCommandMessage(const char* data, std::size_t dataLength);
     void handleConfigCommandMessage(const char* data, std::size_t dataLength);
-    void handleDevelopmentCommandMessage(const char* data, std::size_t dataLength);
 
     std::string fullTopic(const char* topicSuffix) const;
 
@@ -413,9 +370,6 @@ private:
 
     ConfigCommandHandler configCommandHandler_;
     void* configCommandHandlerContext_;
-
-    DevelopmentCommandHandler developmentCommandHandler_;
-    void* developmentCommandHandlerContext_;
 };
 
 

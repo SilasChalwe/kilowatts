@@ -50,7 +50,7 @@ SystemStateInputs makeInputs() {
     inputs.batterySensorConfigured = true;
     inputs.batteryVoltageVolts = 12.6F;
     inputs.batteryCurrentAmps = 8.0F;
-    inputs.batteryMeasurementSourceText = "SIMULATED";
+    inputs.batteryMeasurementSourceText = "HARDWARE";
     inputs.stateOfChargePercent = 76.5F;
     inputs.stateOfChargeValid = true;
     inputs.stateOfChargeSourceText = "COULOMB_COUNTING";
@@ -66,8 +66,6 @@ SystemStateInputs makeInputs() {
     inputs.currentTimeValid = true;
     inputs.currentTimeSourceText = "NTP";
     inputs.lastOptimizationEpochSeconds = 1765000000;
-    inputs.operatingEnvironmentText = "DEVELOPMENT";
-    inputs.developmentSessionActive = true;
     inputs.faultCount = 0U;
     inputs.faultSummaryText = "";
     return inputs;
@@ -112,35 +110,21 @@ void testEveryRequiredFieldIsPresent() {
     reportCheck("Current-time source is present", contains(json, "\"source\":\"NTP\""));
     reportCheck("Last optimization timestamp is present",
                 contains(json, "\"lastOptimizationEpochSeconds\":1765000000"));
-    reportCheck("Operating environment diagnostic is present", contains(json, "\"operatingEnvironment\":\"DEVELOPMENT\""));
     reportCheck("Battery sensor configured flag is present", contains(json, "\"sensorConfigured\":true"));
-    reportCheck("Battery measurement source is present", contains(json, "\"measurementSource\":\"SIMULATED\""));
+    reportCheck("Battery measurement source is present", contains(json, "\"measurementSource\":\"HARDWARE\""));
     reportCheck("SoC validity is present", contains(json, "\"stateOfChargeValid\":true"));
     reportCheck("SoC source is present", contains(json, "\"stateOfChargeSource\":\"COULOMB_COUNTING\""));
     reportCheck("Fault count is present", contains(json, "\"faultCount\":0"));
 }
 
 void testSensorSourceLabelling() {
-    printSection("TEST 3 - DEVELOPMENT VS PRODUCTION ENVIRONMENT AND BATTERY SOURCE LABELLING");
+    printSection("TEST 3 - BATTERY SOURCE LABELLING");
 
-    SystemStateInputs developmentInputs = makeInputs();
-    developmentInputs.operatingEnvironmentText = "DEVELOPMENT";
-    developmentInputs.batteryMeasurementSourceText = "SIMULATED";
-    const std::string developmentJson = SystemStateJson::build(developmentInputs, 1U);
-    reportCheck("Development environment is explicitly labelled",
-                contains(developmentJson, "\"operatingEnvironment\":\"DEVELOPMENT\""));
-    reportCheck("Simulated battery source is explicitly labelled",
-                contains(developmentJson, "\"measurementSource\":\"SIMULATED\""));
-
-    SystemStateInputs productionInputs = makeInputs();
-    productionInputs.operatingEnvironmentText = "PRODUCTION";
-    productionInputs.developmentSessionActive = false;
-    productionInputs.batteryMeasurementSourceText = "HARDWARE";
-    const std::string productionJson = SystemStateJson::build(productionInputs, 1U);
-    reportCheck("Production environment is explicitly labelled",
-                contains(productionJson, "\"operatingEnvironment\":\"PRODUCTION\""));
+    SystemStateInputs hardwareInputs = makeInputs();
+    hardwareInputs.batteryMeasurementSourceText = "HARDWARE";
+    const std::string hardwareJson = SystemStateJson::build(hardwareInputs, 1U);
     reportCheck("Hardware battery source is explicitly labelled",
-                contains(productionJson, "\"measurementSource\":\"HARDWARE\""));
+                contains(hardwareJson, "\"measurementSource\":\"HARDWARE\""));
 
     SystemStateInputs unconfiguredInputs = makeInputs();
     unconfiguredInputs.batterySensorConfigured = false;

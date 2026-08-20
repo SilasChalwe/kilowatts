@@ -135,21 +135,6 @@ bool parseSystemCommandActionText(const char* text, SystemCommandAction& action)
 }
 
 
-bool parseDevelopmentCommandActionText(const char* text, DevelopmentCommandAction& action)
-{
-    if (text == nullptr) {
-        return false;
-    }
-
-    if (std::strcmp(text, "START_SESSION") == 0) { action = DevelopmentCommandAction::START_SESSION; return true; }
-    if (std::strcmp(text, "END_SESSION") == 0) { action = DevelopmentCommandAction::END_SESSION; return true; }
-    if (std::strcmp(text, "SET_SENSOR_INPUT") == 0) { action = DevelopmentCommandAction::SET_SENSOR_INPUT; return true; }
-    if (std::strcmp(text, "CLEAR_SENSOR_OVERRIDE") == 0) { action = DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE; return true; }
-
-    return false;
-}
-
-
 void appendEscapedJsonStringField(std::string& out, const char* value)
 {
     out.push_back('"');
@@ -210,9 +195,7 @@ MqttManager::MqttManager(const char* topicNamespace, const char* deviceId, std::
       systemCommandHandler_(nullptr),
       systemCommandHandlerContext_(nullptr),
       configCommandHandler_(nullptr),
-      configCommandHandlerContext_(nullptr),
-      developmentCommandHandler_(nullptr),
-      developmentCommandHandlerContext_(nullptr)
+      configCommandHandlerContext_(nullptr)
 {
 }
 
@@ -245,13 +228,6 @@ void MqttManager::setConfigCommandHandler(ConfigCommandHandler handler, void* co
 {
     configCommandHandler_ = handler;
     configCommandHandlerContext_ = context;
-}
-
-
-void MqttManager::setDevelopmentCommandHandler(DevelopmentCommandHandler handler, void* context)
-{
-    developmentCommandHandler_ = handler;
-    developmentCommandHandlerContext_ = context;
 }
 
 
@@ -407,12 +383,10 @@ void MqttManager::onConnected()
     const std::string loadTopic = fullTopic(TOPIC_COMMANDS_LOAD);
     const std::string systemTopic = fullTopic(TOPIC_COMMANDS_SYSTEM);
     const std::string configTopic = fullTopic(TOPIC_COMMANDS_CONFIG);
-    const std::string developmentTopic = fullTopic(TOPIC_COMMANDS_DEVELOPMENT);
 
     esp_mqtt_client_subscribe(client_, loadTopic.c_str(), 1);
     esp_mqtt_client_subscribe(client_, systemTopic.c_str(), 1);
     esp_mqtt_client_subscribe(client_, configTopic.c_str(), 1);
-    esp_mqtt_client_subscribe(client_, developmentTopic.c_str(), 1);
 }
 
 
@@ -433,8 +407,6 @@ void MqttManager::onDataReceived(const char* topic, std::size_t topicLength, con
         handleSystemCommandMessage(data, dataLength);
     } else if (receivedTopic == fullTopic(TOPIC_COMMANDS_CONFIG)) {
         handleConfigCommandMessage(data, dataLength);
-    } else if (receivedTopic == fullTopic(TOPIC_COMMANDS_DEVELOPMENT)) {
-        handleDevelopmentCommandMessage(data, dataLength);
     } else {
         ESP_LOGW(TAG, "Received data on an unrecognised topic: %s", receivedTopic.c_str());
     }
@@ -814,98 +786,6 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
     publishAcknowledgement(commandId, commandTypeText,
                             result.accepted ? (completesLocally ? AckStatus::APPLIED : AckStatus::ACCEPTED)
                                             : AckStatus::REJECTED,
-                            result.reason, targetText);
-}
-
-
-void MqttManager::handleDevelopmentCommandMessage(const char* data, std::size_t dataLength)
-{
-    cJSON* root = cJSON_ParseWithLength(data, dataLength);
-    if (root == nullptr) {
-        ESP_LOGW(TAG, "Rejected commands/development message: malformed JSON");
-        publishAcknowledgement(0U, "DEVELOPMENT", AckStatus::REJECTED, "malformed JSON", nullptr);
-        return;
-    }
-
-    DevelopmentCommandRequest request{};
-    const cJSON* commandIdField = cJSON_GetObjectItemCaseSensitive(root, "commandId");
-    if (!isUnsignedIntJsonNumber(commandIdField, request.commandId)) {
-        ESP_LOGW(TAG, "Rejected commands/development message: missing/invalid commandId");
-        publishAcknowledgement(0U, "DEVELOPMENT", AckStatus::REJECTED, "missing or invalid commandId", nullptr);
-        cJSON_Delete(root);
-        return;
-    }
-    const std::uint32_t commandId = request.commandId;
-
-    const cJSON* actionField = cJSON_GetObjectItemCaseSensitive(root, "action");
-    DevelopmentCommandAction parsedAction = DevelopmentCommandAction::UNKNOWN;
-    if (!cJSON_IsString(actionField) || !parseDevelopmentCommandActionText(actionField->valuestring, parsedAction)) {
-        ESP_LOGW(TAG, "Rejected commands/development message commandId=%u: missing/unrecognised action",
-                 static_cast<unsigned int>(commandId));
-        publishAcknowledgement(commandId, "DEVELOPMENT", AckStatus::REJECTED, "missing or unrecognised action", nullptr);
-        cJSON_Delete(root);
-        return;
-    }
-    request.action = parsedAction;
-
-    const cJSON* nodeMacField = cJSON_GetObjectItemCaseSensitive(root, "nodeMac");
-    if (!cJSON_IsString(nodeMacField) || !parseMacAddressText(nodeMacField->valuestring, request.targetNodeMacAddress)) {
-        ESP_LOGW(TAG, "Rejected commands/development message commandId=%u: missing/invalid nodeMac",
-                 static_cast<unsigned int>(commandId));
-        publishAcknowledgement(commandId, "DEVELOPMENT", AckStatus::REJECTED, "missing or invalid nodeMac", nullptr);
-        cJSON_Delete(root);
-        return;
-    }
-
-    char targetText[18] = {};
-    formatMacAddressText(targetText, sizeof(targetText), request.targetNodeMacAddress);
-
-    char commandTypeText[24] = {};
-    {
-        std::size_t i = 0U;
-        for (; i < sizeof(commandTypeText) - 1U && actionField->valuestring[i] != '\0'; ++i) {
-            commandTypeText[i] = actionField->valuestring[i];
-        }
-        commandTypeText[i] = '\0';
-    }
-
-    if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT ||
-        request.action == DevelopmentCommandAction::CLEAR_SENSOR_OVERRIDE) {
-        const cJSON* i2cAddressField = cJSON_GetObjectItemCaseSensitive(root, "i2cAddress");
-        if (!isUnsignedByteJsonNumber(i2cAddressField, request.i2cAddress)) {
-            ESP_LOGW(TAG, "Rejected commands/development message commandId=%u: missing i2cAddress",
-                     static_cast<unsigned int>(commandId));
-            publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED, "missing i2cAddress", targetText);
-            cJSON_Delete(root);
-            return;
-        }
-        request.hasSensorInput = true;
-        if (request.action == DevelopmentCommandAction::SET_SENSOR_INPUT) {
-            const cJSON* voltageField = cJSON_GetObjectItemCaseSensitive(root, "voltageVolts");
-            const cJSON* currentField = cJSON_GetObjectItemCaseSensitive(root, "currentAmps");
-            if (!isFiniteJsonNumber(voltageField, request.voltageVolts) ||
-                !isFiniteJsonNumber(currentField, request.currentAmps)) {
-                ESP_LOGW(TAG, "Rejected commands/development message commandId=%u: missing voltageVolts/currentAmps",
-                         static_cast<unsigned int>(commandId));
-                publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED,
-                                        "missing voltageVolts/currentAmps", targetText);
-                cJSON_Delete(root);
-                return;
-            }
-        }
-    }
-
-    cJSON_Delete(root);
-
-    if (developmentCommandHandler_ == nullptr) {
-        ESP_LOGE(TAG, "Rejected commands/development message commandId=%u: no handler registered",
-                 static_cast<unsigned int>(commandId));
-        publishAcknowledgement(commandId, commandTypeText, AckStatus::REJECTED, "no handler registered", targetText);
-        return;
-    }
-
-    const LoadCommandResult result = developmentCommandHandler_(developmentCommandHandlerContext_, request);
-    publishAcknowledgement(commandId, commandTypeText, result.accepted ? AckStatus::ACCEPTED : AckStatus::REJECTED,
                             result.reason, targetText);
 }
 

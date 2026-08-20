@@ -335,21 +335,12 @@ void testHostBuildReportsNoHardware() {
     reportCheck("readMeasurementsForRelayPin() reports failure for an unregistered relay pin",
                 !monitor.readMeasurementsForRelayPin(200U, measurements));
 
-    /*
-     * A development override only ever activates inside the ESP_PLATFORM
-     * branch of readMeasurements() (see INA219Monitor.cpp), so a host
-     * build (no ESP_PLATFORM at all) never fabricates a reading even with
-     * one armed — and therefore readFilteredMeasurements(), built
-     * directly on top of readMeasurements(), also honestly reports
-     * failure.
-     */
-    monitor.setDevelopmentOverride(0x40U, LoadMeasurements{12.0F, 2.0F, 24.0F});
     LoadMeasurements filtered{-1.0F, -1.0F, -1.0F};
     reportCheck("readFilteredMeasurements() on a host build reports failure, not a fabricated filtered reading",
                 !monitor.readFilteredMeasurements(0x40U, filtered));
     reportCheck("A failed readFilteredMeasurements() call leaves the output untouched",
                 filtered.voltageVolts == -1.0F && filtered.currentAmps == -1.0F && filtered.powerWatts == -1.0F);
-    reportCheck("getLastMeasurementSource() stays NONE on a host build even with an override armed",
+    reportCheck("getLastMeasurementSource() stays NONE on a host build with no reading ever taken",
                 monitor.getLastMeasurementSource(0x40U) == MeasurementSource::NONE);
 
     /*
@@ -361,24 +352,16 @@ void testHostBuildReportsNoHardware() {
 }
 
 
-void testDevelopmentOverrideBookkeeping() {
-    printSection("TEST 11 - DEVELOPMENT OVERRIDE BOOKKEEPING");
+void testMeasurementSourceBookkeeping() {
+    printSection("TEST 11 - MEASUREMENT SOURCE BOOKKEEPING");
 
     INA219Monitor monitor;
 
-    reportCheck("setDevelopmentOverride() on an unregistered address is rejected",
-                !monitor.setDevelopmentOverride(0x40U, LoadMeasurements{12.0F, 2.0F, 24.0F}));
-    reportCheck("clearDevelopmentOverride() on an unregistered address is rejected",
-                !monitor.clearDevelopmentOverride(0x40U));
     reportCheck("getLastMeasurementSource() for an unregistered/never-read address is NONE",
                 monitor.getLastMeasurementSource(0x40U) == MeasurementSource::NONE);
 
     monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
 
-    reportCheck("setDevelopmentOverride() on a registered address is accepted",
-                monitor.setDevelopmentOverride(0x40U, LoadMeasurements{12.0F, 2.0F, 24.0F}));
-    reportCheck("clearDevelopmentOverride() on a registered address is accepted",
-                monitor.clearDevelopmentOverride(0x40U));
     reportCheck("A never-read registered sensor still reports MeasurementSource::NONE",
                 monitor.getLastMeasurementSource(0x40U) == MeasurementSource::NONE);
 
@@ -386,8 +369,6 @@ void testDevelopmentOverrideBookkeeping() {
                 std::string(toText(MeasurementSource::NONE)) == "NONE");
     reportCheck("toText(MeasurementSource::HARDWARE) == \"HARDWARE\"",
                 std::string(toText(MeasurementSource::HARDWARE)) == "HARDWARE");
-    reportCheck("toText(MeasurementSource::SIMULATED) == \"SIMULATED\"",
-                std::string(toText(MeasurementSource::SIMULATED)) == "SIMULATED");
 }
 
 void testRollbackRemoval() {
@@ -418,7 +399,7 @@ int main() {
     testExponentialMovingAverageMath();
     testCalibrationValidationAndApplication();
     testHostBuildReportsNoHardware();
-    testDevelopmentOverrideBookkeeping();
+    testMeasurementSourceBookkeeping();
     testRollbackRemoval();
 
     std::printf("\n======================================================================\n");

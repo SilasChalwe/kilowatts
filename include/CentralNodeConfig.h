@@ -9,9 +9,8 @@
  *
  * Deliberately defines no local Load/Branch and no battery sensor address:
  * Central boots with zero local Loads and zero configured sensors until
- * commissioned, like a Smart Node. Simulated sensor input is a runtime-only
- * override (DevelopmentSession.h, INA219Monitor::setDevelopmentOverride()),
- * never a compile-time default applied automatically at boot.
+ * commissioned, like a Smart Node - never a compile-time default applied
+ * automatically at boot.
  */
 
 #ifndef KILOWATTS_CENTRAL_NODE_CONFIG_H
@@ -34,7 +33,19 @@ constexpr const char* CENTRAL_NODE_NAME = "Central";
 constexpr const char* WIFI_STATION_HOSTNAME = "kilowatts-central";
 
 
-constexpr std::array<std::uint8_t, 8U> VERIFIED_RELAY_GPIO_PINS{4U, 13U, 14U, 16U, 17U, 18U, 19U, 23U};
+/* All output-capable ESP32 GPIOs except flash (6-11), input-only (34,35,36,39), UART0 (1,3) and I2C (21,22). GPIO0/12 are boot-strapping pins. */
+constexpr std::array<std::uint8_t, 18U> VERIFIED_RELAY_GPIO_PINS{
+    0U, 2U, 4U, 5U, 12U, 13U, 14U, 15U, 16U, 17U, 18U, 19U, 23U, 25U, 26U, 27U, 32U, 33U};
+
+inline bool isVerifiedRelayPin(std::uint8_t pin)
+{
+    for (const std::uint8_t candidate : VERIFIED_RELAY_GPIO_PINS) {
+        if (candidate == pin) {
+            return true;
+        }
+    }
+    return false;
+}
 
 
 /* I2C bus - ESP32 standard SDA/SCL pins. Only consulted in production mode. */

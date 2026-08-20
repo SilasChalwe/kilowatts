@@ -26,11 +26,10 @@ extern "C" void app_main()
     const bool batteryConfigurationApplied =
         centralConfigurationRestored && applyPersistedBatterySensorConfiguration();
     /*
-     * batteryStateOfCharge is deliberately NOT initialize()d here: Section
-     * "SoC Must Have Validity"/"True Factory State" - with no battery
-     * sensor configured, isValid() must honestly report false/UNKNOWN.
-     * initialize() only ever runs after a real installer-verified sensor
-     * exists (or during an explicit Development Session).
+     * batteryStateOfCharge is deliberately NOT initialize()d here: with no
+     * battery sensor configured, isValid() must honestly report
+     * false/UNKNOWN. initialize() only ever runs after a real
+     * installer-verified sensor exists.
      */
     if (!batteryConfigurationApplied) {
         ESP_LOGI(TAG, "BATTERY_SOC: No valid persisted SoC estimate; no battery sensor configured, remaining UNKNOWN");
@@ -136,7 +135,6 @@ extern "C" void app_main()
     mqttManager.setLoadCommandHandler(&handleLoadCommand, nullptr);
     mqttManager.setSystemCommandHandler(&handleSystemCommand, nullptr);
     mqttManager.setConfigCommandHandler(&handleConfigCommand, nullptr);
-    mqttManager.setDevelopmentCommandHandler(&handleDevelopmentCommand, nullptr);
 
     xTaskCreate(sensorAcquisitionTask, "sensor_acq", 4096U, nullptr, 5U, nullptr);
     xTaskCreate(espNowCommunicationTask, "espnow_app", 4096U, nullptr, 5U, nullptr);

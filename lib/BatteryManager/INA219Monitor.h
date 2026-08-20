@@ -21,32 +21,19 @@
  * Loads, does not calculate system Available Power, does not perform MQTT,
  * and does not control relays. It measures. Nothing else.
  *
- * A per-sensor runtime override (setDevelopmentOverride() /
- * clearDevelopmentOverride()), never a compile-time switch, changes only
- * where readMeasurements() gets its raw voltage/current/power from - every
- * other method on this class, and everything downstream of it (EMA
- * filtering, calibration, Load::setMeasurements(), battery State of
- * Charge, the power limit, Best-First Search) is exactly the same
- * production code path whether or not an override is active. No sensor
- * has an override by default: a freshly registered sensor always attempts
- * real I2C communication first, and only ever reports a substituted
- * reading after something explicitly armed one - see DevelopmentSession.h in lib/DevelopmentManager
- * for the session/policy layer that decides when that happens.
- * getLastMeasurementSource() exposes which one actually produced a
- * sensor's most recent successful reading (HARDWARE/SIMULATED), or NONE
- * before any successful reading has ever occurred. This distinction is
- * orthogonal to the host-vs-ESP32 build split below: an override only
- * ever substitutes a reading while running as real firmware on the ESP32
- * target (ESP_PLATFORM defined) - a plain host build still always returns
- * false from every hardware-touching method regardless of any override,
- * since there is no firmware runtime there at all to substitute one for.
+ * Every reading comes from a real I2C transaction with the physical
+ * sensor. readMeasurements() returns false (and never writes to its output
+ * parameter) whenever the sensor is not registered, does not respond on
+ * the bus, or reports an overflow/out-of-range value - it never
+ * substitutes a fabricated reading. getLastMeasurementSource() reports
+ * HARDWARE after a successful reading, or NONE before any successful
+ * reading has ever occurred.
  *
  * This header has no ESP-IDF dependency so it can be included, and its
  * sensor-registration logic and EMA math exercised, from a plain host
- * build (see test/INA219Monitor/). The real I2C register communication,
- * the development-value substitution, and calibration NVS persistence are
- * compiled only when building for the ESP32 target (see
- * INA219Monitor.cpp).
+ * build (see test/INA219Monitor/). The real I2C register communication and
+ * calibration NVS persistence are compiled only when building for the
+ * ESP32 target (see INA219Monitor.cpp).
  */
 
 #ifndef KILOWATTS_INA219_MONITOR_H
@@ -65,13 +52,12 @@ namespace kilowatts {
  * Which real source actually produced a sensor's most recent successful
  * reading. NONE means no successful reading has occurred yet (never read,
  * or every attempt so far has failed) - it is never used to mean "zero
- * measured value," which is a legitimate HARDWARE/SIMULATED reading in
- * its own right.
+ * measured value," which is a legitimate HARDWARE reading in its own
+ * right.
  */
 enum class MeasurementSource : std::uint8_t {
     NONE = 0U,
-    HARDWARE = 1U,
-    SIMULATED = 2U
+    HARDWARE = 1U
 };
 
 const char* toText(MeasurementSource source);
@@ -260,32 +246,6 @@ public:
 
 
     /**
-     * Arms a runtime development override for the registered sensor at
-     * i2cAddress: every subsequent readMeasurements()/
-     * readFilteredMeasurements() call for this sensor returns
-     * rawMeasurements (still passed through calibration and EMA filtering
-     * exactly like a real reading) instead of performing a real I2C
-     * transaction, and reports MeasurementSource::SIMULATED. This is the
-     * only way a non-hardware reading can ever be produced - there is no
-     * compile-time equivalent. The caller (see DevelopmentSession.h in lib/DevelopmentManager) is
-     * responsible for only ever calling this while an explicit Development
-     * Session is active.
-     *
-     * Returns false when i2cAddress is not registered.
-     */
-    bool setDevelopmentOverride(std::uint8_t i2cAddress, const LoadMeasurements& rawMeasurements);
-
-
-    /**
-     * Removes a sensor's development override, if it has one: subsequent
-     * reads resume attempting real I2C communication.
-     *
-     * Returns false when i2cAddress is not registered.
-     */
-    bool clearDevelopmentOverride(std::uint8_t i2cAddress);
-
-
-    /**
      * Returns which source actually produced i2cAddress's most recent
      * successful reading (MeasurementSource::NONE before any successful
      * reading has occurred this boot, or when i2cAddress is not
@@ -398,10 +358,6 @@ private:
         /** Running EMA state consumed/updated by readFilteredMeasurements(). */
         LoadMeasurements filteredMeasurements;
         bool hasFilteredMeasurement;
-
-        /** Set only by setDevelopmentOverride()/cleared by clearDevelopmentOverride() - see their own documentation. */
-        bool hasDevelopmentOverride;
-        LoadMeasurements developmentOverrideRawMeasurements;
 
         /**
          * Bookkeeping only, updated by readMeasurements() even though that

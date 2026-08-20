@@ -27,7 +27,7 @@
 namespace kilowatts {
 
 /** Board-declared GPIO capability slots carried in an infrequent identity report. */
-static constexpr std::size_t MAX_RELAY_GPIO_CAPABILITIES = 8U;
+static constexpr std::size_t MAX_RELAY_GPIO_CAPABILITIES = 18U;
 
 
 /**
@@ -56,6 +56,9 @@ struct IdentityReportPacket {
     std::uint16_t siliconRevision;
     std::uint8_t cpuCores;
     char resetReason[16];
+    std::uint32_t cpuFrequencyMhz;
+    std::uint8_t temperatureAvailable;  // 1 when this chip has a temperature sensor peripheral (see ChipInfo::getTemperatureCelsius())
+    float temperatureCelsius;           // meaningful only when temperatureAvailable = 1
 };
 
 
@@ -100,6 +103,33 @@ struct DecommissionAckPacket {
 };
 
 
+/**
+ * Central -> Node: erase this Node's own installation-specific persisted
+ * configuration and reboot into UNCOMMISSIONED. confirmToken must equal
+ * FACTORY_RESET_CONFIRM_TOKEN exactly - a mismatched token is rejected
+ * without touching NVS.
+ */
+constexpr std::uint8_t FACTORY_RESET_CONFIRM_TOKEN = 0x5AU;
+
+struct FactoryResetCommandPacket {
+    std::uint32_t commandId;
+    std::uint8_t confirmToken;
+};
+
+
+/**
+ * Sent only when the confirm token was wrong or NVS erase failed - a
+ * successful factory reset reboots the Node immediately instead of
+ * replying, since there is nothing meaningful left to acknowledge from
+ * (the Node is about to forget it was ever commissioned, including any
+ * route back to Central).
+ */
+struct FactoryResetAckPacket {
+    std::uint32_t commandId;
+    std::uint8_t success;
+};
+
+
 static_assert(std::is_trivially_copyable<IdentityReportPacket>::value,
               "IdentityReportPacket must be safe to send and receive over ESP-NOW");
 static_assert(std::is_trivially_copyable<CommissionCommandPacket>::value,
@@ -110,6 +140,10 @@ static_assert(std::is_trivially_copyable<DecommissionCommandPacket>::value,
               "DecommissionCommandPacket must be safe to send and receive over ESP-NOW");
 static_assert(std::is_trivially_copyable<DecommissionAckPacket>::value,
               "DecommissionAckPacket must be safe to send and receive over ESP-NOW");
+static_assert(std::is_trivially_copyable<FactoryResetCommandPacket>::value,
+              "FactoryResetCommandPacket must be safe to send and receive over ESP-NOW");
+static_assert(std::is_trivially_copyable<FactoryResetAckPacket>::value,
+              "FactoryResetAckPacket must be safe to send and receive over ESP-NOW");
 
 static_assert(sizeof(IdentityReportPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
               "IdentityReportPacket is too large to fit inside one ESP-NOW message");
@@ -121,6 +155,10 @@ static_assert(sizeof(DecommissionCommandPacket) <= EspNowCommunication::MAX_PAYL
               "DecommissionCommandPacket is too large to fit inside one ESP-NOW message");
 static_assert(sizeof(DecommissionAckPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
               "DecommissionAckPacket is too large to fit inside one ESP-NOW message");
+static_assert(sizeof(FactoryResetCommandPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
+              "FactoryResetCommandPacket is too large to fit inside one ESP-NOW message");
+static_assert(sizeof(FactoryResetAckPacket) <= EspNowCommunication::MAX_PAYLOAD_SIZE,
+              "FactoryResetAckPacket is too large to fit inside one ESP-NOW message");
 
 
 } // namespace kilowatts

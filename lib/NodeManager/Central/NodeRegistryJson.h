@@ -36,6 +36,12 @@ public:
      * PlanningNode exists (a Node discovered by IDENTITY_REPORT but not
      * yet reporting has none - "online", "hopCountToCentral" and
      * "nextHopMac" are JSON null rather than fabricated in that case).
+     * Each object also carries "diagnostics" (see
+     * NodeCommissioningRegistry::Diagnostics) - free/min-free heap, flash
+     * and PSRAM size, silicon revision, CPU core count and frequency,
+     * last reset reason, and die temperature where the chip target has a
+     * temperature sensor peripheral ("temperatureCelsius" is JSON null on
+     * a target that does not, e.g. Central's original ESP32).
      */
     static std::string buildStateNodesJson(
         const NodeCommissioningRegistry& commissioningRegistry,

@@ -74,6 +74,20 @@ public:
     /** PSRAM size in bytes, or 0 when PSRAM is not initialized/present. */
     std::uint32_t getPsramSizeBytes() const;
 
+    /** Current CPU clock frequency in MHz. */
+    std::uint32_t getCpuFrequencyMhz() const;
+
+    /**
+     * Reads this chip's internal die temperature into outCelsius.
+     *
+     * Returns false (outCelsius left unchanged) when the flashed target has
+     * no temperature sensor peripheral (the original ESP32 used by
+     * Central has none - only ESP32-S2/S3/C-series/H2 do) or the sensor
+     * could not be read. Never fabricates a reading for unsupported
+     * hardware.
+     */
+    bool getTemperatureCelsius(float& outCelsius) const;
+
     /**
      * Writes a short, stable reset-reason text (e.g. "POWERON", "PANIC",
      * "BROWNOUT") into buffer, truncated to fit bufferSize with a

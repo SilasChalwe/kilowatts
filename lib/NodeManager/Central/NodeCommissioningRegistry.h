@@ -36,7 +36,7 @@ public:
     static constexpr std::size_t FRIENDLY_NAME_BUFFER_SIZE = 20U;
     static constexpr std::size_t FIRMWARE_VERSION_BUFFER_SIZE = 12U;
     static constexpr std::size_t CHIP_MODEL_BUFFER_SIZE = 16U;
-    static constexpr std::size_t MAX_RELAY_GPIO_CAPABILITIES = 8U;
+    static constexpr std::size_t MAX_RELAY_GPIO_CAPABILITIES = 18U;
 
     /** Whether commissioning config Central holds for this Node currently matches what the Node itself has confirmed applying. */
     enum class SyncState : std::uint8_t {
@@ -61,6 +61,10 @@ public:
         std::uint16_t siliconRevision = 0U;
         std::uint8_t cpuCores = 0U;
         char resetReason[RESET_REASON_BUFFER_SIZE] = {};
+        std::uint32_t cpuFrequencyMhz = 0U;
+        /** False when this Node's chip has no temperature sensor peripheral (e.g. Central's original ESP32) - temperatureCelsius is then not meaningful. */
+        bool temperatureAvailable = false;
+        float temperatureCelsius = 0.0F;
     };
 
     struct CommissioningRecord {

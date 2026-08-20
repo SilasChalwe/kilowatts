@@ -125,8 +125,6 @@ std::string SystemStateJson::build(const SystemStateInputs& inputs, std::uint32_
     json += "},";
 
     json += "\"diagnostics\":{";
-    appendStringField(json, "operatingEnvironment", inputs.operatingEnvironmentText, true);
-    appendBoolField(json, "developmentSessionActive", inputs.developmentSessionActive, true);
     appendIntegerField(json, "faultCount", static_cast<std::int64_t>(inputs.faultCount), true);
     appendStringField(json, "faultSummary", inputs.faultSummaryText != nullptr ? inputs.faultSummaryText : "", false);
     json += "}";

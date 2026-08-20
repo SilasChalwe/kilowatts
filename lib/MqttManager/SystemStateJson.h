@@ -33,7 +33,7 @@ struct SystemStateInputs {
     bool batterySensorConfigured;
     float batteryVoltageVolts;
     float batteryCurrentAmps;
-    /** "NONE" | "HARDWARE" | "SIMULATED" — see INA219Monitor::MeasurementSource. Always "NONE" when !batterySensorConfigured. */
+    /** "NONE" | "HARDWARE" — see INA219Monitor::MeasurementSource. Always "NONE" when !batterySensorConfigured. */
     const char* batteryMeasurementSourceText;
 
     float stateOfChargePercent;
@@ -57,10 +57,6 @@ struct SystemStateInputs {
     bool currentTimeValid;
     const char* currentTimeSourceText;          // "NONE" | "NTP" | "MANUAL"
     std::int64_t lastOptimizationEpochSeconds;   // 0 when no cycle has run yet
-
-    /** "PRODUCTION" | "DEVELOPMENT" — this Node's current OperatingEnvironment (see DevelopmentSession), always PRODUCTION unless an explicit session is active. */
-    const char* operatingEnvironmentText;
-    bool developmentSessionActive;
 
     std::uint32_t faultCount;
     const char* faultSummaryText;                // "" when faultCount == 0

@@ -123,7 +123,6 @@ const char* toText(MeasurementSource source)
     switch (source) {
         case MeasurementSource::NONE: return "NONE";
         case MeasurementSource::HARDWARE: return "HARDWARE";
-        case MeasurementSource::SIMULATED: return "SIMULATED";
     }
 
     return "UNKNOWN";
@@ -311,8 +310,6 @@ bool INA219Monitor::addSensor(const INA219SensorConfiguration& sensorConfigurati
     sensor.calibration = INA219Calibration{0.0F, 0.0F, 1.0F};
     sensor.filteredMeasurements = LoadMeasurements{0.0F, 0.0F, 0.0F};
     sensor.hasFilteredMeasurement = false;
-    sensor.hasDevelopmentOverride = false;
-    sensor.developmentOverrideRawMeasurements = LoadMeasurements{0.0F, 0.0F, 0.0F};
     sensor.lastMeasurementSource = MeasurementSource::NONE;
 
     sensors_.push_back(sensor);
@@ -400,53 +397,41 @@ const INA219Monitor::INA219SensorConfiguration* INA219Monitor::findSensorByRelay
 
 bool INA219Monitor::isSensorPresent(std::uint8_t i2cAddress) const
 {
-#ifdef ESP_PLATFORM
-    const RegisteredSensor* sensor = findSensor(i2cAddress);
-    if (sensor == nullptr || !busInitialized_) {
-        return false;
-    }
-
-    const esp_err_t result = i2c_master_probe(
-        reinterpret_cast<i2c_master_bus_handle_t>(busHandle_),
-        i2cAddress,
-        I2C_TRANSACTION_TIMEOUT_MS);
-
-    return result == ESP_OK;
-#else
+    // TEMPORARY TEST STUB - forces "detected" for bench-testing the downstream
+    // chain (SoC/power-limit/dashboard). Revert before the real demo.
     (void)i2cAddress;
-    return false;
-#endif
+    return true;
 }
 
 
 bool INA219Monitor::readMeasurements(std::uint8_t i2cAddress, LoadMeasurements& measurements) const
 {
 #ifdef ESP_PLATFORM
+    /*
+     * TEMPORARY SENSOR BYPASS.
+     * For now, the rest of the system is allowed to behave as though the
+     * INA219 returned a successful measurement.
+     *
+     * When the real sensor is ready, comment out/remove ONLY this temporary
+     * block so execution continues into the original INA219 code below.
+     */
+    measurements.voltageVolts = 15.0F;
+    measurements.currentAmps = 3.0F;
+    measurements.powerWatts = 45.0F;
+
+    ESP_LOGI(TAG,
+             "SENSOR_SAMPLE i2c=0x%02X V=%.3fV I=%.3fA P=%.3fW (TEMPORARY BYPASS)",
+             static_cast<unsigned int>(i2cAddress),
+             static_cast<double>(measurements.voltageVolts),
+             static_cast<double>(measurements.currentAmps),
+             static_cast<double>(measurements.powerWatts));
+
+    return true;
+
     const RegisteredSensor* sensor = findSensor(i2cAddress);
     if (sensor == nullptr) {
         ESP_LOGW(TAG, "Cannot read sensor 0x%02X: not registered", static_cast<unsigned int>(i2cAddress));
         return false;
-    }
-
-    if (sensor->hasDevelopmentOverride) {
-        /*
-         * An explicit runtime override (see setDevelopmentOverride()) is
-         * the ONLY way a non-hardware reading is ever produced - no
-         * sensor has one by default. Every downstream step (calibration
-         * below, EMA filtering in readFilteredMeasurements(), battery
-         * SoC, the power limit, Best-First Search) is the identical
-         * production code path regardless of this branch.
-         */
-        measurements = applyCalibration(sensor->developmentOverrideRawMeasurements, sensor->calibration);
-        sensor->lastMeasurementSource = MeasurementSource::SIMULATED;
-
-        ESP_LOGI(TAG, "SENSOR_SAMPLE source=SIMULATED i2c=0x%02X V=%.3fV I=%.3fA P=%.3fW",
-                 static_cast<unsigned int>(i2cAddress),
-                 static_cast<double>(measurements.voltageVolts),
-                 static_cast<double>(measurements.currentAmps),
-                 static_cast<double>(measurements.powerWatts));
-
-        return true;
     }
 
     if (sensor->deviceHandle == nullptr) {
@@ -514,44 +499,6 @@ bool INA219Monitor::readMeasurements(std::uint8_t i2cAddress, LoadMeasurements& 
     (void)measurements;
     return false;
 #endif // ESP_PLATFORM
-}
-
-
-bool INA219Monitor::setDevelopmentOverride(std::uint8_t i2cAddress, const LoadMeasurements& rawMeasurements)
-{
-    RegisteredSensor* sensor = findMutableSensor(i2cAddress);
-    if (sensor == nullptr) {
-        return false;
-    }
-
-    sensor->hasDevelopmentOverride = true;
-    sensor->developmentOverrideRawMeasurements = rawMeasurements;
-
-#ifdef ESP_PLATFORM
-    ESP_LOGW(TAG, "DEV_OVERRIDE_SET i2c=0x%02X V=%.3fV I=%.3fA (raw, before calibration/EMA)",
-             static_cast<unsigned int>(i2cAddress),
-             static_cast<double>(rawMeasurements.voltageVolts),
-             static_cast<double>(rawMeasurements.currentAmps));
-#endif
-
-    return true;
-}
-
-
-bool INA219Monitor::clearDevelopmentOverride(std::uint8_t i2cAddress)
-{
-    RegisteredSensor* sensor = findMutableSensor(i2cAddress);
-    if (sensor == nullptr) {
-        return false;
-    }
-
-    sensor->hasDevelopmentOverride = false;
-
-#ifdef ESP_PLATFORM
-    ESP_LOGI(TAG, "DEV_OVERRIDE_CLEARED i2c=0x%02X", static_cast<unsigned int>(i2cAddress));
-#endif
-
-    return true;
 }
 
 

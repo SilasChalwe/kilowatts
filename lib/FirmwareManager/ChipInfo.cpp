@@ -12,6 +12,20 @@
 #include "esp_psram.h"
 #include "esp_system.h"
 #include "sdkconfig.h"
+#include "soc/soc_caps.h"
+
+/*
+ * esp_clk_cpu_freq() has no stable public-API equivalent - it lives under
+ * esp_private/ purely because ESP-IDF makes no ABI-stability promise for
+ * it across major versions, not because application code is meant to
+ * avoid it; it is what ESP-IDF's own components use internally for this
+ * exact purpose.
+ */
+#include "esp_private/esp_clk.h"
+
+#if SOC_TEMP_SENSOR_SUPPORTED
+#include "driver/temperature_sensor.h"
+#endif
 
 
 static const char *TAG = "CHIP_INFO";
@@ -167,6 +181,39 @@ std::uint32_t ChipInfo::getPsramSizeBytes() const
 
 
 
+std::uint32_t ChipInfo::getCpuFrequencyMhz() const
+{
+    return static_cast<std::uint32_t>(esp_clk_cpu_freq() / 1000000);
+}
+
+
+
+bool ChipInfo::getTemperatureCelsius(float& outCelsius) const
+{
+#if SOC_TEMP_SENSOR_SUPPORTED
+    temperature_sensor_config_t config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    temperature_sensor_handle_t handle = nullptr;
+
+    if (temperature_sensor_install(&config, &handle) != ESP_OK) {
+        return false;
+    }
+
+    bool ok = false;
+    if (temperature_sensor_enable(handle) == ESP_OK) {
+        ok = temperature_sensor_get_celsius(handle, &outCelsius) == ESP_OK;
+        temperature_sensor_disable(handle);
+    }
+
+    temperature_sensor_uninstall(handle);
+    return ok;
+#else
+    (void)outCelsius;
+    return false;
+#endif
+}
+
+
+
 bool ChipInfo::getResetReasonText(
     char* buffer,
     std::size_t bufferSize
@@ -231,6 +278,29 @@ void ChipInfo::printChip() const
         majorRevision,
         minorRevision
     );
+
+    ESP_LOGI(
+        TAG,
+        "CPU frequency: %" PRIu32 " MHz",
+        getCpuFrequencyMhz()
+    );
+
+    float temperatureCelsius = 0.0F;
+    if (getTemperatureCelsius(temperatureCelsius))
+    {
+        ESP_LOGI(
+            TAG,
+            "Die temperature: %.1f C",
+            static_cast<double>(temperatureCelsius)
+        );
+    }
+    else
+    {
+        ESP_LOGW(
+            TAG,
+            "Die temperature: not supported on this target"
+        );
+    }
 }
 
 
