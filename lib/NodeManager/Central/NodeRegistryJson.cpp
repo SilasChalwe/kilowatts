@@ -34,6 +34,15 @@ bool pinIsUsed(const CentralNodeRegistry::PlanningNode* node, std::uint8_t pin)
     return false;
 }
 
+bool nodeIsOnline(
+    const CentralNodeRegistry::PlanningNode& node,
+    std::uint32_t nowMilliseconds,
+    std::uint32_t onlineTimeoutMilliseconds)
+{
+    return node.isCentralNode ||
+           (nowMilliseconds - node.lastSeenMilliseconds) <= onlineTimeoutMilliseconds;
+}
+
 void appendRelayPins(
     std::string& out,
     const NodeCommissioningRegistry::CommissioningRecord& record,
@@ -117,9 +126,20 @@ std::string NodeRegistryJson::buildStateNodesJson(
     std::uint32_t nowMilliseconds,
     std::uint32_t onlineTimeoutMilliseconds)
 {
-    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"nodes\":[";
-    bool first = true;
+    std::size_t onlineNodeCount = 0U;
+    for (std::size_t i = 0U; i < centralNodeRegistry.getNumberOfNodes(); ++i) {
+        const auto* node = centralNodeRegistry.getNode(i);
+        if (node != nullptr && nodeIsOnline(*node, nowMilliseconds, onlineTimeoutMilliseconds)) {
+            ++onlineNodeCount;
+        }
+    }
 
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion);
+    json += ",\"nodeCount\":" + std::to_string(centralNodeRegistry.getNumberOfNodes());
+    json += ",\"onlineNodeCount\":" + std::to_string(onlineNodeCount);
+    json += ",\"nodes\":[";
+
+    bool first = true;
     for (std::size_t i = 0U; i < commissioningRegistry.getCount(); ++i) {
         const auto* record = commissioningRegistry.getRecord(i);
         if (record == nullptr) {
@@ -151,12 +171,11 @@ std::string NodeRegistryJson::buildStateNodesJson(
         appendDiagnostics(json, record->diagnostics);
 
         if (planningNode == nullptr) {
-            json += ",\"online\":null,\"hopCountToCentral\":null,\"nextHopMac\":null";
+            json += ",\"online\":false,\"hopCountToCentral\":null,\"nextHopMac\":null";
         } else if (isCentral) {
             json += ",\"online\":true,\"hopCountToCentral\":0,\"nextHopMac\":null";
         } else {
-            const bool online =
-                (nowMilliseconds - planningNode->lastSeenMilliseconds) <= onlineTimeoutMilliseconds;
+            const bool online = nodeIsOnline(*planningNode, nowMilliseconds, onlineTimeoutMilliseconds);
             json += ",\"online\":";
             json += online ? "true" : "false";
             json += ",\"hopCountToCentral\":" + std::to_string(planningNode->hopCountToCentral);
@@ -176,7 +195,9 @@ std::string NodeRegistryJson::buildConfigNodesJson(
     const CentralNodeRegistry& centralNodeRegistry,
     std::uint32_t schemaVersion)
 {
-    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"nodes\":[";
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion);
+    json += ",\"nodeCount\":" + std::to_string(centralNodeRegistry.getNumberOfNodes());
+    json += ",\"nodes\":[";
     bool first = true;
 
     for (std::size_t i = 0U; i < commissioningRegistry.getCount(); ++i) {
