@@ -195,11 +195,15 @@ bool NodeLoadHardwareStore::applyOne(
         return false;
     }
 
-    bool confirmedOn = true;
-    if (relays.readBackState(value.relayPin, confirmedOn) && !confirmedOn) {
-        applied->setConfirmedRelayState(false);
+    bool pinOn = false;
+    if (!relays.readBackState(value.relayPin, pinOn)) {
+        rollbackOne(value, relays, node);
+        reason = HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED;
+        return false;
     }
 
+    applied->setConfirmedRelayState(pinOn);
+    applied->setHealth(LoadHealth::AVAILABLE);
     reason = HardwareConfigurationFailureReason::NONE;
     return true;
 }
@@ -254,9 +258,9 @@ bool NodeLoadHardwareStore::removeLoad(
         return false;
     }
 
-    bool confirmedOn = true;
+    bool pinOn = true;
     if (!relays.setRelayState(relayPin, false) ||
-        !relays.readBackState(relayPin, confirmedOn) || confirmedOn) {
+        !relays.readBackState(relayPin, pinOn) || pinOn) {
         reason = HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED;
         return false;
     }
@@ -282,9 +286,9 @@ bool NodeLoadHardwareStore::clearAllConfigurations(
     HardwareConfigurationFailureReason& reason)
 {
     for (const LoadConfiguration& value : configurations_) {
-        bool confirmedOn = true;
+        bool pinOn = true;
         if (!relays.setRelayState(value.relayPin, false) ||
-            !relays.readBackState(value.relayPin, confirmedOn) || confirmedOn) {
+            !relays.readBackState(value.relayPin, pinOn) || pinOn) {
             reason = HardwareConfigurationFailureReason::HARDWARE_INITIALIZATION_FAILED;
             return false;
         }

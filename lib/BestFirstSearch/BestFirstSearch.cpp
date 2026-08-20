@@ -13,16 +13,14 @@ BestFirstSearch::BestFirstSearch()
       planningState_{0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
       finalRemainingPowerWatts_(0.0F),
       selectedAutoLoadPowerWatts_(0.0F),
-      powerAlreadyUsedWatts_(0.0F),
+      plannedOnPowerWatts_(0.0F),
       batteryStressTerm_(0.0F)
 {
 }
 
 bool BestFirstSearch::setSearchScoreWeights(const Weights& weights)
 {
-    if (searchStarted_ || !areWeightsValid(weights)) {
-        return false;
-    }
+    if (searchStarted_ || !areWeightsValid(weights)) return false;
     weights_ = weights;
     weightsConfigured_ = true;
     return true;
@@ -30,17 +28,13 @@ bool BestFirstSearch::setSearchScoreWeights(const Weights& weights)
 
 bool BestFirstSearch::startSearch(const ElectricalPlanningState& state)
 {
-    if (!weightsConfigured_ || !areWeightsValid(weights_) || !isPlanningStateValid(state)) {
-        return false;
-    }
-    if (searchStarted_ && !searchCompleted_) {
-        return false;
-    }
+    if (!weightsConfigured_ || !areWeightsValid(weights_) || !isPlanningStateValid(state)) return false;
+    if (searchStarted_ && !searchCompleted_) return false;
 
     resetSearch();
     planningState_ = state;
-    finalRemainingPowerWatts_ = state.initialBestFirstPowerWatts;
-    powerAlreadyUsedWatts_ = state.powerAlreadyUsedWatts;
+    finalRemainingPowerWatts_ = state.powerPassedToBestFirstWatts;
+    plannedOnPowerWatts_ = state.fixedOnLoadPowerWatts;
 
     const float range = state.warningStateOfChargePercent - state.minimumStateOfChargePercent;
     batteryStressTerm_ = clamp(
@@ -82,9 +76,7 @@ bool BestFirstSearch::addLoad(const Load& load, float scheduleFuturePenalty)
 
 bool BestFirstSearch::run()
 {
-    if (!searchStarted_ || searchCompleted_) {
-        return false;
-    }
+    if (!searchStarted_ || searchCompleted_) return false;
 
     openSet_.clear();
     admittedOrder_.clear();
@@ -92,13 +84,9 @@ bool BestFirstSearch::run()
     std::fill(rejectionReasons_.begin(), rejectionReasons_.end(), NONE);
 
     for (std::size_t index = 0U; index < loads_.size(); ++index) {
-        if (!isLoadValid(index)) {
-            return false;
-        }
+        if (!isLoadValid(index)) return false;
         calculateAndStoreScores(index);
-        if (!std::isfinite(finalScores_[index])) {
-            return false;
-        }
+        if (!std::isfinite(finalScores_[index])) return false;
         insertIntoOpenSet(index);
     }
 
@@ -123,7 +111,7 @@ void BestFirstSearch::resetSearch()
     planningState_ = ElectricalPlanningState{0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
     finalRemainingPowerWatts_ = 0.0F;
     selectedAutoLoadPowerWatts_ = 0.0F;
-    powerAlreadyUsedWatts_ = 0.0F;
+    plannedOnPowerWatts_ = 0.0F;
     batteryStressTerm_ = 0.0F;
 
     loads_.clear();
@@ -161,37 +149,28 @@ std::size_t BestFirstSearch::getNumberOfAdmittedLoads() const { return admittedO
 
 const Load* BestFirstSearch::getAdmittedLoad(std::size_t position) const
 {
-    if (position >= admittedOrder_.size()) {
-        return nullptr;
-    }
-    return getLoad(admittedOrder_[position]);
+    return position < admittedOrder_.size() ? getLoad(admittedOrder_[position]) : nullptr;
 }
 
 std::uint8_t BestFirstSearch::checkFeasibility(const FeasibilityInputs& in)
 {
-    if (in.stateOfChargePercent <= in.minimumStateOfChargePercent) {
-        return LOW_BATTERY;
-    }
-    if (in.candidateRunningPowerWatts > in.remainingPowerWatts) {
-        return POWER_LIMIT_EXCEEDED;
-    }
-    if (in.powerAlreadyUsedWatts + in.candidatePeakPowerWatts > in.maximumBatteryPowerWatts) {
+    if (in.stateOfChargePercent <= in.minimumStateOfChargePercent) return LOW_BATTERY;
+    if (in.candidateRunningPowerWatts > in.remainingPowerWatts) return POWER_LIMIT_EXCEEDED;
+    if (in.plannedOnPowerWatts + in.candidatePeakPowerWatts > in.maximumBatteryPowerWatts) {
         return BATTERY_CURRENT_LIMIT;
     }
-    if (in.batteryBusVoltageVolts <= 0.0F) {
-        return MAIN_LIMIT_EXCEEDED;
-    }
+    if (in.batteryBusVoltageVolts <= 0.0F) return MAIN_LIMIT_EXCEEDED;
 
     const float startupCurrentAmps =
-        (in.powerAlreadyUsedWatts + in.candidatePeakPowerWatts) / in.batteryBusVoltageVolts;
+        (in.plannedOnPowerWatts + in.candidatePeakPowerWatts) / in.batteryBusVoltageVolts;
     return startupCurrentAmps > in.maximumMainCurrentAmps ? MAIN_LIMIT_EXCEEDED : NONE;
 }
 
-float BestFirstSearch::getTotalAvailablePowerWatts() const { return planningState_.totalAvailablePowerWatts; }
-float BestFirstSearch::getInitialBestFirstPowerWatts() const { return planningState_.initialBestFirstPowerWatts; }
+float BestFirstSearch::getPowerBeforeFixedLoadsWatts() const { return planningState_.powerBeforeFixedLoadsWatts; }
+float BestFirstSearch::getPowerPassedToBestFirstWatts() const { return planningState_.powerPassedToBestFirstWatts; }
 float BestFirstSearch::getFinalRemainingPowerWatts() const { return finalRemainingPowerWatts_; }
 float BestFirstSearch::getSelectedAutoLoadPowerWatts() const { return selectedAutoLoadPowerWatts_; }
-float BestFirstSearch::getPowerAlreadyUsedWatts() const { return powerAlreadyUsedWatts_; }
+float BestFirstSearch::getPlannedOnPowerWatts() const { return plannedOnPowerWatts_; }
 float BestFirstSearch::getBatteryStressTerm() const { return batteryStressTerm_; }
 
 float BestFirstSearch::getLoadRunningPowerRatio(std::size_t index) const
@@ -243,17 +222,15 @@ bool BestFirstSearch::isPlanningStateValid(const ElectricalPlanningState& s) con
            std::isfinite(s.batteryBusVoltageVolts) && s.batteryBusVoltageVolts > 0.0F &&
            isFiniteNonNegative(s.maximumBatteryPowerWatts) &&
            isFiniteNonNegative(s.maximumMainCurrentAmps) &&
-           isFiniteNonNegative(s.totalAvailablePowerWatts) &&
-           isFiniteNonNegative(s.initialBestFirstPowerWatts) &&
-           isFiniteNonNegative(s.powerAlreadyUsedWatts) &&
-           s.initialBestFirstPowerWatts <= s.totalAvailablePowerWatts;
+           isFiniteNonNegative(s.powerBeforeFixedLoadsWatts) &&
+           isFiniteNonNegative(s.powerPassedToBestFirstWatts) &&
+           isFiniteNonNegative(s.fixedOnLoadPowerWatts) &&
+           s.powerPassedToBestFirstWatts <= s.powerBeforeFixedLoadsWatts;
 }
 
 bool BestFirstSearch::isLoadValid(std::size_t index) const
 {
-    if (index >= loads_.size() || loads_[index] == nullptr || index >= schedulePenalties_.size()) {
-        return false;
-    }
+    if (index >= loads_.size() || loads_[index] == nullptr || index >= schedulePenalties_.size()) return false;
     const LoadPower power = loads_[index]->getPower();
     return std::isfinite(power.runningWatts) && power.runningWatts > 0.0F &&
            std::isfinite(power.startupWatts) && power.startupWatts >= power.runningWatts &&
@@ -270,14 +247,14 @@ bool BestFirstSearch::isLoadAlreadyAdded(const Load& load) const
 float BestFirstSearch::calculateRunningPowerRatio(std::size_t index) const
 {
     return loads_[index]->getPower().runningWatts /
-           std::max(planningState_.totalAvailablePowerWatts, 1.0F);
+           std::max(planningState_.powerBeforeFixedLoadsWatts, 1.0F);
 }
 
 float BestFirstSearch::calculateStartupPowerRatio(std::size_t index) const
 {
     const LoadPower power = loads_[index]->getPower();
     const float extraStartupPower = std::max(0.0F, power.startupWatts - power.runningWatts);
-    return extraStartupPower / std::max(planningState_.totalAvailablePowerWatts, 1.0F);
+    return extraStartupPower / std::max(planningState_.powerBeforeFixedLoadsWatts, 1.0F);
 }
 
 float BestFirstSearch::calculatePriorityRatio(std::size_t index) const
@@ -326,7 +303,7 @@ std::uint8_t BestFirstSearch::checkLoadFeasibility(std::size_t index) const
         power.runningWatts,
         power.startupWatts,
         finalRemainingPowerWatts_,
-        powerAlreadyUsedWatts_,
+        plannedOnPowerWatts_,
         planningState_.maximumBatteryPowerWatts,
         planningState_.batteryBusVoltageVolts,
         planningState_.maximumMainCurrentAmps});
@@ -343,9 +320,7 @@ std::size_t BestFirstSearch::extractBestFromOpenSet()
     const std::size_t best = openSet_.front();
     openSet_.front() = openSet_.back();
     openSet_.pop_back();
-    if (!openSet_.empty()) {
-        moveDown(0U);
-    }
+    if (!openSet_.empty()) moveDown(0U);
     return best;
 }
 
@@ -353,9 +328,7 @@ void BestFirstSearch::moveUp(std::size_t position)
 {
     while (position > 0U) {
         const std::size_t parent = (position - 1U) / 2U;
-        if (!comesBefore(openSet_[position], openSet_[parent])) {
-            break;
-        }
+        if (!comesBefore(openSet_[position], openSet_[parent])) break;
         std::swap(openSet_[position], openSet_[parent]);
         position = parent;
     }
@@ -368,15 +341,9 @@ void BestFirstSearch::moveDown(std::size_t position)
         const std::size_t right = left + 1U;
         std::size_t best = position;
 
-        if (left < openSet_.size() && comesBefore(openSet_[left], openSet_[best])) {
-            best = left;
-        }
-        if (right < openSet_.size() && comesBefore(openSet_[right], openSet_[best])) {
-            best = right;
-        }
-        if (best == position) {
-            break;
-        }
+        if (left < openSet_.size() && comesBefore(openSet_[left], openSet_[best])) best = left;
+        if (right < openSet_.size() && comesBefore(openSet_[right], openSet_[best])) best = right;
+        if (best == position) break;
         std::swap(openSet_[position], openSet_[best]);
         position = best;
     }
@@ -399,7 +366,7 @@ void BestFirstSearch::selectLoad(std::size_t index)
 
     finalRemainingPowerWatts_ -= runningPower;
     selectedAutoLoadPowerWatts_ += runningPower;
-    powerAlreadyUsedWatts_ += runningPower;
+    plannedOnPowerWatts_ += runningPower;
 }
 
 bool BestFirstSearch::isFiniteNonNegative(float value)

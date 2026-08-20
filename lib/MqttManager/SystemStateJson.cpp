@@ -34,9 +34,7 @@ void boolean(std::string& out, const char* key, bool value, bool comma = true)
     out += key;
     out += "\":";
     out += value ? "true" : "false";
-    if (comma) {
-        out += ",";
-    }
+    if (comma) out += ",";
 }
 
 void text(std::string& out, const char* key, const char* value, bool comma = true)
@@ -45,9 +43,7 @@ void text(std::string& out, const char* key, const char* value, bool comma = tru
     out += key;
     out += "\":";
     appendString(out, value);
-    if (comma) {
-        out += ",";
-    }
+    if (comma) out += ",";
 }
 
 void integer(std::string& out, const char* key, std::int64_t value, bool comma = true)
@@ -55,9 +51,7 @@ void integer(std::string& out, const char* key, std::int64_t value, bool comma =
     out += "\"";
     out += key;
     out += "\":" + std::to_string(value);
-    if (comma) {
-        out += ",";
-    }
+    if (comma) out += ",";
 }
 
 } // namespace
@@ -65,27 +59,41 @@ void integer(std::string& out, const char* key, std::int64_t value, bool comma =
 std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t schemaVersion)
 {
     std::string json;
-    json.reserve(900);
+    json.reserve(1200);
     json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",";
 
     json += "\"battery\":{";
     boolean(json, "sensorConfigured", in.batterySensorConfigured);
+    number(json, "nominalVoltageVolts", in.batteryNominalVoltageVolts);
+    number(json, "capacityAmpHours", in.batteryCapacityAmpHours);
+    number(json, "ratedEnergyWattHours", in.batteryRatedEnergyWattHours);
+    number(json, "storedEnergyWattHours", in.batteryStoredEnergyWattHours);
+    number(json, "usableEnergyWattHours", in.batteryUsableEnergyWattHours);
     number(json, "voltageVolts", in.batteryVoltageVolts);
     number(json, "currentAmps", in.batteryCurrentAmps);
-    number(json, "powerWatts", in.batteryPowerWatts);
+    number(json, "measuredSourcePowerWatts", in.measuredSourcePowerWatts);
     text(json, "measurementSource", in.batteryMeasurementSourceText);
     number(json, "stateOfChargePercent", in.stateOfChargePercent);
     boolean(json, "stateOfChargeValid", in.stateOfChargeValid);
     text(json, "stateOfChargeSource", in.stateOfChargeSourceText);
+    number(json, "targetRuntimeHours", in.targetRuntimeHours);
     number(json, "estimatedRuntimeHours", in.estimatedRuntimeHours);
     boolean(json, "runtimeEstimateValid", in.runtimeEstimateValid, false);
     json += "},";
 
+    json += "\"safety\":{";
+    number(json, "runtimePowerLimitWatts", in.runtimePowerLimitWatts);
+    number(json, "maximumBatteryCurrentAmps", in.maximumBatteryCurrentAmps);
+    number(json, "maximumBatteryPowerWatts", in.maximumBatteryPowerWatts);
+    number(json, "maximumMainCurrentAmps", in.maximumMainCurrentAmps);
+    number(json, "maximumMainPowerWatts", in.maximumMainPowerWatts);
+    number(json, "safetyCeilingWatts", in.safetyCeilingWatts, false);
+    json += "},";
+
     json += "\"powerFlow\":{";
-    number(json, "estimatedCurrentlyOnPowerWatts", in.estimatedCurrentlyOnPowerWatts);
-    number(json, "safeAvailablePowerWatts", in.safeAvailablePowerWatts);
+    number(json, "powerBeforeFixedLoadsWatts", in.powerBeforeFixedLoadsWatts);
     number(json, "fixedOnLoadPowerWatts", in.fixedOnLoadPowerWatts);
-    number(json, "initialBestFirstPowerWatts", in.initialBestFirstPowerWatts);
+    number(json, "powerPassedToBestFirstWatts", in.powerPassedToBestFirstWatts);
     number(json, "selectedAutoLoadPowerWatts", in.selectedAutoLoadPowerWatts);
     number(json, "finalRemainingPowerWatts", in.finalRemainingPowerWatts, false);
     json += "},";
@@ -103,8 +111,7 @@ std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t sc
     json += "},";
 
     json += "\"diagnostics\":{";
-    integer(json, "faultCount", static_cast<std::int64_t>(in.faultCount));
-    text(json, "faultSummary", in.faultSummaryText != nullptr ? in.faultSummaryText : "", false);
+    integer(json, "pinCommandErrorCount", static_cast<std::int64_t>(in.pinCommandErrorCount), false);
     json += "}}";
     return json;
 }

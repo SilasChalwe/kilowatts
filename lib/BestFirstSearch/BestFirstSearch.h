@@ -1,7 +1,3 @@
-/**
- * @file BestFirstSearch.h
- * @brief Selects which Auto loads may be ON with the power left this cycle.
- */
 #ifndef KILOWATTS_BEST_FIRST_SEARCH_H
 #define KILOWATTS_BEST_FIRST_SEARCH_H
 
@@ -37,15 +33,9 @@ public:
         float batteryBusVoltageVolts;
         float maximumBatteryPowerWatts;
         float maximumMainCurrentAmps;
-
-        /** Safe power available to the whole system this cycle. */
-        float totalAvailablePowerWatts;
-
-        /** Power left after Fixed-ON loads; this is what the search may spend. */
-        float initialBestFirstPowerWatts;
-
-        /** Power already used before the search starts, normally Fixed-ON load power. */
-        float powerAlreadyUsedWatts;
+        float powerBeforeFixedLoadsWatts;
+        float powerPassedToBestFirstWatts;
+        float fixedOnLoadPowerWatts;
     };
 
     struct FeasibilityInputs {
@@ -54,7 +44,7 @@ public:
         float candidateRunningPowerWatts;
         float candidatePeakPowerWatts;
         float remainingPowerWatts;
-        float powerAlreadyUsedWatts;
+        float plannedOnPowerWatts;
         float maximumBatteryPowerWatts;
         float batteryBusVoltageVolts;
         float maximumMainCurrentAmps;
@@ -78,11 +68,11 @@ public:
 
     static std::uint8_t checkFeasibility(const FeasibilityInputs& inputs);
 
-    float getTotalAvailablePowerWatts() const;
-    float getInitialBestFirstPowerWatts() const;
+    float getPowerBeforeFixedLoadsWatts() const;
+    float getPowerPassedToBestFirstWatts() const;
     float getFinalRemainingPowerWatts() const;
     float getSelectedAutoLoadPowerWatts() const;
-    float getPowerAlreadyUsedWatts() const;
+    float getPlannedOnPowerWatts() const;
     float getBatteryStressTerm() const;
 
     float getLoadRunningPowerRatio(std::size_t loadIndex) const;
@@ -128,7 +118,7 @@ private:
 
     float finalRemainingPowerWatts_;
     float selectedAutoLoadPowerWatts_;
-    float powerAlreadyUsedWatts_;
+    float plannedOnPowerWatts_;
     float batteryStressTerm_;
 
     std::vector<const Load*> loads_;

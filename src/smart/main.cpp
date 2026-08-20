@@ -34,17 +34,15 @@ extern "C" void app_main()
         HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
         if (!smartNodeConfigurationStore.applyPersistedConfigurations(
                 relays, *thisSmartNode, reason)) {
-            ESP_LOGE(TAG, "Could not restore Smart Node loads: %s",
-                     hardwareConfigurationFailureText(reason));
+            ESP_LOGE(TAG, "Could not restore Smart Node loads");
         }
     }
 
     sendIdentityReport();
 
-    xTaskCreate(relayControlTask, "relay", 4096U, nullptr, 6U, nullptr);
+    xTaskCreate(relayControlTask, "pin_control", 4096U, nullptr, 6U, nullptr);
     xTaskCreate(espNowCommunicationTask, "espnow", 6144U, nullptr, 5U, nullptr);
     xTaskCreate(watchdogTask, "watchdog", 3072U, nullptr, 2U, nullptr);
-    xTaskCreate(consoleTask, "console", 3072U, nullptr, 2U, nullptr);
 
     printSmartBootSummary(localMac);
     ESP_LOGI(TAG, "Smart Node ready");

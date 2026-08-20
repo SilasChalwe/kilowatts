@@ -1,7 +1,3 @@
-/**
- * @file SystemStateJson.h
- * @brief Dashboard system-state payload.
- */
 #ifndef KILOWATTS_SYSTEM_STATE_JSON_H
 #define KILOWATTS_SYSTEM_STATE_JSON_H
 
@@ -12,34 +8,36 @@ namespace kilowatts {
 
 struct SystemStateInputs {
     bool batterySensorConfigured;
+    float batteryNominalVoltageVolts;
+    float batteryCapacityAmpHours;
+    float batteryRatedEnergyWattHours;
+    float batteryStoredEnergyWattHours;
+    float batteryUsableEnergyWattHours;
+
     float batteryVoltageVolts;
     float batteryCurrentAmps;
-    float batteryPowerWatts;
+    float measuredSourcePowerWatts;
     const char* batteryMeasurementSourceText;
 
     float stateOfChargePercent;
     bool stateOfChargeValid;
     const char* stateOfChargeSourceText;
 
+    float targetRuntimeHours;
     float estimatedRuntimeHours;
     bool runtimeEstimateValid;
+    float runtimePowerLimitWatts;
 
-    /** Conservative estimate from confirmed relay states and configured load ratings. */
-    float estimatedCurrentlyOnPowerWatts;
+    float maximumBatteryCurrentAmps;
+    float maximumBatteryPowerWatts;
+    float maximumMainCurrentAmps;
+    float maximumMainPowerWatts;
+    float safetyCeilingWatts;
 
-    /** Safe power the system may use this planning cycle. */
-    float safeAvailablePowerWatts;
-
-    /** Power required by Fixed-ON loads after protection has set their targets. */
+    float powerBeforeFixedLoadsWatts;
     float fixedOnLoadPowerWatts;
-
-    /** safeAvailablePowerWatts - fixedOnLoadPowerWatts. */
-    float initialBestFirstPowerWatts;
-
-    /** Power of Auto loads selected by Best-First Search. */
+    float powerPassedToBestFirstWatts;
     float selectedAutoLoadPowerWatts;
-
-    /** Power still unused after Best-First Search. */
     float finalRemainingPowerWatts;
 
     bool wifiConnected;
@@ -50,8 +48,7 @@ struct SystemStateInputs {
     const char* currentTimeSourceText;
     std::int64_t lastOptimizationEpochSeconds;
 
-    std::uint32_t faultCount;
-    const char* faultSummaryText;
+    std::uint32_t pinCommandErrorCount;
 };
 
 class SystemStateJson {
