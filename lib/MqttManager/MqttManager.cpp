@@ -174,12 +174,16 @@ bool parseSchedule(const cJSON* object, AutoSchedule& schedule)
     std::uint8_t minute = 0U;
     if (!cJSON_IsBool(enabled) ||
         !readU8(cJSON_GetObjectItemCaseSensitive(object, "hour"), hour) ||
-        !readU8(cJSON_GetObjectItemCaseSensitive(object, "minute"), minute) ||
-        (cJSON_IsTrue(enabled) && (hour > 23U || minute > 59U))) {
+        !readU8(cJSON_GetObjectItemCaseSensitive(object, "minute"), minute)) {
         return false;
     }
 
-    schedule = AutoSchedule{cJSON_IsTrue(enabled), hour, minute};
+    const bool scheduleEnabled = cJSON_IsTrue(enabled) != 0;
+    if (scheduleEnabled && (hour > 23U || minute > 59U)) {
+        return false;
+    }
+
+    schedule = AutoSchedule{scheduleEnabled, hour, minute};
     return true;
 }
 
@@ -541,7 +545,7 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
         }
 
         std::snprintf(request.loadName, sizeof(request.loadName), "%s", name->valuestring);
-        request.relayActiveHigh = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(load, "relayActiveHigh"));
+        request.relayActiveHigh = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(load, "relayActiveHigh")) != 0;
         request.hasLoadConfiguration = true;
         request.hasRelayPin = true;
     }
