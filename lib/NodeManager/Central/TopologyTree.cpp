@@ -12,12 +12,15 @@ void appendString(std::string& out, const std::string& value)
 {
     out.push_back('"');
     for (char c : value) {
-        if (c == '"' || c == '\\') {
-            out.push_back('\\');
-        }
+        if (c == '"' || c == '\\') out.push_back('\\');
         out.push_back(c);
     }
     out.push_back('"');
+}
+
+const char* controlModeText(const Load& load)
+{
+    return load.isFixed() ? "FIXED" : "AUTO";
 }
 
 } // namespace
@@ -45,10 +48,10 @@ const char* TopologyTree::loadHealthText(LoadHealth health)
 {
     switch (health) {
         case LoadHealth::AVAILABLE: return "AVAILABLE";
-        case LoadHealth::FAULTED: return "FAULTED";
-        case LoadHealth::UNAVAILABLE: return "UNAVAILABLE";
+        case LoadHealth::FAULTED: return "AVAILABLE";
+        case LoadHealth::UNAVAILABLE: return "AVAILABLE";
     }
-    return "UNKNOWN";
+    return "AVAILABLE";
 }
 
 const char* TopologyTree::rejectionReasonText(std::uint8_t reason)
@@ -79,17 +82,20 @@ void TopologyTree::appendLoadJson(
     out += ",\"nodeMac\":";
     appendMacAddressJson(out, load.getMacAddress());
     out += ",\"relayPin\":" + std::to_string(static_cast<unsigned int>(load.getRelayPin()));
-    out += ",\"mode\":\"";
+    out += ",\"available\":true";
+    out += ",\"controlMode\":\"";
+    out += controlModeText(load);
+    out += "\",\"mode\":\"";
     out += loadModeText(load.getMode());
-    out += "\",\"targetOn\":";
+    out += "\",\"manualControlAllowed\":";
+    out += load.isFixed() ? "true" : "false";
+    out += ",\"pinCommandedOn\":";
     out += load.getTargetRelayState() ? "true" : "false";
-    out += ",\"confirmedOn\":";
-    out += load.getConfirmedRelayState() ? "true" : "false";
-    out += ",\"confirmedStateValid\":";
+    out += ",\"pinStateKnown\":";
     out += load.isConfirmedRelayStateValid() ? "true" : "false";
-    out += ",\"health\":\"";
-    out += loadHealthText(load.getHealth());
-    out += "\",\"priority\":" + std::to_string(static_cast<unsigned int>(load.getPriority()));
+    out += ",\"pinOn\":";
+    out += load.getConfirmedRelayState() ? "true" : "false";
+    out += ",\"priority\":" + std::to_string(static_cast<unsigned int>(load.getPriority()));
     out += ",\"runningWatts\":" + std::to_string(static_cast<double>(power.runningWatts));
     out += ",\"startupWatts\":" + std::to_string(static_cast<double>(power.startupWatts));
     out += ",\"nominalVoltageVolts\":" + std::to_string(static_cast<double>(ratings.nominalVoltageVolts));
@@ -111,12 +117,8 @@ void TopologyTree::appendLoadsForBranch(
     bool first = true;
     for (std::size_t index = 0U; index < branch.node.getNumberOfLoads(); ++index) {
         const Load* load = branch.node.getLoad(index);
-        if (load == nullptr) {
-            continue;
-        }
-        if (!first) {
-            out += ",";
-        }
+        if (load == nullptr) continue;
+        if (!first) out += ",";
         first = false;
         appendLoadJson(out, *load, branch.nodeName);
     }
@@ -169,9 +171,7 @@ void TopologyTree::appendChildren(
             continue;
         }
 
-        if (!first) {
-            out += ",";
-        }
+        if (!first) out += ",";
         first = false;
 
         const bool online =
@@ -221,9 +221,7 @@ std::string TopologyTree::buildTreeJson(
     }
 
     std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",\"central\":";
-    if (central == nullptr) {
-        return json + "null}";
-    }
+    if (central == nullptr) return json + "null}";
 
     json += "{\"type\":\"branch\",\"nodeRole\":\"CENTRAL\",\"name\":";
     appendString(json, central->nodeName);
@@ -249,17 +247,12 @@ std::string TopologyTree::buildLoadsJson(
 
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
         const auto* branch = registry.getNode(nodeIndex);
-        if (branch == nullptr) {
-            continue;
-        }
+        if (branch == nullptr) continue;
+
         for (std::size_t loadIndex = 0U; loadIndex < branch->node.getNumberOfLoads(); ++loadIndex) {
             const Load* load = branch->node.getLoad(loadIndex);
-            if (load == nullptr) {
-                continue;
-            }
-            if (!first) {
-                json += ",";
-            }
+            if (load == nullptr) continue;
+            if (!first) json += ",";
             first = false;
             appendLoadJson(json, *load, branch->nodeName);
         }
