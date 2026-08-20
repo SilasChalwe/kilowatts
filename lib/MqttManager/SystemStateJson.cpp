@@ -1,137 +1,112 @@
-/**
- * @file SystemStateJson.cpp
- * @brief Implements JSON construction for the kilowatts/v1/state/system
- *        MQTT topic.
- *
- * Plain string formatting, no ESP-IDF dependency, no JSON parsing (only
- * emission, hand-formatted rather than through a JSON library, since the
- * schema is small and fixed) — always compiled and fully host-testable
- * (see test/SystemStateJson/).
- */
-
 #include "SystemStateJson.h"
 
 #include <cstdio>
 
 namespace kilowatts {
 
-
 namespace {
 
-void appendEscapedJsonString(std::string& out, const char* value)
+void appendString(std::string& out, const char* value)
 {
     out.push_back('"');
-
     if (value != nullptr) {
         for (const char* c = value; *c != '\0'; ++c) {
-            switch (*c) {
-                case '"': out += "\\\""; break;
-                case '\\': out += "\\\\"; break;
-                case '\n': out += "\\n"; break;
-                case '\r': out += "\\r"; break;
-                case '\t': out += "\\t"; break;
-                default:
-                    if (static_cast<unsigned char>(*c) < 0x20U) {
-                        char escaped[8] = {};
-                        std::snprintf(escaped, sizeof(escaped), "\\u%04x", static_cast<unsigned int>(*c));
-                        out += escaped;
-                    } else {
-                        out.push_back(*c);
-                    }
-                    break;
+            if (*c == '"' || *c == '\\') {
+                out.push_back('\\');
             }
+            out.push_back(*c);
         }
     }
-
     out.push_back('"');
 }
 
-
-void appendNumberField(std::string& out, const char* key, float value, bool trailingComma)
+void number(std::string& out, const char* key, float value, bool comma = true)
 {
-    char buffer[48] = {};
-    std::snprintf(buffer, sizeof(buffer), "\"%s\":%.3f%s", key, static_cast<double>(value), trailingComma ? "," : "");
+    char buffer[64]{};
+    std::snprintf(buffer, sizeof(buffer), "\"%s\":%.3f%s",
+                  key, static_cast<double>(value), comma ? "," : "");
     out += buffer;
 }
 
-
-void appendBoolField(std::string& out, const char* key, bool value, bool trailingComma)
-{
-    char buffer[48] = {};
-    std::snprintf(buffer, sizeof(buffer), "\"%s\":%s%s", key, value ? "true" : "false", trailingComma ? "," : "");
-    out += buffer;
-}
-
-
-void appendStringField(std::string& out, const char* key, const char* value, bool trailingComma)
+void boolean(std::string& out, const char* key, bool value, bool comma = true)
 {
     out += "\"";
     out += key;
     out += "\":";
-    appendEscapedJsonString(out, value);
-    if (trailingComma) {
+    out += value ? "true" : "false";
+    if (comma) {
         out += ",";
     }
 }
 
-
-void appendIntegerField(std::string& out, const char* key, std::int64_t value, bool trailingComma)
+void text(std::string& out, const char* key, const char* value, bool comma = true)
 {
-    char buffer[48] = {};
-    std::snprintf(buffer, sizeof(buffer), "\"%s\":%lld%s", key, static_cast<long long>(value), trailingComma ? "," : "");
-    out += buffer;
+    out += "\"";
+    out += key;
+    out += "\":";
+    appendString(out, value);
+    if (comma) {
+        out += ",";
+    }
+}
+
+void integer(std::string& out, const char* key, std::int64_t value, bool comma = true)
+{
+    out += "\"";
+    out += key;
+    out += "\":" + std::to_string(value);
+    if (comma) {
+        out += ",";
+    }
 }
 
 } // namespace
 
-
-std::string SystemStateJson::build(const SystemStateInputs& inputs, std::uint32_t schemaVersion)
+std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t schemaVersion)
 {
     std::string json;
-    json.reserve(768);
-    json += "{";
-
-    appendIntegerField(json, "schemaVersion", static_cast<std::int64_t>(schemaVersion), true);
+    json.reserve(900);
+    json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",";
 
     json += "\"battery\":{";
-    appendBoolField(json, "sensorConfigured", inputs.batterySensorConfigured, true);
-    appendNumberField(json, "voltageVolts", inputs.batteryVoltageVolts, true);
-    appendNumberField(json, "currentAmps", inputs.batteryCurrentAmps, true);
-    appendStringField(json, "measurementSource", inputs.batteryMeasurementSourceText, true);
-    appendNumberField(json, "stateOfChargePercent", inputs.stateOfChargePercent, true);
-    appendBoolField(json, "stateOfChargeValid", inputs.stateOfChargeValid, true);
-    appendStringField(json, "stateOfChargeSource", inputs.stateOfChargeSourceText, false);
+    boolean(json, "sensorConfigured", in.batterySensorConfigured);
+    number(json, "voltageVolts", in.batteryVoltageVolts);
+    number(json, "currentAmps", in.batteryCurrentAmps);
+    number(json, "powerWatts", in.batteryPowerWatts);
+    text(json, "measurementSource", in.batteryMeasurementSourceText);
+    number(json, "stateOfChargePercent", in.stateOfChargePercent);
+    boolean(json, "stateOfChargeValid", in.stateOfChargeValid);
+    text(json, "stateOfChargeSource", in.stateOfChargeSourceText);
+    number(json, "estimatedRuntimeHours", in.estimatedRuntimeHours);
+    boolean(json, "runtimeEstimateValid", in.runtimeEstimateValid, false);
     json += "},";
 
-    json += "\"power\":{";
-    appendNumberField(json, "estimatedTotalLoadPowerWatts", inputs.estimatedTotalLoadPowerWatts, true);
-    appendNumberField(json, "availablePowerWatts", inputs.availablePowerWatts, true);
-    appendNumberField(json, "fixedOnRunningPowerWatts", inputs.fixedOnRunningPowerWatts, true);
-    appendNumberField(json, "powerAvailableForAutoLoadsWatts", inputs.powerAvailableForAutoLoadsWatts, true);
-    appendNumberField(json, "remainingPowerWatts", inputs.remainingPowerWatts, true);
-    appendNumberField(json, "committedPowerWatts", inputs.committedPowerWatts, false);
+    json += "\"powerFlow\":{";
+    number(json, "estimatedCurrentlyOnPowerWatts", in.estimatedCurrentlyOnPowerWatts);
+    number(json, "safeAvailablePowerWatts", in.safeAvailablePowerWatts);
+    number(json, "fixedOnLoadPowerWatts", in.fixedOnLoadPowerWatts);
+    number(json, "initialBestFirstPowerWatts", in.initialBestFirstPowerWatts);
+    number(json, "selectedAutoLoadPowerWatts", in.selectedAutoLoadPowerWatts);
+    number(json, "finalRemainingPowerWatts", in.finalRemainingPowerWatts, false);
     json += "},";
 
     json += "\"connectivity\":{";
-    appendBoolField(json, "wifiConnected", inputs.wifiConnected, true);
-    appendStringField(json, "wifiState", inputs.wifiStateText, true);
-    appendBoolField(json, "mqttConnected", inputs.mqttConnected, false);
+    boolean(json, "wifiConnected", in.wifiConnected);
+    text(json, "wifiState", in.wifiStateText);
+    boolean(json, "mqttConnected", in.mqttConnected, false);
     json += "},";
 
     json += "\"time\":{";
-    appendBoolField(json, "valid", inputs.currentTimeValid, true);
-    appendStringField(json, "source", inputs.currentTimeSourceText, true);
-    appendIntegerField(json, "lastOptimizationEpochSeconds", inputs.lastOptimizationEpochSeconds, false);
+    boolean(json, "valid", in.currentTimeValid);
+    text(json, "source", in.currentTimeSourceText);
+    integer(json, "lastOptimizationEpochSeconds", in.lastOptimizationEpochSeconds, false);
     json += "},";
 
     json += "\"diagnostics\":{";
-    appendIntegerField(json, "faultCount", static_cast<std::int64_t>(inputs.faultCount), true);
-    appendStringField(json, "faultSummary", inputs.faultSummaryText != nullptr ? inputs.faultSummaryText : "", false);
-    json += "}";
-
-    json += "}";
+    integer(json, "faultCount", static_cast<std::int64_t>(in.faultCount));
+    text(json, "faultSummary", in.faultSummaryText != nullptr ? in.faultSummaryText : "", false);
+    json += "}}";
     return json;
 }
-
 
 } // namespace kilowatts
