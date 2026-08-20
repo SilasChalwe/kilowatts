@@ -70,7 +70,6 @@ extern "C" void app_main()
     xTaskCreate(espNowCommunicationTask, "espnow", 6144U, nullptr, 5U, nullptr);
     xTaskCreate(optimizationTask, "planner", 8192U, nullptr, 6U, nullptr);
     xTaskCreate(watchdogTask, "watchdog", 3072U, nullptr, 2U, nullptr);
-    xTaskCreate(consoleTask, "console", 3072U, nullptr, 2U, nullptr);
 
     printCentralBootSummary(localMac);
     ESP_LOGI(TAG, "Central ready");
