@@ -1,0 +1,17 @@
+name,node_mac,relay_pin,running_watts,startup_watts,priority,mode,schedule_enabled,schedule_hour,schedule_minute
+Node A Fridge,2:0:0:0:0:1,16,60,150,1,FIXED_ON,false,0,0
+Node A Lights,2:0:0:0:0:1,17,18,18,4,AUTO_ON,false,0,0
+Node A TV,2:0:0:0:0:1,18,90,100,6,AUTO_ON,false,0,0
+Node A Kettle,2:0:0:0:0:1,19,800,900,9,AUTO_OFF,true,18,0
+Node B Lights,2:0:0:0:1:1,20,12,12,4,AUTO_ON,false,0,0
+Node B AC,2:0:0:0:1:1,21,350,450,8,AUTO_ON,true,8,0
+Node B Garage,2:0:0:0:1:1,22,20,20,5,AUTO_ON,false,0,0
+Node B Heater,2:0:0:0:1:1,23,500,550,10,AUTO_OFF,true,19,0
+Node C Pump,2:0:0:0:2:1,24,90,200,1,FIXED_ON,false,0,0
+Node C Washer,2:0:0:0:2:1,25,400,600,7,AUTO_OFF,true,10,0
+Node C Pool,2:0:0:0:2:1,26,250,300,6,AUTO_ON,false,0,0
+Node C Lights,2:0:0:0:2:1,27,15,15,3,AUTO_ON,false,0,0
+Node D Router,2:0:0:0:3:1,28,10,10,2,FIXED_ON,false,0,0
+Node D Fans,2:0:0:0:3:1,29,30,45,3,AUTO_ON,false,0,0
+Node D Charger,2:0:0:0:3:1,30,250,300,7,AUTO_OFF,true,12,0
+Node D EV,2:0:0:0:3:1,31,1500,1500,10,AUTO_OFF,true,20,0

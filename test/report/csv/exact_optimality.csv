@@ -1,0 +1,2 @@
+candidate_loads,budget_watts,greedy_watts,exact_watts,subset_match,result
+10,20,20,20,true,PASS

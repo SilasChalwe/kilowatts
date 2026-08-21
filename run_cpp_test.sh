@@ -196,7 +196,10 @@ resolve_included_header() {
     [[ -n "${RESOLVED_HEADER_NAMES[$header_name]:-}" ]] && return 0
     RESOLVED_HEADER_NAMES["$header_name"]=1
 
-    header_path="$(find "$PROJECT_ROOT/lib" -type f -name "$header_name" -print -quit)"
+    header_path="$(find "$TEST_DIRECTORY" -type f -name "$header_name" -print -quit)"
+    if [[ -z "$header_path" ]]; then
+        header_path="$(find "$PROJECT_ROOT/lib" -type f -name "$header_name" -print -quit)"
+    fi
     [[ -n "$header_path" ]] || return 0
 
     header_dir="$(dirname -- "$header_path")"
@@ -265,8 +268,8 @@ printf 'Compilation passed.\n'
 printf '\nRunning %s...\n\n' "$EXECUTABLE_NAME"
 
 (
-    cd -- "$TEST_DIRECTORY"
-    "./$EXECUTABLE_NAME"
+    cd -- "$PROJECT_ROOT"
+    "$EXECUTABLE_PATH"
 )
 
 printf '\nTest execution passed.\n'
