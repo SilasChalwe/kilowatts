@@ -27,7 +27,40 @@ constexpr float CALIBRATION_SCALING_CONSTANT = 0.04096F;
  * false = read the physical INA219 at 0x40.
  */
 constexpr bool USE_SIMULATED_READING = true;
-constexpr LoadMeasurements SIMULATED_READING{15.0F, 3.0F, 45.0F};
+
+/*
+ * A flat constant reading never changes, so a bench/demo run looks frozen
+ * and never shows Best-First Search or the runtime dashboard reacting to
+ * available power. This models a 12V lead-acid pack under a mildly
+ * fluctuating solar charge instead: current/power ride a slow repeating
+ * wave (~40 acquisition cycles per period) and voltage sags slightly as
+ * simulated current rises, so a hardware-free run still has something
+ * real to plan around.
+ */
+LoadMeasurements simulatedReading()
+{
+    static std::uint32_t sampleIndex = 0U;
+    ++sampleIndex;
+
+    constexpr float TWO_PI = 6.283185307179586F;
+    constexpr float CYCLE_SAMPLES = 40.0F;
+    constexpr float BASE_VOLTAGE_VOLTS = 13.4F;
+    constexpr float VOLTAGE_SAG_VOLTS = 0.6F;
+    constexpr float BASE_CURRENT_AMPS = 3.5F;
+    constexpr float CURRENT_SWING_AMPS = 2.5F;
+    constexpr float PEAK_CURRENT_AMPS = BASE_CURRENT_AMPS + CURRENT_SWING_AMPS;
+
+    const float phase = TWO_PI * static_cast<float>(sampleIndex) / CYCLE_SAMPLES;
+    const float currentAmps = BASE_CURRENT_AMPS + CURRENT_SWING_AMPS * std::sin(phase);
+    const float voltageVolts =
+        BASE_VOLTAGE_VOLTS - VOLTAGE_SAG_VOLTS * std::max(0.0F, currentAmps) / PEAK_CURRENT_AMPS;
+
+    LoadMeasurements reading{};
+    reading.voltageVolts = voltageVolts;
+    reading.currentAmps = currentAmps;
+    reading.powerWatts = voltageVolts * currentAmps;
+    return reading;
+}
 
 #ifdef ESP_PLATFORM
 static const char* TAG = "INA219";
@@ -310,7 +343,7 @@ bool INA219Monitor::readMeasurements(LoadMeasurements& measurements) const
 
     LoadMeasurements raw{};
     if (USE_SIMULATED_READING) {
-        raw = SIMULATED_READING;
+        raw = simulatedReading();
         lastMeasurementSource_ = MeasurementSource::SIMULATED;
     } else {
         if (!readHardwareMeasurements(raw)) {

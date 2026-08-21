@@ -218,18 +218,29 @@ hardware does not provide is assumed or invented.
   `LoadScheduleEvaluator` never performs it, and a Manual entry is
   interpreted as local time using this same configured timezone.
 
-## Required configuration this project does not yet have
+## Internet connectivity and Automatic mode
 
 Automatic mode still needs a network interface with a real
-internet-routed IP address. `EspNowCommunication::initializeWiFi()` only
-sets `WIFI_MODE_STA` for ESP-NOW — it never calls `esp_wifi_set_config()`
-with an access point SSID/password or `esp_wifi_connect()`, and no Wi-Fi
-credentials exist anywhere in this project. **There is currently no
-mechanism providing IP/internet connectivity**, so real NTP
-synchronization cannot succeed on the current hardware setup as it
-stands — Manual mode is the production-legitimate way to have valid time
-until that connectivity is added. No credentials have been invented here
-to work around that gap.
+internet-routed IP address to synchronize against. On the **Central**
+Node this now exists: `WiFiManager` associates with the installation's
+own Access Point — station credentials read from `WiFiCredentialsStore`,
+or captured for the first time through `WiFiProvisioningPortal`'s
+captive portal when none are saved — after
+`EspNowCommunication::initialize()` brings the radio up in station mode,
+and reports `CONNECTED_WITH_IP` once a real IP address is obtained (see
+`src/central/main.cpp` and the `WiFiManager` README). Only once Central
+reaches that state can `esp_netif_sntp_init()` actually reach a real NTP
+server, so Automatic mode on Central is a genuinely production-legitimate
+path today, not only Manual mode.
+
+**Smart Nodes have no such path.** `WiFiManager` is deliberately
+Central-only — a Smart Node's radio stays in ESP-NOW station mode and
+never associates with an Access Point (see `WiFiManager`'s own boundary
+notes) — so Automatic mode on a Smart Node still cannot synchronize.
+Manual mode remains the only production-legitimate way for a Smart Node
+to have valid time, until a time-distribution mechanism over ESP-NOW
+(Central relaying its own synced time down to Smart Nodes) is added. No
+credentials have been invented here to work around that gap.
 
 ## On-device diagnostic path
 

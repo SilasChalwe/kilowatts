@@ -108,10 +108,12 @@ registry.loadPersisted();   // resume whatever was saved last (ESP32 target)
 const bool isNewNode = registry.recordDiscovered(mac, NodeRole::SMART, "0.2.0-foundation", "esp32:2core", nowMs);
 // isNewNode -> emit a NODE_DISCOVERED event (see src/central/main.cpp)
 
-// Central's own local identity, no round trip needed:
+// Central's own local identity, no round trip needed. There is no
+// compiled-in safe-pin list to declare (relay pins are the installer's
+// choice per Load via CONFIGURE_LOAD), so relayPins/relayCapabilityCount
+// are simply nullptr/0 here:
 registry.registerSelf(localMac, NodeRole::CENTRAL, "Central", KILOWATTS_FIRMWARE_VERSION, chipModelText,
-                       CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS.data(),
-                       CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS.size(), nowMs);
+                       nullptr, 0U, nowMs);
 
 // An MQTT COMMISSION_NODE or RENAME_NODE command was accepted (see
 // MqttManager::ConfigCommandRequest / src/central/main.cpp's

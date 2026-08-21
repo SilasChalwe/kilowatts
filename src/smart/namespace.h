@@ -86,11 +86,8 @@ void sendIdentityReport()
     std::snprintf(packet.firmwareVersion, sizeof(packet.firmwareVersion), "%s", KILOWATTS_FIRMWARE_VERSION);
     chipInfo.getChipModelText(packet.chipModel, sizeof(packet.chipModel));
 
-    packet.relayCapabilityCount = static_cast<std::uint8_t>(
-        std::min<std::size_t>(SmartNodeConfig::getVerifiedRelayPinCount(), MAX_RELAY_GPIO_CAPABILITIES));
-    for (std::size_t i = 0U; i < packet.relayCapabilityCount; ++i) {
-        packet.relayPins[i] = SmartNodeConfig::getVerifiedRelayPin(i);
-    }
+    /* No compiled-in safe-pin list to declare anymore — the installer names a relay pin directly per Load. */
+    packet.relayCapabilityCount = 0U;
 
     packet.freeHeapBytes = chipInfo.getFreeHeapBytes();
     packet.minFreeHeapBytes = chipInfo.getMinFreeHeapBytes();
@@ -157,9 +154,6 @@ NodeReportPacket buildNodeReportPacket(
 HardwareConfigurationFailureReason applyConfigureLoadCommand(const ConfigureLoadCommandPacket& command)
 {
     if (!isCommissioned()) return HardwareConfigurationFailureReason::NODE_NOT_COMMISSIONED;
-    if (!SmartNodeConfig::isVerifiedRelayPin(command.relayPin)) {
-        return HardwareConfigurationFailureReason::UNSUPPORTED_RELAY_PIN;
-    }
 
     NodeLoadHardwareStore::LoadConfiguration configuration{};
     std::snprintf(configuration.name, sizeof(configuration.name), "%s", command.loadName);
@@ -195,17 +189,6 @@ HardwareConfigurationFailureReason applyRemoveLoadCommand(const RemoveLoadComman
     smartNodeConfigurationStore.removeLoad(command.relayPin, relays, *thisSmartNode, reason);
     xSemaphoreGive(nodeMutex);
     return reason;
-}
-
-bool persistedRelayConfigurationMatchesBoardProfile()
-{
-    for (std::size_t i = 0U; i < smartNodeConfigurationStore.getNumberOfConfigurations(); ++i) {
-        const auto* configuration = smartNodeConfigurationStore.getConfiguration(i);
-        if (configuration != nullptr && !SmartNodeConfig::isVerifiedRelayPin(configuration->relayPin)) {
-            return false;
-        }
-    }
-    return true;
 }
 
 void relayControlTask(void* parameter)

@@ -28,9 +28,7 @@ extern "C" void app_main()
 
     thisSmartNode = new Node(localMac);
 
-    if (smartNodeConfigurationStore.loadPersisted() &&
-        isCommissioned() &&
-        persistedRelayConfigurationMatchesBoardProfile()) {
+    if (smartNodeConfigurationStore.loadPersisted() && isCommissioned()) {
         HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
         if (!smartNodeConfigurationStore.applyPersistedConfigurations(
                 relays, *thisSmartNode, reason)) {

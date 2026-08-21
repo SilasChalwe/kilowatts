@@ -175,14 +175,6 @@ const char* configuredStateText(const Load& load)
     return load.getTargetRelayState() ? "ON" : "OFF";
 }
 
-bool nodeDeclaresRelayPin(const NodeCommissioningRegistry::CommissioningRecord& record, std::uint8_t relayPin)
-{
-    for (std::size_t i = 0U; i < record.relayCapabilityCount; ++i) {
-        if (record.relayPins[i] == relayPin) return true;
-    }
-    return false;
-}
-
 CentralConfigurationStore::SafetyPolicy effectiveSafetyPolicy()
 {
     const auto configured = centralConfigurationStore.getConfiguration().safetyPolicy;
@@ -301,19 +293,8 @@ void configureLocalHardware(const Load::MacAddress& localMac)
     centralNode = Node(localMac);
 
     if (centralLoadHardwareStore.loadPersisted()) {
-        bool pinsValid = true;
-        for (std::size_t i = 0U; i < centralLoadHardwareStore.getNumberOfConfigurations(); ++i) {
-            const auto* configuration = centralLoadHardwareStore.getConfiguration(i);
-            if (configuration != nullptr && !CentralNodeConfig::isVerifiedRelayPin(configuration->relayPin)) {
-                pinsValid = false;
-                break;
-            }
-        }
-
-        if (pinsValid) {
-            HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
-            centralLoadHardwareStore.applyPersistedConfigurations(relays, centralNode, reason);
-        }
+        HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
+        centralLoadHardwareStore.applyPersistedConfigurations(relays, centralNode, reason);
     }
 
     registry.addLocalCentralNode(CentralNodeConfig::CENTRAL_NODE_NAME, centralNode, 0U);
@@ -1318,11 +1299,6 @@ LoadCommandResult handleConfigCommand(void* context, const ConfigCommandRequest&
         }
 
         if (request.nodeMacAddress == localMac) {
-            if (!CentralNodeConfig::isVerifiedRelayPin(request.relayPin)) {
-                std::snprintf(result.reason, sizeof(result.reason), "GPIO pin is not supported by Central");
-                return result;
-            }
-
             NodeLoadHardwareStore::LoadConfiguration configuration{};
             std::snprintf(configuration.name, sizeof(configuration.name), "%s", request.loadName);
             configuration.relayPin = request.relayPin;
@@ -1362,8 +1338,7 @@ LoadCommandResult handleConfigCommand(void* context, const ConfigCommandRequest&
         const auto* record = commissioningRegistry.findByMac(request.nodeMacAddress);
         const bool validNode = record != nullptr && record->role == NodeRole::SMART &&
             (record->lifecycleState == NodeLifecycleState::COMMISSIONED ||
-             record->lifecycleState == NodeLifecycleState::OPERATIONAL) &&
-            nodeDeclaresRelayPin(*record, request.relayPin);
+             record->lifecycleState == NodeLifecycleState::OPERATIONAL);
 
         Load::MacAddress nextHop{};
         const bool routeFound = validNode && findNextHopFromCentral(localMac, request.nodeMacAddress, nextHop);

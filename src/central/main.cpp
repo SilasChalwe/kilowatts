@@ -29,14 +29,15 @@ extern "C" void app_main()
 
     char chipModel[NodeCommissioningRegistry::CHIP_MODEL_BUFFER_SIZE]{};
     chipInfo.getChipModelText(chipModel, sizeof(chipModel));
+    /* No compiled-in safe-pin list to declare anymore — the installer names a relay pin directly per Load. */
     commissioningRegistry.registerSelf(
         localMac,
         NodeRole::CENTRAL,
         CentralNodeConfig::CENTRAL_NODE_NAME,
         KILOWATTS_FIRMWARE_VERSION,
         chipModel,
-        CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS.data(),
-        CentralNodeConfig::VERIFIED_RELAY_GPIO_PINS.size(),
+        nullptr,
+        0U,
         static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())));
 
     NodeCommissioningRegistry::Diagnostics diagnostics{};

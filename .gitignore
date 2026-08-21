@@ -8,3 +8,8 @@
 # include/KilowattsSecrets.h.example for the template). Never commit the
 # real file.
 include/KilowattsSecrets.h
+
+# kilowatts-mobile is its own separate Flutter project/git repo (Firebase
+# app + installer web console) nested inside this directory for convenience
+# during development. It must never be committed into the firmware repo.
+kilowatts-mobile/

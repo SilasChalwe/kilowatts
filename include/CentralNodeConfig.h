@@ -20,7 +20,6 @@
 #include "INA219Monitor.h"
 #include "PowerManager.h"
 
-#include <array>
 #include <cstdint>
 
 namespace kilowatts {
@@ -31,21 +30,6 @@ constexpr const char* CENTRAL_NODE_NAME = "Central";
 
 /** DHCP hostname reported to the household/installation Access Point (cosmetic, see WiFiManager::Credentials::hostname). */
 constexpr const char* WIFI_STATION_HOSTNAME = "kilowatts-central";
-
-
-/* All output-capable ESP32 GPIOs except flash (6-11), input-only (34,35,36,39), UART0 (1,3) and I2C (21,22). GPIO0/12 are boot-strapping pins. */
-constexpr std::array<std::uint8_t, 18U> VERIFIED_RELAY_GPIO_PINS{
-    0U, 2U, 4U, 5U, 12U, 13U, 14U, 15U, 16U, 17U, 18U, 19U, 23U, 25U, 26U, 27U, 32U, 33U};
-
-inline bool isVerifiedRelayPin(std::uint8_t pin)
-{
-    for (const std::uint8_t candidate : VERIFIED_RELAY_GPIO_PINS) {
-        if (candidate == pin) {
-            return true;
-        }
-    }
-    return false;
-}
 
 
 /* I2C bus - ESP32 standard SDA/SCL pins. Only consulted in production mode. */

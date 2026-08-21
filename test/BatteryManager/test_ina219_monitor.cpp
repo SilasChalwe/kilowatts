@@ -1,17 +1,15 @@
 /**
  * @file test_ina219_monitor.cpp
- * @brief Host-native correctness tests for INA219Monitor's sensor
- *        registration and lookup logic.
+ * @brief Host-native correctness tests for INA219Monitor: the single
+ *        battery-bus sensor Central owns (one object, one physical INA219
+ *        on Central's battery bus — not a multi-sensor registry).
  *
- * This targets exactly the part of INA219Monitor.cpp that is always
- * compiled (host and ESP32 alike): addSensor()'s validation/bookkeeping
- * and the getSensor()/findSensorByI2CAddress()/findSensorByRelayPin()
- * lookups. It never asserts on a real sensor reading: real I2C register
- * communication is compiled only under ESP_PLATFORM and can only be
- * verified on the ESP32 target with a real INA219 connected. This file
- * instead confirms that on a host build (ESP_PLATFORM not defined) every
- * hardware-touching method honestly returns false rather than fabricating
- * a device presence or a measurement.
+ * `initializeBus()`, real register I/O and NVS calibration persistence are
+ * compiled only under ESP_PLATFORM and can only be verified on the ESP32
+ * target with a real bus. This file instead covers everything that is
+ * always compiled: sensor-configuration validation, the bench-mode
+ * simulated reading path (`USE_SIMULATED_READING` in INA219Monitor.cpp),
+ * calibration bookkeeping, and the EMA filter math.
  *
  * This file uses a standard host int main(), not an ESP-IDF app_main(), so
  * it can be compiled and run by run_cpp_test.sh's plain g++ invocation —
@@ -56,188 +54,192 @@ void printSection(const char* title) {
     std::printf("======================================================================\n");
 }
 
-INA219Monitor::INA219SensorConfiguration makeSensorConfiguration(
-    std::uint8_t i2cAddress,
-    std::uint8_t relayPin,
+INA219Monitor::SensorConfiguration makeSensorConfiguration(
     float shuntResistanceOhms = 0.1F,
     float maximumExpectedCurrentAmps = 2.0F,
     float emaAlpha = 0.2F)
 {
-    return INA219Monitor::INA219SensorConfiguration{
-        i2cAddress, relayPin, shuntResistanceOhms, maximumExpectedCurrentAmps, emaAlpha
-    };
-}
-
-void testRegisterOneSensor() {
-    printSection("TEST 1 - REGISTER ONE SENSOR");
-
-    INA219Monitor monitor;
-
-    reportCheck("A new monitor starts with zero registered sensors",
-                monitor.getNumberOfSensors() == 0U);
-
-    const bool added = monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-
-    reportCheck("addSensor() accepts one valid sensor configuration", added);
-    reportCheck("getNumberOfSensors() becomes 1 after one registration",
-                monitor.getNumberOfSensors() == 1U);
-
-    const INA219Monitor::INA219SensorConfiguration* stored = monitor.getSensor(0U);
-    reportCheck("getSensor(0) returns the stored configuration", stored != nullptr);
-
-    if (stored != nullptr) {
-        reportCheck("Stored configuration keeps the registered I2C address", stored->i2cAddress == 0x40U);
-        reportCheck("Stored configuration keeps the registered relay pin", stored->relayPin == 16U);
-    }
-
-    reportCheck("getSensor() returns nullptr for an out-of-range index",
-                monitor.getSensor(1U) == nullptr);
-}
-
-void testRegisterSeveralSensors() {
-    printSection("TEST 2 - REGISTER SEVERAL SENSORS");
-
-    INA219Monitor monitor;
-
-    const bool addedFirst = monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-    const bool addedSecond = monitor.addSensor(makeSensorConfiguration(0x41U, 17U));
-    const bool addedThird = monitor.addSensor(makeSensorConfiguration(0x44U, 18U));
-
-    reportCheck("First of three sensors is accepted", addedFirst);
-    reportCheck("Second of three sensors is accepted", addedSecond);
-    reportCheck("Third of three sensors is accepted", addedThird);
-    reportCheck("getNumberOfSensors() reflects all three registrations",
-                monitor.getNumberOfSensors() == 3U);
-}
-
-void testFindSensorByI2CAddress() {
-    printSection("TEST 3 - FIND SENSOR BY I2C ADDRESS");
-
-    INA219Monitor monitor;
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-    monitor.addSensor(makeSensorConfiguration(0x45U, 19U));
-
-    const INA219Monitor::INA219SensorConfiguration* found = monitor.findSensorByI2CAddress(0x45U);
-    reportCheck("findSensorByI2CAddress() finds a registered address", found != nullptr);
-
-    if (found != nullptr) {
-        reportCheck("Found sensor carries the matching relay pin", found->relayPin == 19U);
-    }
-
-    reportCheck("findSensorByI2CAddress() returns nullptr for an unregistered address",
-                monitor.findSensorByI2CAddress(0x4AU) == nullptr);
-}
-
-void testFindSensorByRelayPin() {
-    printSection("TEST 4 - FIND SENSOR BY RELAY PIN");
-
-    INA219Monitor monitor;
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-    monitor.addSensor(makeSensorConfiguration(0x45U, 19U));
-
-    const INA219Monitor::INA219SensorConfiguration* found = monitor.findSensorByRelayPin(16U);
-    reportCheck("findSensorByRelayPin() finds a registered relay pin", found != nullptr);
-
-    if (found != nullptr) {
-        reportCheck("Found sensor carries the matching I2C address", found->i2cAddress == 0x40U);
-    }
-
-    reportCheck("findSensorByRelayPin() returns nullptr for an unregistered relay pin",
-                monitor.findSensorByRelayPin(99U) == nullptr);
-}
-
-void testRejectDuplicateI2CAddress() {
-    printSection("TEST 5 - REJECT DUPLICATE I2C ADDRESS");
-
-    INA219Monitor monitor;
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-
-    const bool secondWithSameAddress = monitor.addSensor(makeSensorConfiguration(0x40U, 17U));
-
-    reportCheck("A second sensor reusing an already-registered I2C address is rejected",
-                !secondWithSameAddress);
-    reportCheck("The rejected duplicate does not increase the sensor count",
-                monitor.getNumberOfSensors() == 1U);
-    reportCheck("The relay pin from the rejected duplicate stays unregistered",
-                monitor.findSensorByRelayPin(17U) == nullptr);
-}
-
-void testRejectDuplicateRelayPin() {
-    printSection("TEST 6 - REJECT DUPLICATE RELAY PIN");
-
-    INA219Monitor monitor;
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-
-    const bool secondWithSameRelayPin = monitor.addSensor(makeSensorConfiguration(0x41U, 16U));
-
-    reportCheck("A second sensor reusing an already-registered relay pin is rejected",
-                !secondWithSameRelayPin);
-    reportCheck("The rejected duplicate does not increase the sensor count",
-                monitor.getNumberOfSensors() == 1U);
-    reportCheck("The I2C address from the rejected duplicate stays unregistered",
-                monitor.findSensorByI2CAddress(0x41U) == nullptr);
+    return INA219Monitor::SensorConfiguration{shuntResistanceOhms, maximumExpectedCurrentAmps, emaAlpha};
 }
 
 /*
- * Covers every value INA219Monitor can validate without any hardware: an
- * I2C address outside the INA219's real 0x40-0x4F address space, a
- * non-positive shunt resistance or maximum current, and a shunt/current
- * combination that would exceed the sensor's measurable shunt-voltage
- * range.
+ * Analytic bounds of INA219Monitor.cpp's bench-mode simulatedReading():
+ * currentAmps rides BASE_CURRENT_AMPS(3.5) +/- CURRENT_SWING_AMPS(2.5), so
+ * it always lands in [1.0, 6.0] A; voltageVolts sags from
+ * BASE_VOLTAGE_VOLTS(13.4) by up to VOLTAGE_SAG_VOLTS(0.6) proportionally
+ * to that current, landing in [12.8, 13.3] V. These are deliberately loose
+ * (not exact-value) checks: the wave's phase is a shared, ever-advancing
+ * counter, so no test may assume which sample index it will see.
  */
-void testRejectInvalidConfiguration() {
-    printSection("TEST 7 - REJECT INVALID ADDRESS/CONFIGURATION");
+constexpr float SIMULATED_CURRENT_MIN_AMPS = 0.95F;
+constexpr float SIMULATED_CURRENT_MAX_AMPS = 6.05F;
+constexpr float SIMULATED_VOLTAGE_MIN_VOLTS = 12.75F;
+constexpr float SIMULATED_VOLTAGE_MAX_VOLTS = 13.35F;
+
+void testAcceptsValidConfiguration() {
+    printSection("TEST 1 - VALID SENSOR CONFIGURATION IS ACCEPTED");
+
+    INA219Monitor monitor;
+    reportCheck("A new monitor starts unconfigured", !monitor.isConfigured());
+
+    const bool configured = monitor.configureSensor(makeSensorConfiguration());
+    reportCheck("configureSensor() accepts a valid configuration", configured);
+    reportCheck("isConfigured() becomes true after a valid configureSensor()", monitor.isConfigured());
+}
+
+/*
+ * Covers every value INA219Monitor can validate without any hardware: a
+ * non-positive shunt resistance or maximum current, an emaAlpha outside
+ * (0, 1], and a shunt/current combination that would exceed the sensor's
+ * measurable +-320 mV shunt-voltage range.
+ */
+void testRejectsInvalidConfiguration() {
+    printSection("TEST 2 - REJECT INVALID SENSOR CONFIGURATION");
 
     INA219Monitor monitor;
 
-    reportCheck("An I2C address below the INA219 address space (0x3F) is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x3FU, 1U)));
-
-    reportCheck("An I2C address above the INA219 address space (0x50) is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x50U, 2U)));
-
     reportCheck("A zero shunt resistance is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x40U, 3U, 0.0F, 2.0F)));
+                !monitor.configureSensor(makeSensorConfiguration(0.0F, 2.0F)));
 
     reportCheck("A negative maximum current is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x41U, 4U, 0.1F, -1.0F)));
+                !monitor.configureSensor(makeSensorConfiguration(0.1F, -1.0F)));
 
     /*
      * 1.0 ohm x 1.0 A = 1.0 V, far beyond the +-320 mV full-scale range
      * this module configures the sensor for.
      */
     reportCheck("A shunt/current combination exceeding the +-320 mV range is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x42U, 5U, 1.0F, 1.0F)));
-
-    reportCheck("None of the rejected configurations registered a sensor",
-                monitor.getNumberOfSensors() == 0U);
-
-    /*
-     * A configuration comfortably inside the measurable range (0.1 ohm
-     * shunt, 3.0 A max => 300 mV, under the 320 mV full-scale limit) is
-     * valid and must be accepted. 3.2 A is deliberately avoided here: at
-     * float precision, 0.1F * 3.2F does not land exactly on 0.32F, so it
-     * would make this check depend on IEEE-754 rounding rather than on
-     * the validation rule actually being tested.
-     */
-    reportCheck("A shunt/current combination safely inside the +-320 mV range is accepted",
-                monitor.addSensor(makeSensorConfiguration(0x43U, 6U, 0.1F, 3.0F)));
+                !monitor.configureSensor(makeSensorConfiguration(1.0F, 1.0F)));
 
     reportCheck("emaAlpha == 0 is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x44U, 7U, 0.1F, 2.0F, 0.0F)));
+                !monitor.configureSensor(makeSensorConfiguration(0.1F, 2.0F, 0.0F)));
     reportCheck("emaAlpha > 1 is rejected",
-                !monitor.addSensor(makeSensorConfiguration(0x45U, 8U, 0.1F, 2.0F, 1.5F)));
+                !monitor.configureSensor(makeSensorConfiguration(0.1F, 2.0F, 1.5F)));
+
+    reportCheck("None of the rejected configurations left the monitor configured",
+                !monitor.isConfigured());
+
     reportCheck("emaAlpha == 1 (no smoothing) is accepted",
-                monitor.addSensor(makeSensorConfiguration(0x46U, 9U, 0.1F, 2.0F, 1.0F)));
+                monitor.configureSensor(makeSensorConfiguration(0.1F, 2.0F, 1.0F)));
+
+    /*
+     * 3.2 A is deliberately avoided here: at float precision, 0.1F * 3.2F
+     * does not land exactly on 0.32F, so it would make this check depend
+     * on IEEE-754 rounding rather than on the validation rule being tested.
+     */
+    INA219Monitor another;
+    reportCheck("A shunt/current combination safely inside the +-320 mV range is accepted",
+                another.configureSensor(makeSensorConfiguration(0.1F, 3.0F)));
+}
+
+void testRejectedReconfigureLeavesGoodStateIntact() {
+    printSection("TEST 3 - A REJECTED RECONFIGURE DOES NOT CLOBBER AN EXISTING GOOD CONFIGURATION");
+
+    INA219Monitor monitor;
+    reportCheck("Initial valid configuration is accepted", monitor.configureSensor(makeSensorConfiguration()));
+
+    reportCheck("A later invalid configureSensor() call is rejected",
+                !monitor.configureSensor(makeSensorConfiguration(0.0F, 2.0F)));
+    reportCheck("The monitor stays configured after the rejected attempt", monitor.isConfigured());
+
+    LoadMeasurements measurements{};
+    reportCheck("readMeasurements() still works using the earlier good configuration",
+                monitor.readMeasurements(measurements));
+}
+
+/*
+ * initializeBus() performs real ESP-IDF I2C bus setup and is compiled only
+ * under ESP_PLATFORM; a host build must honestly report failure rather
+ * than fabricate a bus.
+ */
+void testHostBuildHasNoRealI2CBus() {
+    printSection("TEST 4 - HOST BUILD HAS NO REAL I2C BUS");
+
+    INA219Monitor monitor;
+    const INA219Monitor::I2CBusConfiguration busConfiguration{4U, 5U, 400000U, 0U};
+    reportCheck("initializeBus() on a host build reports failure, not a fabricated success",
+                !monitor.initializeBus(busConfiguration));
+}
+
+/*
+ * INA219Monitor.cpp's USE_SIMULATED_READING bench-mode flag is not gated
+ * by ESP_PLATFORM, so it is exercised on host builds too. A flat constant
+ * reading previously made every bench/demo run look frozen; these checks
+ * pin down that it now behaves like a real, moving source instead.
+ */
+void testSimulatedReadingBehavesLikeARealMovingSource() {
+    printSection("TEST 5 - BENCH-MODE SIMULATED READING");
+
+    INA219Monitor monitor;
+    LoadMeasurements measurements{-1.0F, -1.0F, -1.0F};
+
+    reportCheck("isSensorPresent() before configuration is false",
+                !monitor.isSensorPresent());
+    reportCheck("readMeasurements() before configuration reports failure",
+                !monitor.readMeasurements(measurements));
+    reportCheck("A failed readMeasurements() call leaves the output untouched",
+                measurements.voltageVolts == -1.0F &&
+                measurements.currentAmps == -1.0F &&
+                measurements.powerWatts == -1.0F);
+
+    reportCheck("configureSensor() accepts a valid configuration", monitor.configureSensor(makeSensorConfiguration()));
+    reportCheck("isSensorPresent() reports true once configured (bench mode)", monitor.isSensorPresent());
+
+    reportCheck("readMeasurements() succeeds once configured (bench mode)",
+                monitor.readMeasurements(measurements));
+    reportCheck("getLastMeasurementSource() reports SIMULATED",
+                monitor.getLastMeasurementSource() == MeasurementSource::SIMULATED);
+
+    reportCheck("Simulated voltage lands within the modelled 12V-pack range",
+                measurements.voltageVolts >= SIMULATED_VOLTAGE_MIN_VOLTS &&
+                measurements.voltageVolts <= SIMULATED_VOLTAGE_MAX_VOLTS);
+    reportCheck("Simulated current lands within the modelled charge/discharge range",
+                measurements.currentAmps >= SIMULATED_CURRENT_MIN_AMPS &&
+                measurements.currentAmps <= SIMULATED_CURRENT_MAX_AMPS);
+    reportCheck("Power is voltage * current with identity calibration",
+                std::fabs(measurements.powerWatts - measurements.voltageVolts * measurements.currentAmps) < 0.01F);
+
+    bool sawADifferentReading = false;
+    const float firstVoltage = measurements.voltageVolts;
+    const float firstCurrent = measurements.currentAmps;
+    for (int i = 0; i < 20; ++i) {
+        LoadMeasurements next{};
+        if (monitor.readMeasurements(next) &&
+            (std::fabs(next.voltageVolts - firstVoltage) > 0.001F ||
+             std::fabs(next.currentAmps - firstCurrent) > 0.001F)) {
+            sawADifferentReading = true;
+            break;
+        }
+    }
+    reportCheck("Repeated readMeasurements() calls are not frozen at one constant value",
+                sawADifferentReading);
+}
+
+void testFilteredMeasurementsStayPlumbedAndBounded() {
+    printSection("TEST 6 - readFilteredMeasurements() STAYS WITHIN THE SAME MODELLED RANGE");
+
+    INA219Monitor monitor;
+    monitor.configureSensor(makeSensorConfiguration(0.1F, 2.0F, 0.3F));
+
+    for (int i = 0; i < 5; ++i) {
+        LoadMeasurements filtered{};
+        reportCheck("readFilteredMeasurements() succeeds once configured", monitor.readFilteredMeasurements(filtered));
+        reportCheck("Filtered voltage stays within the modelled range",
+                    filtered.voltageVolts >= SIMULATED_VOLTAGE_MIN_VOLTS &&
+                    filtered.voltageVolts <= SIMULATED_VOLTAGE_MAX_VOLTS);
+        reportCheck("Filtered current stays within the modelled range",
+                    filtered.currentAmps >= SIMULATED_CURRENT_MIN_AMPS &&
+                    filtered.currentAmps <= SIMULATED_CURRENT_MAX_AMPS);
+    }
 }
 
 /*
  * applyExponentialMovingAverage() is pure, hardware-free math and is
  * always compiled, so it is directly host-testable independent of any
- * real or development reading.
+ * real or simulated reading.
  */
 void testExponentialMovingAverageMath() {
-    printSection("TEST 8 - EXPONENTIAL MOVING AVERAGE MATH");
+    printSection("TEST 7 - EXPONENTIAL MOVING AVERAGE MATH");
 
     const LoadMeasurements previous{10.0F, 2.0F, 20.0F};
     const LoadMeasurements raw{12.0F, 3.0F, 36.0F};
@@ -262,145 +264,108 @@ void testExponentialMovingAverageMath() {
 }
 
 /*
- * setCalibration()/getCalibration() bookkeeping and applyCalibration()'s
- * math are always compiled; only NVS persistence itself (which always
- * reports failure on a host build, per persistCalibration()) is
- * ESP32-only.
+ * setCalibration()/getCalibration() bookkeeping is always compiled; only
+ * NVS persistence itself is ESP32-only, and persistCalibration() honestly
+ * returns true unconditionally on a host build (there is nothing to
+ * persist to), so setCalibration() succeeding here reflects real
+ * validation logic, not a fabricated success.
  */
-void testCalibrationValidationAndApplication() {
-    printSection("TEST 9 - CALIBRATION VALIDATION AND APPLICATION");
+void testCalibrationValidationAndBookkeeping() {
+    printSection("TEST 8 - CALIBRATION VALIDATION AND BOOKKEEPING");
 
     INA219Monitor monitor;
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
 
-    INA219Monitor::INA219Calibration identity{};
-    reportCheck("A freshly registered sensor starts with identity calibration",
-                monitor.getCalibration(0x40U, identity) &&
+    reportCheck("setCalibration() on an unconfigured sensor is rejected",
+                !monitor.setCalibration(INA219Monitor::Calibration{0.0F, 0.0F, 1.0F}));
+
+    monitor.configureSensor(makeSensorConfiguration());
+
+    const INA219Monitor::Calibration identity = monitor.getCalibration();
+    reportCheck("A freshly configured sensor starts with identity calibration",
                 identity.voltageOffsetVolts == 0.0F && identity.currentOffsetAmps == 0.0F &&
                 identity.currentScaleFactor == 1.0F);
 
     reportCheck("setCalibration() rejects a non-finite offset",
-                !monitor.setCalibration(0x40U, INA219Monitor::INA219Calibration{
+                !monitor.setCalibration(INA219Monitor::Calibration{
                     std::numeric_limits<float>::quiet_NaN(), 0.0F, 1.0F}));
     reportCheck("setCalibration() rejects a zero current scale factor",
-                !monitor.setCalibration(0x40U, INA219Monitor::INA219Calibration{0.0F, 0.0F, 0.0F}));
+                !monitor.setCalibration(INA219Monitor::Calibration{0.0F, 0.0F, 0.0F}));
     reportCheck("setCalibration() rejects a negative current scale factor",
-                !monitor.setCalibration(0x40U, INA219Monitor::INA219Calibration{0.0F, 0.0F, -1.0F}));
-    reportCheck("setCalibration() on an unregistered sensor is rejected",
-                !monitor.setCalibration(0x99U, INA219Monitor::INA219Calibration{0.0F, 0.0F, 1.0F}));
+                !monitor.setCalibration(INA219Monitor::Calibration{0.0F, 0.0F, -1.0F}));
 
-    const INA219Monitor::INA219Calibration validCalibration{0.05F, -0.02F, 1.02F};
-    reportCheck("setCalibration() accepts a valid calibration", monitor.setCalibration(0x40U, validCalibration));
+    const INA219Monitor::Calibration validCalibration{0.05F, -0.02F, 1.02F};
+    reportCheck("setCalibration() accepts a valid calibration", monitor.setCalibration(validCalibration));
 
-    INA219Monitor::INA219Calibration restored{};
+    const INA219Monitor::Calibration restored = monitor.getCalibration();
     reportCheck("getCalibration() returns the calibration just set",
-                monitor.getCalibration(0x40U, restored) &&
                 std::fabs(restored.voltageOffsetVolts - 0.05F) < 0.0001F &&
                 std::fabs(restored.currentOffsetAmps - (-0.02F)) < 0.0001F &&
                 std::fabs(restored.currentScaleFactor - 1.02F) < 0.0001F);
 }
 
 /*
- * Without ESP_PLATFORM, every hardware-touching method must honestly
- * report failure/absence instead of simulating a device or a reading —
- * even for an otherwise validly registered sensor.
+ * Uses the analytic bounds of the raw simulated wave (see the
+ * SIMULATED_CURRENT_ and SIMULATED_VOLTAGE_ constants above) to confirm
+ * calibration is actually applied to readMeasurements() output, without
+ * needing to know the exact raw sample any given call lands on.
  */
-void testHostBuildReportsNoHardware() {
-    printSection("TEST 10 - HOST BUILD NEVER FABRICATES HARDWARE (DEVELOPMENT OR PRODUCTION)");
+void testCalibrationAppliesToReadMeasurements() {
+    printSection("TEST 9 - CALIBRATION APPLIES TO readMeasurements()");
 
     INA219Monitor monitor;
+    monitor.configureSensor(makeSensorConfiguration());
+    reportCheck("Doubling current scale with zero offsets is accepted",
+                monitor.setCalibration(INA219Monitor::Calibration{0.0F, 0.0F, 2.0F}));
 
-    const INA219Monitor::I2CBusConfiguration busConfiguration{4U, 5U, 400000U, 0U};
-    reportCheck("initializeBus() on a host build reports failure, not a fabricated success",
-                !monitor.initializeBus(busConfiguration));
+    LoadMeasurements measurements{};
+    reportCheck("readMeasurements() succeeds under the new calibration", monitor.readMeasurements(measurements));
 
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
+    reportCheck("Calibrated current falls within double the raw simulated range",
+                measurements.currentAmps >= 2.0F * SIMULATED_CURRENT_MIN_AMPS &&
+                measurements.currentAmps <= 2.0F * SIMULATED_CURRENT_MAX_AMPS);
+    reportCheck("Voltage is unaffected by a current-only calibration",
+                measurements.voltageVolts >= SIMULATED_VOLTAGE_MIN_VOLTS &&
+                measurements.voltageVolts <= SIMULATED_VOLTAGE_MAX_VOLTS);
+    reportCheck("Power still equals the calibrated voltage * calibrated current",
+                std::fabs(measurements.powerWatts - measurements.voltageVolts * measurements.currentAmps) < 0.01F);
+}
 
-    reportCheck("isSensorPresent() on a host build never reports a fabricated FOUND",
-                !monitor.isSensorPresent(0x40U));
+void testMeasurementSourceTextAndDiagnosticReport() {
+    printSection("TEST 10 - MEASUREMENT SOURCE TEXT AND printDiagnosticReport()");
 
-    LoadMeasurements measurements{-1.0F, -1.0F, -1.0F};
-    const bool readSucceeded = monitor.readMeasurements(0x40U, measurements);
+    INA219Monitor monitor;
+    reportCheck("getLastMeasurementSource() on a never-read monitor is NONE",
+                monitor.getLastMeasurementSource() == MeasurementSource::NONE);
 
-    reportCheck("readMeasurements() on a host build reports failure, not a fabricated reading",
-                !readSucceeded);
-    reportCheck("A failed readMeasurements() call leaves the output untouched",
-                measurements.voltageVolts == -1.0F &&
-                measurements.currentAmps == -1.0F &&
-                measurements.powerWatts == -1.0F);
-
-    reportCheck("readMeasurementsForRelayPin() on a host build also reports failure",
-                !monitor.readMeasurementsForRelayPin(16U, measurements));
-
-    reportCheck("readMeasurementsForRelayPin() reports failure for an unregistered relay pin",
-                !monitor.readMeasurementsForRelayPin(200U, measurements));
-
-    LoadMeasurements filtered{-1.0F, -1.0F, -1.0F};
-    reportCheck("readFilteredMeasurements() on a host build reports failure, not a fabricated filtered reading",
-                !monitor.readFilteredMeasurements(0x40U, filtered));
-    reportCheck("A failed readFilteredMeasurements() call leaves the output untouched",
-                filtered.voltageVolts == -1.0F && filtered.currentAmps == -1.0F && filtered.powerWatts == -1.0F);
-    reportCheck("getLastMeasurementSource() stays NONE on a host build with no reading ever taken",
-                monitor.getLastMeasurementSource(0x40U) == MeasurementSource::NONE);
+    reportCheck("toText(MeasurementSource::NONE) == \"NONE\"",
+                std::string(toText(MeasurementSource::NONE)) == "NONE");
+    reportCheck("toText(MeasurementSource::SIMULATED) == \"SIMULATED\"",
+                std::string(toText(MeasurementSource::SIMULATED)) == "SIMULATED");
+    reportCheck("toText(MeasurementSource::HARDWARE) == \"HARDWARE\"",
+                std::string(toText(MeasurementSource::HARDWARE)) == "HARDWARE");
 
     /*
-     * printDiagnosticReport() must not crash even though it has real
-     * sensors registered and no hardware backing them.
+     * printDiagnosticReport() logs through ESP_LOGI only under
+     * ESP_PLATFORM; on a host build its body is compiled out entirely, so
+     * this only confirms it does not crash to call either way.
      */
     monitor.printDiagnosticReport();
     reportCheck("printDiagnosticReport() completes without crashing on a host build", true);
 }
 
-
-void testMeasurementSourceBookkeeping() {
-    printSection("TEST 11 - MEASUREMENT SOURCE BOOKKEEPING");
-
-    INA219Monitor monitor;
-
-    reportCheck("getLastMeasurementSource() for an unregistered/never-read address is NONE",
-                monitor.getLastMeasurementSource(0x40U) == MeasurementSource::NONE);
-
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-
-    reportCheck("A never-read registered sensor still reports MeasurementSource::NONE",
-                monitor.getLastMeasurementSource(0x40U) == MeasurementSource::NONE);
-
-    reportCheck("toText(MeasurementSource::NONE) == \"NONE\"",
-                std::string(toText(MeasurementSource::NONE)) == "NONE");
-    reportCheck("toText(MeasurementSource::HARDWARE) == \"HARDWARE\"",
-                std::string(toText(MeasurementSource::HARDWARE)) == "HARDWARE");
-}
-
-void testRollbackRemoval() {
-    printSection("TEST 12 - PROVISIONING ROLLBACK REMOVAL");
-
-    INA219Monitor monitor;
-    monitor.addSensor(makeSensorConfiguration(0x40U, 16U));
-
-    reportCheck("removeSensor() removes a provisionally registered INA219",
-                monitor.removeSensor(0x40U));
-    reportCheck("A removed INA219 no longer occupies its I2C address or relay pin",
-                monitor.getNumberOfSensors() == 0U &&
-                monitor.findSensorByI2CAddress(0x40U) == nullptr &&
-                monitor.findSensorByRelayPin(16U) == nullptr);
-    reportCheck("removeSensor() rejects an unknown I2C address", !monitor.removeSensor(0x41U));
-}
-
 } // namespace
 
 int main() {
-    testRegisterOneSensor();
-    testRegisterSeveralSensors();
-    testFindSensorByI2CAddress();
-    testFindSensorByRelayPin();
-    testRejectDuplicateI2CAddress();
-    testRejectDuplicateRelayPin();
-    testRejectInvalidConfiguration();
+    testAcceptsValidConfiguration();
+    testRejectsInvalidConfiguration();
+    testRejectedReconfigureLeavesGoodStateIntact();
+    testHostBuildHasNoRealI2CBus();
+    testSimulatedReadingBehavesLikeARealMovingSource();
+    testFilteredMeasurementsStayPlumbedAndBounded();
     testExponentialMovingAverageMath();
-    testCalibrationValidationAndApplication();
-    testHostBuildReportsNoHardware();
-    testMeasurementSourceBookkeeping();
-    testRollbackRemoval();
+    testCalibrationValidationAndBookkeeping();
+    testCalibrationAppliesToReadMeasurements();
+    testMeasurementSourceTextAndDiagnosticReport();
 
     std::printf("\n======================================================================\n");
     std::printf("RESULTS: %zu passed, %zu failed\n", passedChecks, failedChecks);
