@@ -1,0 +1,22 @@
+name: Firmware Build
+
+on:
+  push:
+    branches:
+      - fix/power-flow-cleanup
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build Central
+        run: pio run -e central
+      - name: Build Smart Node
+        run: pio run -e smart

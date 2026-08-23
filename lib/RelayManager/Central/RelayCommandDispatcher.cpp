@@ -1,0 +1,121 @@
+/**
+ * @file RelayCommandDispatcher.cpp
+ * @brief Implements OFF-before-ON relay dispatch ordering and
+ *        command/acknowledgement tracking.
+ *
+ * Entirely plain, hardware-free/network-free C++ — no ESP_PLATFORM split
+ * is needed, since this class never touches ESP-NOW or GPIO itself.
+ * Always compiled and fully host-testable (see
+ * test/RelayCommandDispatcher/).
+ */
+
+#include "RelayCommandDispatcher.h"
+
+namespace kilowatts {
+
+
+std::vector<RelayCommandDispatcher::RelayTarget> RelayCommandDispatcher::buildDispatchOrder(
+    const std::vector<RelayTarget>& targets)
+{
+    std::vector<RelayTarget> offPhase;
+    std::vector<RelayTarget> onPhase;
+
+    for (const RelayTarget& target : targets) {
+        if (target.desiredOn) {
+            onPhase.push_back(target);
+        } else {
+            offPhase.push_back(target);
+        }
+    }
+
+    /*
+     * OFF transitions are commanded first so capacity is released before
+     * any new load is energised, then ON transitions follow in the
+     * caller's original (Best-First admission) order.
+     */
+    std::vector<RelayTarget> dispatchOrder;
+    dispatchOrder.reserve(offPhase.size() + onPhase.size());
+    dispatchOrder.insert(dispatchOrder.end(), offPhase.begin(), offPhase.end());
+    dispatchOrder.insert(dispatchOrder.end(), onPhase.begin(), onPhase.end());
+
+    return dispatchOrder;
+}
+
+
+RelayCommandDispatcher::RelayCommandDispatcher()
+    : pendingCommands_(),
+      nextCommandId_(1U),
+      lastCompletedCommandId_(0U),
+      lastCompletedCommandSuccess_(false)
+{
+}
+
+
+std::uint32_t RelayCommandDispatcher::beginCommand(const RelayTarget& target)
+{
+    const std::uint32_t commandId = nextCommandId_;
+    ++nextCommandId_;
+
+    pendingCommands_.push_back(PendingCommand{
+        commandId,
+        target.nodeMacAddress,
+        target.relayPin,
+        target.desiredOn
+    });
+
+    return commandId;
+}
+
+
+bool RelayCommandDispatcher::isPending(std::uint32_t commandId) const
+{
+    return findPendingCommand(commandId) != nullptr;
+}
+
+
+const RelayCommandDispatcher::PendingCommand* RelayCommandDispatcher::findPendingCommand(std::uint32_t commandId) const
+{
+    for (const PendingCommand& pending : pendingCommands_) {
+        if (pending.commandId == commandId) {
+            return &pending;
+        }
+    }
+
+    return nullptr;
+}
+
+
+bool RelayCommandDispatcher::completeCommand(std::uint32_t commandId, bool success)
+{
+    for (std::size_t i = 0U; i < pendingCommands_.size(); ++i) {
+        if (pendingCommands_[i].commandId == commandId) {
+            pendingCommands_.erase(pendingCommands_.begin() + static_cast<std::ptrdiff_t>(i));
+            lastCompletedCommandId_ = commandId;
+            lastCompletedCommandSuccess_ = success;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+bool RelayCommandDispatcher::wasCommandSuccessful(std::uint32_t commandId) const
+{
+    return commandId == lastCompletedCommandId_ && lastCompletedCommandSuccess_;
+}
+
+
+std::size_t RelayCommandDispatcher::getNumberOfPendingCommands() const
+{
+    return pendingCommands_.size();
+}
+
+
+void RelayCommandDispatcher::clearPendingCommands()
+{
+    pendingCommands_.clear();
+}
+
+
+} // namespace kilowatts
