@@ -3,10 +3,10 @@
  * @brief Declares evaluation of an Auto Load's schedule against real
  *        local time.
  *
- * A Load's stored priority (Load::getPriority()) is never read or
- * modified here — priority and schedule are separate terms in
- * BestFirstSearch's evaluation, and BestFirstSearch is the only place
- * the two are combined.
+ * A Load's stored priority is never modified here. The evaluator only
+ * reports whether the configured schedule window is active for the
+ * current planning cycle; BestFirstSearch applies any temporary planning
+ * preference derived from that result.
  *
  * Only Auto Loads are evaluated; a schedule never overrides Fixed Load
  * semantics and a Fixed Load is never converted into an Auto Load here.
@@ -21,23 +21,10 @@
 namespace kilowatts {
 
 
-/**
- * Result of evaluating one Auto Load's schedule for the current planning
- * cycle.
- *
- * isScheduledTimeDue is always false when hasEnabledSchedule is false,
- * and also false whenever CurrentTimeProvider does not currently have
- * valid time — an unavailable clock is never treated as "due".
- *
- * futureSchedulePenalty is zero for a Load with no enabled schedule, zero
- * again once a configured schedule becomes due, and one for a Load whose
- * configured schedule has not yet arrived. It is not a priority value and
- * is never combined with priority here — only BestFirstSearch does that.
- */
+/** Result of evaluating one Auto Load's schedule for a planning cycle. */
 struct LoadScheduleEvaluation {
     bool hasEnabledSchedule;
-    bool isScheduledTimeDue;
-    float futureSchedulePenalty;
+    bool isScheduleActive;
 };
 
 
@@ -47,11 +34,11 @@ public:
 
     /**
      * Evaluates load's schedule against real local time obtained from
-     * currentTimeProvider and fills result with a_i, d_i and r_i.
+     * currentTimeProvider.
      *
-     * Returns false, and leaves result unchanged, when load is not an
-     * Auto Load — a Fixed Load's ON/OFF semantics are never
-     * reconsidered by a schedule, so it is never evaluated here.
+     * Returns false, and leaves result unchanged, when load is not Auto.
+     * When current time is unavailable, an enabled schedule is reported
+     * as inactive rather than guessing whether its window is active.
      */
     bool evaluateSchedule(
         const Load& load,
@@ -60,15 +47,22 @@ public:
     ) const;
 
 
+    /**
+     * Pure time-window check used by evaluateSchedule() and host tests.
+     * The interval is start-inclusive and end-exclusive. Windows that
+     * cross midnight are supported.
+     */
+    static bool isTimeWithinSchedule(
+        const AutoSchedule& schedule,
+        std::uint8_t currentHour,
+        std::uint8_t currentMinute
+    );
+
+
 private:
 
-    /**
-     * Compares schedule's hour/minute against real local time obtained
-     * from currentTimeProvider. Returns false (never "due") when
-     * currentTimeProvider does not currently have valid current time,
-     * regardless of which mode/source that time would have come from.
-     */
-    bool isScheduledTimeDue(
+    /** Reads current local time and checks whether the schedule is active. */
+    bool isScheduleActive(
         const AutoSchedule& schedule,
         const CurrentTimeProvider& currentTimeProvider
     ) const;
