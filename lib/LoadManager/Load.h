@@ -63,18 +63,20 @@ enum class LoadPowerType : std::uint8_t {
 
 
 /**
- * Preferred running time for an AUTO load.
+ * Preferred running window for an AUTO Load.
  *
  * Example:
- * {true, 6, 0}  means 06:00.
- * {true, 20, 0} means 20:00.
+ * {true, 6, 0, 8, 0} means the schedule is active from 06:00 up to 08:00.
+ * {true, 22, 0, 2, 0} represents an overnight window from 22:00 to 02:00.
  *
- * enabled = false means no preferred time has been set.
+ * enabled = false means no preferred running window has been set.
  */
 struct AutoSchedule {
     bool enabled;
-    std::uint8_t hour;
-    std::uint8_t minute;
+    std::uint8_t startHour;
+    std::uint8_t startMinute;
+    std::uint8_t endHour;
+    std::uint8_t endMinute;
 };
 
 
@@ -140,34 +142,23 @@ public:
     );
 
 
-    /**
-     * Returns the complete Load ID:
-     * Node MAC address + relay pin.
-     */
+    /** Returns the complete Load ID: Node MAC address + relay pin. */
     const Id& getId() const;
 
 
-    /**
-     * Returns the MAC address of the Node to which this Load belongs.
-     */
+    /** Returns the MAC address of the Node to which this Load belongs. */
     const MacAddress& getMacAddress() const;
 
 
-    /**
-     * Returns the relay pin controlling this Load inside its Node.
-     */
+    /** Returns the relay pin controlling this Load inside its Node. */
     std::uint8_t getRelayPin() const;
 
 
-    /**
-     * Changes the user-defined name of this Load.
-     */
+    /** Changes the user-defined name of this Load. */
     void setName(const std::string& name);
 
 
-    /**
-     * Returns the user-defined name of this Load.
-     */
+    /** Returns the user-defined name of this Load. */
     const std::string& getName() const;
 
 
@@ -205,14 +196,7 @@ public:
 
     /**
      * Records the raw rejection-reason byte BestFirstSearch produced the
-     * last time this Load was evaluated as an Auto candidate (see
-     * BestFirstSearch::NONE/BATTERY_AT_OR_BELOW_MINIMUM_CHARGE/... in
-     * BestFirstSearch.h). Stored
-     * as a plain byte, not BestFirstSearch's type, so this header never
-     * depends on BestFirstSearch.h — Load is a leaf dependency of that
-     * class, never the reverse. 0 (BestFirstSearch::NONE) means either
-     * "admitted" or "never evaluated this cycle" (for example a Fixed
-     * Load, which Best-First Search never ranks).
+     * last time this Load was evaluated as an Auto candidate.
      */
     void setLastBestFirstRejectionReason(std::uint8_t reason);
 
@@ -248,14 +232,16 @@ public:
 
 
     /**
-     * Sets the preferred running time for an AUTO Load.
+     * Sets the preferred running window for an AUTO Load.
      *
-     * hour must be 0 to 23.
-     * minute must be 0 to 59.
+     * startHour/endHour must be 0 to 23.
+     * startMinute/endMinute must be 0 to 59.
+     * Start and end must not be the same time. End may be earlier than
+     * start to represent a window that crosses midnight.
      *
      * Returns false when:
      * - the Load is not Auto, or
-     * - the time is invalid.
+     * - the schedule window is invalid.
      */
     bool setSchedule(AutoSchedule schedule);
 
@@ -264,60 +250,40 @@ public:
     AutoSchedule getSchedule() const;
 
 
-    /** Removes the preferred AUTO running time. */
+    /** Removes the preferred AUTO running window. */
     void clearSchedule();
 
 
 private:
 
-    /**
-     * Permanent identity of this Load.
-     *
-     * id_.macAddress identifies the ESP32 Node.
-     * id_.relayPin identifies this Load inside that Node.
-     */
+    /** Permanent identity of this Load. */
     Id id_;
-
 
     /** Name selected by the user when registering the Load. */
     std::string name_;
 
-
     /** Raw BestFirstSearch rejection-reason byte from the last evaluation. */
     std::uint8_t lastBestFirstRejectionReason_;
-
 
     /** Appliance power rating in watts used by Best-First Search. */
     float powerRatingWatts_;
 
-
     /** AC or DC power-source requirement used when generating child states. */
     LoadPowerType powerType_;
-
 
     /** Priority selected by the user. */
     std::uint16_t priority_;
 
-
-    /**
-     * The ONLY stored value that determines CONFIGURED Fixed/Auto and
-     * ON/OFF — never mutated by Best-First Search's per-cycle selection
-     * result, and never a stand-in for a per-cycle planning decision
-     * (Load does not store one; see the class-level comment above).
-     */
+    /** Configured Fixed/Auto and ON/OFF state. */
     LoadMode::Value mode_;
 
-
-    /** Preferred running time for an AUTO Load. */
+    /** Preferred running window for an AUTO Load. */
     AutoSchedule schedule_;
 };
 
 
 /**
- * Writes mac as "%02X:%02X:%02X:%02X:%02X:%02X" (18 bytes including the
- * null terminator) into buffer. The single shared implementation for every
- * module that needs to print a MAC address for logging/diagnostics/JSON,
- * instead of each one reimplementing the same six-argument snprintf call.
+ * Writes mac as "%02X:%02X:%02X:%02X:%02X:%02X" into buffer.
  */
 void formatMacAddressText(char* buffer, std::size_t bufferSize, const Load::MacAddress& mac);
 
