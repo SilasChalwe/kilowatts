@@ -35,6 +35,30 @@ bool validPowerType(std::uint8_t powerType)
         powerType == static_cast<std::uint8_t>(LoadPowerType::DC);
 }
 
+bool validSchedule(const LoadReportPacket& packet)
+{
+    if (!packet.scheduleEnabled) {
+        return true;
+    }
+
+    if (packet.scheduleStartHour > 23U ||
+        packet.scheduleStartMinute > 59U ||
+        packet.scheduleEndHour > 23U ||
+        packet.scheduleEndMinute > 59U) {
+        return false;
+    }
+
+    const std::uint16_t startMinutes =
+        static_cast<std::uint16_t>(packet.scheduleStartHour) * 60U +
+        packet.scheduleStartMinute;
+
+    const std::uint16_t endMinutes =
+        static_cast<std::uint16_t>(packet.scheduleEndHour) * 60U +
+        packet.scheduleEndMinute;
+
+    return startMinutes != endMinutes;
+}
+
 bool validLoadReport(const LoadReportPacket& packet)
 {
     const std::size_t nameLength =
@@ -48,9 +72,7 @@ bool validLoadReport(const LoadReportPacket& packet)
         packet.priority <= 10U &&
         std::isfinite(packet.powerRatingWatts) &&
         packet.powerRatingWatts >= 0.0F &&
-        (!packet.scheduleEnabled ||
-         (packet.scheduleHour <= 23U &&
-          packet.scheduleMinute <= 59U));
+        validSchedule(packet);
 }
 
 } // namespace
@@ -98,10 +120,6 @@ void CentralNodeRegistry::applyNodeReport(
     const NodeReportPacket& packet,
     std::uint32_t nowMilliseconds)
 {
-    /*
-     * The current Smart Node hardware store supports at most three Loads,
-     * therefore one complete report currently fits in one packet.
-     */
     if (packet.pageIndex != 0U ||
         packet.totalPages != 1U) {
 
@@ -210,8 +228,10 @@ void CentralNodeRegistry::applyNodeReport(
             (void)load->setSchedule(
                 AutoSchedule{
                     report.scheduleEnabled != 0U,
-                    report.scheduleHour,
-                    report.scheduleMinute});
+                    report.scheduleStartHour,
+                    report.scheduleStartMinute,
+                    report.scheduleEndHour,
+                    report.scheduleEndMinute});
         } else {
             load->clearSchedule();
         }
