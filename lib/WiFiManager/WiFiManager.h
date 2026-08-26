@@ -91,6 +91,13 @@ public:
      */
     explicit WiFiManager(std::uint8_t requiredChannel);
 
+    /**
+     * Overrides the channel supplied at construction. Must be called
+     * before begin() — this class never re-verifies an already-running
+     * connection against a new channel.
+     */
+    void setRequiredChannel(std::uint8_t requiredChannel);
+
     ~WiFiManager();
 
     WiFiManager(const WiFiManager&) = delete;

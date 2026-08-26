@@ -398,6 +398,15 @@ public:
     std::uint8_t getChannel() const;
 
 
+    /**
+     * Overrides the channel supplied at construction, before initialize()
+     * brings the radio up. Returns false (channel unchanged) once
+     * initialize() has already run, or when channel is outside 1..14 —
+     * the radio is never reconfigured live.
+     */
+    bool setChannel(std::uint8_t channel);
+
+
     /** Prints THIS Node and its directly attached downstream Nodes only. */
     void printConnectionInfo() const;
 

@@ -50,6 +50,16 @@ WiFiManager::WiFiManager(std::uint8_t requiredChannel)
 }
 
 
+void WiFiManager::setRequiredChannel(std::uint8_t requiredChannel)
+{
+    if (eventHandlersRegistered_) {
+        return;
+    }
+
+    requiredChannel_ = requiredChannel;
+}
+
+
 WiFiManager::~WiFiManager()
 {
     if (reconnectTimer != nullptr) {

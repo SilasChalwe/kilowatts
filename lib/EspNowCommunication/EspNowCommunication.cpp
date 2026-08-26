@@ -1106,6 +1106,17 @@ EspNowCommunication::getChannel() const
 }
 
 
+bool EspNowCommunication::setChannel(std::uint8_t channel)
+{
+    if (initialized_ || channel == 0U || channel > 14U) {
+        return false;
+    }
+
+    channel_ = channel;
+    return true;
+}
+
+
 void EspNowCommunication::printConnectionInfo() const
 {
     char thisNodeMac[18] = {};
