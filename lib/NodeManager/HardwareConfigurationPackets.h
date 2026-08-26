@@ -60,8 +60,17 @@ struct ConfigureLoadCommandPacket {
     float powerRatingWatts;
 
     std::uint8_t scheduleEnabled;
-    std::uint8_t scheduleStartHour;
-    std::uint8_t scheduleStartMinute;
+
+    union {
+        std::uint8_t scheduleStartHour;
+        std::uint8_t scheduleHour; // Legacy name for the start hour.
+    };
+
+    union {
+        std::uint8_t scheduleStartMinute;
+        std::uint8_t scheduleMinute; // Legacy name for the start minute.
+    };
+
     std::uint8_t scheduleEndHour;
     std::uint8_t scheduleEndMinute;
 };
