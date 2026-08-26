@@ -78,7 +78,6 @@ void sendIdentityReport()
     std::snprintf(packet.firmwareVersion, sizeof(packet.firmwareVersion), "%s", KILOWATTS_FIRMWARE_VERSION);
     chipInfo.getChipModelText(packet.chipModel, sizeof(packet.chipModel));
 
-    /* No compiled-in safe-pin list to declare anymore — the installer names a relay pin directly per Load. */
     packet.relayCapabilityCount = 0U;
 
     packet.freeHeapBytes = chipInfo.getFreeHeapBytes();
@@ -129,8 +128,10 @@ NodeReportPacket buildNodeReportPacket(
 
         const AutoSchedule schedule = load->getSchedule();
         out.scheduleEnabled = schedule.enabled ? 1U : 0U;
-        out.scheduleHour = schedule.hour;
-        out.scheduleMinute = schedule.minute;
+        out.scheduleStartHour = schedule.startHour;
+        out.scheduleStartMinute = schedule.startMinute;
+        out.scheduleEndHour = schedule.endHour;
+        out.scheduleEndMinute = schedule.endMinute;
     }
 
     xSemaphoreGive(nodeMutex);
@@ -151,8 +152,10 @@ HardwareConfigurationFailureReason applyConfigureLoadCommand(const ConfigureLoad
     configuration.priority = command.priority;
     configuration.schedule = AutoSchedule{
         command.scheduleEnabled != 0U,
-        command.scheduleHour,
-        command.scheduleMinute};
+        command.scheduleStartHour,
+        command.scheduleStartMinute,
+        command.scheduleEndHour,
+        command.scheduleEndMinute};
 
     HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
     if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
