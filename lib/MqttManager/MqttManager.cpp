@@ -187,20 +187,48 @@ bool parseSchedule(const cJSON* object, AutoSchedule& schedule)
     }
 
     const cJSON* enabled = cJSON_GetObjectItemCaseSensitive(object, "enabled");
-    std::uint8_t hour = 0U;
-    std::uint8_t minute = 0U;
-    if (!cJSON_IsBool(enabled) ||
-        !readU8(cJSON_GetObjectItemCaseSensitive(object, "hour"), hour) ||
-        !readU8(cJSON_GetObjectItemCaseSensitive(object, "minute"), minute)) {
+    if (!cJSON_IsBool(enabled)) {
         return false;
     }
 
     const bool scheduleEnabled = cJSON_IsTrue(enabled) != 0;
-    if (scheduleEnabled && (hour > 23U || minute > 59U)) {
+    if (!scheduleEnabled) {
+        schedule = AutoSchedule{};
+        return true;
+    }
+
+    std::uint8_t startHour = 0U;
+    std::uint8_t startMinute = 0U;
+    std::uint8_t endHour = 0U;
+    std::uint8_t endMinute = 0U;
+
+    if (!readU8(cJSON_GetObjectItemCaseSensitive(object, "startHour"), startHour) ||
+        !readU8(cJSON_GetObjectItemCaseSensitive(object, "startMinute"), startMinute) ||
+        !readU8(cJSON_GetObjectItemCaseSensitive(object, "endHour"), endHour) ||
+        !readU8(cJSON_GetObjectItemCaseSensitive(object, "endMinute"), endMinute) ||
+        startHour > 23U ||
+        startMinute > 59U ||
+        endHour > 23U ||
+        endMinute > 59U) {
         return false;
     }
 
-    schedule = AutoSchedule{scheduleEnabled, hour, minute};
+    const std::uint16_t startTotalMinutes =
+        static_cast<std::uint16_t>(startHour) * 60U + startMinute;
+
+    const std::uint16_t endTotalMinutes =
+        static_cast<std::uint16_t>(endHour) * 60U + endMinute;
+
+    if (startTotalMinutes == endTotalMinutes) {
+        return false;
+    }
+
+    schedule = AutoSchedule{
+        true,
+        startHour,
+        startMinute,
+        endHour,
+        endMinute};
     return true;
 }
 
