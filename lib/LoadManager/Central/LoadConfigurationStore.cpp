@@ -2,12 +2,6 @@
  * @file LoadConfigurationStore.cpp
  * @brief Implements NVS persistence of user-configured Load priority,
  *        mode and Auto schedule.
- *
- * setConfiguration()/findConfiguration()/applyToLoad() are plain,
- * hardware-free C++ and always compiled, so they are directly
- * host-testable (see test/LoadConfigurationStore/). NVS persistence
- * (loadPersisted()/persist()) is compiled only under ESP_PLATFORM,
- * matching the split already used elsewhere in this project.
  */
 
 #include "LoadConfigurationStore.h"
@@ -28,14 +22,24 @@ static const char *TAG = "LOAD_CONFIG_STORE";
 
 namespace {
 
-// Entries are stored as one fixed-layout record inside a single blob,
-// rather than one NVS key per Load, so the remembered-Load count isn't
-// limited by NVS's per-device key count.
 constexpr const char* NVS_NAMESPACE = "kw_loadcfg";
-constexpr const char* NVS_KEY_ENTRIES = "entries";
+constexpr const char* NVS_KEY_ENTRIES = "entries_v2";
+constexpr const char* NVS_KEY_LEGACY_ENTRIES = "entries";
 
 #pragma pack(push, 1)
 struct PersistedEntryRecord {
+    std::uint8_t macAddress[6];
+    std::uint8_t relayPin;
+    std::uint16_t priority;
+    std::uint8_t mode;
+    std::uint8_t scheduleEnabled;
+    std::uint8_t scheduleStartHour;
+    std::uint8_t scheduleStartMinute;
+    std::uint8_t scheduleEndHour;
+    std::uint8_t scheduleEndMinute;
+};
+
+struct LegacyPersistedEntryRecord {
     std::uint8_t macAddress[6];
     std::uint8_t relayPin;
     std::uint16_t priority;
@@ -62,7 +66,22 @@ bool LoadConfigurationStore::isValidSchedule(const AutoSchedule& schedule)
         return true;
     }
 
-    return schedule.hour <= 23U && schedule.minute <= 59U;
+    if (schedule.startHour > 23U ||
+        schedule.startMinute > 59U ||
+        schedule.endHour > 23U ||
+        schedule.endMinute > 59U) {
+        return false;
+    }
+
+    const std::uint16_t startMinutes =
+        static_cast<std::uint16_t>(schedule.startHour) * 60U +
+        schedule.startMinute;
+
+    const std::uint16_t endMinutes =
+        static_cast<std::uint16_t>(schedule.endHour) * 60U +
+        schedule.endMinute;
+
+    return startMinutes != endMinutes;
 }
 
 
@@ -83,10 +102,14 @@ bool LoadConfigurationStore::setConfiguration(const ConfigurationEntry& entry)
 {
     if (!isValidSchedule(entry.schedule)) {
 #ifdef ESP_PLATFORM
-        ESP_LOGW(TAG, "Rejected configuration for relayPin=%u: invalid schedule hour=%u minute=%u",
-                 static_cast<unsigned int>(entry.relayPin),
-                 static_cast<unsigned int>(entry.schedule.hour),
-                 static_cast<unsigned int>(entry.schedule.minute));
+        ESP_LOGW(
+            TAG,
+            "Rejected configuration for relayPin=%u: invalid schedule window %02u:%02u-%02u:%02u",
+            static_cast<unsigned int>(entry.relayPin),
+            static_cast<unsigned int>(entry.schedule.startHour),
+            static_cast<unsigned int>(entry.schedule.startMinute),
+            static_cast<unsigned int>(entry.schedule.endHour),
+            static_cast<unsigned int>(entry.schedule.endMinute));
 #endif
         return false;
     }
@@ -142,9 +165,7 @@ bool LoadConfigurationStore::applyToLoad(Load& load) const
     load.setPriority(entry.priority);
     load.setMode(entry.mode);
 
-    // setSchedule() rejects the call on a Fixed Load, so a persisted
-    // schedule for a Load the user has since switched to Fixed is
-    // silently ignored rather than causing an error here.
+    // Fixed Loads clear and ignore schedules by design.
     load.setSchedule(entry.schedule);
 
     return true;
@@ -162,53 +183,98 @@ bool LoadConfigurationStore::loadPersisted()
 
     std::size_t blobSize = 0U;
     result = nvs_get_blob(handle, NVS_KEY_ENTRIES, nullptr, &blobSize);
-    if (result != ESP_OK || blobSize == 0U || (blobSize % sizeof(PersistedEntryRecord)) != 0U) {
+
+    if (result == ESP_OK && blobSize > 0U &&
+        (blobSize % sizeof(PersistedEntryRecord)) == 0U) {
+
+        std::vector<std::uint8_t> buffer(blobSize);
+        result = nvs_get_blob(handle, NVS_KEY_ENTRIES, buffer.data(), &blobSize);
         nvs_close(handle);
-        if (result == ESP_OK) {
-            ESP_LOGW(TAG, "Discarding corrupt persisted Load configuration blob (size=%zu not a multiple of record size)",
-                     blobSize);
+
+        if (result != ESP_OK) {
+            return false;
         }
+
+        const std::size_t recordCount = blobSize / sizeof(PersistedEntryRecord);
+        std::vector<ConfigurationEntry> restored;
+        restored.reserve(recordCount);
+
+        for (std::size_t i = 0U; i < recordCount; ++i) {
+            PersistedEntryRecord record{};
+            std::memcpy(
+                &record,
+                buffer.data() + (i * sizeof(PersistedEntryRecord)),
+                sizeof(record));
+
+            ConfigurationEntry entry{};
+            std::memcpy(entry.macAddress.data(), record.macAddress, entry.macAddress.size());
+            entry.relayPin = record.relayPin;
+            entry.priority = record.priority;
+            entry.mode = static_cast<LoadMode::Value>(record.mode);
+            entry.schedule = AutoSchedule{
+                record.scheduleEnabled != 0U,
+                record.scheduleStartHour,
+                record.scheduleStartMinute,
+                record.scheduleEndHour,
+                record.scheduleEndMinute
+            };
+
+            if (!isValidSchedule(entry.schedule)) {
+                ESP_LOGW(TAG, "Discarding corrupt persisted entry for relayPin=%u: invalid schedule",
+                         static_cast<unsigned int>(entry.relayPin));
+                return false;
+            }
+
+            restored.push_back(entry);
+        }
+
+        entries_ = restored;
+        ESP_LOGI(TAG, "Restored %zu persisted Load configuration entries", entries_.size());
+        return true;
+    }
+
+    // Version 1 stored only a start time. Preserve priority/mode while
+    // disabling that incomplete schedule so the user can configure a
+    // proper start/end window instead of silently inventing an end time.
+    blobSize = 0U;
+    result = nvs_get_blob(handle, NVS_KEY_LEGACY_ENTRIES, nullptr, &blobSize);
+
+    if (result != ESP_OK || blobSize == 0U ||
+        (blobSize % sizeof(LegacyPersistedEntryRecord)) != 0U) {
+        nvs_close(handle);
         return false;
     }
 
-    std::vector<std::uint8_t> buffer(blobSize);
-    result = nvs_get_blob(handle, NVS_KEY_ENTRIES, buffer.data(), &blobSize);
+    std::vector<std::uint8_t> legacyBuffer(blobSize);
+    result = nvs_get_blob(handle, NVS_KEY_LEGACY_ENTRIES, legacyBuffer.data(), &blobSize);
     nvs_close(handle);
 
     if (result != ESP_OK) {
         return false;
     }
 
-    const std::size_t recordCount = blobSize / sizeof(PersistedEntryRecord);
+    const std::size_t recordCount = blobSize / sizeof(LegacyPersistedEntryRecord);
     std::vector<ConfigurationEntry> restored;
     restored.reserve(recordCount);
 
     for (std::size_t i = 0U; i < recordCount; ++i) {
-        PersistedEntryRecord record{};
-        std::memcpy(&record, buffer.data() + (i * sizeof(PersistedEntryRecord)), sizeof(record));
+        LegacyPersistedEntryRecord record{};
+        std::memcpy(
+            &record,
+            legacyBuffer.data() + (i * sizeof(LegacyPersistedEntryRecord)),
+            sizeof(record));
 
         ConfigurationEntry entry{};
         std::memcpy(entry.macAddress.data(), record.macAddress, entry.macAddress.size());
         entry.relayPin = record.relayPin;
         entry.priority = record.priority;
         entry.mode = static_cast<LoadMode::Value>(record.mode);
-        entry.schedule = AutoSchedule{
-            record.scheduleEnabled != 0U,
-            record.scheduleHour,
-            record.scheduleMinute
-        };
-
-        if (!isValidSchedule(entry.schedule)) {
-            ESP_LOGW(TAG, "Discarding corrupt persisted entry for relayPin=%u: invalid schedule",
-                     static_cast<unsigned int>(entry.relayPin));
-            return false;
-        }
-
+        entry.schedule = AutoSchedule{false, 0U, 0U, 0U, 0U};
         restored.push_back(entry);
     }
 
     entries_ = restored;
-    ESP_LOGI(TAG, "Restored %zu persisted Load configuration entries", entries_.size());
+    ESP_LOGW(TAG, "Restored legacy Load configurations; old start-only schedules were disabled");
     return true;
 #else
     return false;
@@ -236,12 +302,19 @@ bool LoadConfigurationStore::persist() const
         record.priority = entry.priority;
         record.mode = static_cast<std::uint8_t>(entry.mode);
         record.scheduleEnabled = entry.schedule.enabled ? 1U : 0U;
-        record.scheduleHour = entry.schedule.hour;
-        record.scheduleMinute = entry.schedule.minute;
+        record.scheduleStartHour = entry.schedule.startHour;
+        record.scheduleStartMinute = entry.schedule.startMinute;
+        record.scheduleEndHour = entry.schedule.endHour;
+        record.scheduleEndMinute = entry.schedule.endMinute;
         records.push_back(record);
     }
 
-    result = nvs_set_blob(handle, NVS_KEY_ENTRIES, records.data(), records.size() * sizeof(PersistedEntryRecord));
+    result = nvs_set_blob(
+        handle,
+        NVS_KEY_ENTRIES,
+        records.data(),
+        records.size() * sizeof(PersistedEntryRecord));
+
     if (result == ESP_OK) {
         result = nvs_commit(handle);
     }

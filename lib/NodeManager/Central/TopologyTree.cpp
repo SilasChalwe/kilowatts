@@ -83,8 +83,10 @@ void TopologyTree::appendLoadJson(
     out += "\"";
     out += ",\"schedule\":{\"enabled\":";
     out += schedule.enabled ? "true" : "false";
-    out += ",\"hour\":" + std::to_string(static_cast<unsigned int>(schedule.hour));
-    out += ",\"minute\":" + std::to_string(static_cast<unsigned int>(schedule.minute));
+    out += ",\"startHour\":" + std::to_string(static_cast<unsigned int>(schedule.startHour));
+    out += ",\"startMinute\":" + std::to_string(static_cast<unsigned int>(schedule.startMinute));
+    out += ",\"endHour\":" + std::to_string(static_cast<unsigned int>(schedule.endHour));
+    out += ",\"endMinute\":" + std::to_string(static_cast<unsigned int>(schedule.endMinute));
     out += "},\"bestFirstRejectionReason\":\"";
     out += rejectionReasonText(load.getLastBestFirstRejectionReason());
     out += "\"}";

@@ -12,7 +12,7 @@
  * - power type
  * - priority
  * - power rating in watts
- * - optional Auto schedule
+ * - optional Auto schedule window
  *
  * Do not add old fields such as nominal voltage, nominal current,
  * or startup watts. Those are not part of the current Load model.
@@ -60,13 +60,22 @@ struct ConfigureLoadCommandPacket {
     float powerRatingWatts;
 
     std::uint8_t scheduleEnabled;
-    std::uint8_t scheduleHour;
-    std::uint8_t scheduleMinute;
+
+    union {
+        std::uint8_t scheduleStartHour;
+        std::uint8_t scheduleHour; // Legacy name for the start hour.
+    };
+
+    union {
+        std::uint8_t scheduleStartMinute;
+        std::uint8_t scheduleMinute; // Legacy name for the start minute.
+    };
+
+    std::uint8_t scheduleEndHour;
+    std::uint8_t scheduleEndMinute;
 };
 
-/**
- * @brief Result of applying a ConfigureLoadCommandPacket.
- */
+/** @brief Result of applying a ConfigureLoadCommandPacket. */
 struct ConfigureLoadAcknowledgementPacket {
     std::uint32_t commandId;
     std::uint8_t relayPin;
@@ -74,17 +83,13 @@ struct ConfigureLoadAcknowledgementPacket {
     std::uint8_t failureReason;
 };
 
-/**
- * @brief Remove one Load from the destination Node.
- */
+/** @brief Remove one Load from the destination Node. */
 struct RemoveLoadCommandPacket {
     std::uint32_t commandId;
     std::uint8_t relayPin;
 };
 
-/**
- * @brief Result of applying a RemoveLoadCommandPacket.
- */
+/** @brief Result of applying a RemoveLoadCommandPacket. */
 struct RemoveLoadAcknowledgementPacket {
     std::uint32_t commandId;
     std::uint8_t relayPin;

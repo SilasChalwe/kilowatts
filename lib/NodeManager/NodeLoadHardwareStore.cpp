@@ -17,14 +17,11 @@ constexpr const char* NVS_KEY_SCHEMA = "schema";
 constexpr const char* NVS_KEY_LOADS = "loads";
 
 /*
- * Schema 4 is the current Load model:
- * powerRatingWatts + powerType.
- *
- * It deliberately does not deserialize schema 3's nominal volts/current/
- * startup watts into the new model because that would silently invent a
- * conversion policy. An installer can reconfigure those old records.
+ * Schema 5 stores the current Load model with a complete Auto schedule
+ * window (start and end time). Older start-only records are deliberately
+ * not interpreted because doing so would require inventing an end time.
  */
-constexpr std::uint8_t SCHEMA_VERSION = 4U;
+constexpr std::uint8_t SCHEMA_VERSION = 5U;
 
 #pragma pack(push, 1)
 struct PersistedLoadConfiguration {
@@ -39,8 +36,10 @@ struct PersistedLoadConfiguration {
     std::uint16_t priority;
 
     std::uint8_t scheduleEnabled;
-    std::uint8_t scheduleHour;
-    std::uint8_t scheduleMinute;
+    std::uint8_t scheduleStartHour;
+    std::uint8_t scheduleStartMinute;
+    std::uint8_t scheduleEndHour;
+    std::uint8_t scheduleEndMinute;
 };
 #pragma pack(pop)
 
@@ -63,8 +62,10 @@ NodeLoadHardwareStore::LoadConfiguration fromPersisted(
 
     result.schedule = AutoSchedule{
         value.scheduleEnabled != 0U,
-        value.scheduleHour,
-        value.scheduleMinute};
+        value.scheduleStartHour,
+        value.scheduleStartMinute,
+        value.scheduleEndHour,
+        value.scheduleEndMinute};
 
     return result;
 }
@@ -87,8 +88,10 @@ PersistedLoadConfiguration toPersisted(
     result.priority = value.priority;
 
     result.scheduleEnabled = value.schedule.enabled ? 1U : 0U;
-    result.scheduleHour = value.schedule.hour;
-    result.scheduleMinute = value.schedule.minute;
+    result.scheduleStartHour = value.schedule.startHour;
+    result.scheduleStartMinute = value.schedule.startMinute;
+    result.scheduleEndHour = value.schedule.endHour;
+    result.scheduleEndMinute = value.schedule.endMinute;
 
     return result;
 }
@@ -160,14 +163,34 @@ bool NodeLoadHardwareStore::isValidNewConfiguration(
         ++nameLength;
     }
 
+    bool scheduleValid = true;
+
+    if (value.schedule.enabled) {
+        scheduleValid =
+            value.schedule.startHour <= 23U &&
+            value.schedule.startMinute <= 59U &&
+            value.schedule.endHour <= 23U &&
+            value.schedule.endMinute <= 59U;
+
+        if (scheduleValid) {
+            const std::uint16_t startMinutes =
+                static_cast<std::uint16_t>(value.schedule.startHour) * 60U +
+                value.schedule.startMinute;
+
+            const std::uint16_t endMinutes =
+                static_cast<std::uint16_t>(value.schedule.endHour) * 60U +
+                value.schedule.endMinute;
+
+            scheduleValid = startMinutes != endMinutes;
+        }
+    }
+
     if (nameLength == 0U ||
         nameLength >= sizeof(value.name) ||
         !isValidMode(value.mode) ||
         !isValidPowerType(value.powerType) ||
         value.priority > 10U ||
-        (value.schedule.enabled &&
-         (value.schedule.hour > 23U ||
-          value.schedule.minute > 59U))) {
+        !scheduleValid) {
 
         reason =
             HardwareConfigurationFailureReason::INVALID_CONFIGURATION;

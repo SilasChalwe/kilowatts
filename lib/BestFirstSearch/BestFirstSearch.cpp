@@ -19,7 +19,8 @@ struct SearchState {
     float g;
     float h;
     float f;
-    std::uint64_t totalPriority;
+    std::uint64_t totalConfiguredPriority;
+    std::uint64_t totalEffectivePriority;
 };
 
 
@@ -77,34 +78,19 @@ bool combinationAlreadyKnown(
 }
 
 
-// Calculates the accumulated priority of a load configuration.
-std::uint64_t calculateTotalPriority(
-    const std::vector<const Load*>& combination
-)
-{
-    std::uint64_t totalPriority = 0U;
-
-    for (const Load* load : combination) {
-        assert(load != nullptr);
-
-        if (load != nullptr) {
-            totalPriority += load->getPriority();
-        }
-    }
-
-    return totalPriority;
-}
-
-
-// Orders search states by priority, search cost, load count,
-// and total power demand.
+// Orders states by effective priority, configured priority, search cost,
+// load count, and total power demand.
 bool hasBetterSearchMerit(
     const SearchState& first,
     const SearchState& second
 )
 {
-    if (first.totalPriority != second.totalPriority) {
-        return first.totalPriority > second.totalPriority;
+    if (first.totalEffectivePriority != second.totalEffectivePriority) {
+        return first.totalEffectivePriority > second.totalEffectivePriority;
+    }
+
+    if (first.totalConfiguredPriority != second.totalConfiguredPriority) {
+        return first.totalConfiguredPriority > second.totalConfiguredPriority;
     }
 
     if (first.f != second.f) {
@@ -125,8 +111,14 @@ bool isBetterReturnedCombination(
     const SearchState& currentBest
 )
 {
-    if (candidate.totalPriority != currentBest.totalPriority) {
-        return candidate.totalPriority > currentBest.totalPriority;
+    if (candidate.totalEffectivePriority != currentBest.totalEffectivePriority) {
+        return candidate.totalEffectivePriority >
+               currentBest.totalEffectivePriority;
+    }
+
+    if (candidate.totalConfiguredPriority != currentBest.totalConfiguredPriority) {
+        return candidate.totalConfiguredPriority >
+               currentBest.totalConfiguredPriority;
     }
 
     if (candidate.combination.size() != currentBest.combination.size()) {
@@ -186,6 +178,7 @@ void BestFirstSearch::runSearch()
         calculateG({}),
         calculateH({}),
         0.0F,
+        0U,
         0U
     };
 
@@ -255,7 +248,8 @@ void BestFirstSearch::runSearch()
                 childG,
                 childH,
                 calculateF(childG, childH),
-                calculateTotalPriority(childCombination)
+                calculateTotalConfiguredPriority(childCombination),
+                calculateTotalEffectivePriority(childCombination)
             };
 
             // Update the current best result before queuing the state.
@@ -306,14 +300,70 @@ bool BestFirstSearch::isWithinAvailablePower(
 }
 
 
+std::uint64_t BestFirstSearch::calculateTotalConfiguredPriority(
+    const std::vector<const Load*>& combination
+)
+{
+    std::uint64_t totalPriority = 0U;
+
+    for (const Load* load : combination) {
+        assert(load != nullptr);
+
+        if (load != nullptr) {
+            totalPriority += load->getPriority();
+        }
+    }
+
+    return totalPriority;
+}
+
+
+std::uint64_t BestFirstSearch::calculateTotalEffectivePriority(
+    const std::vector<const Load*>& combination
+) const
+{
+    std::uint64_t totalPriority = 0U;
+
+    for (const Load* load : combination) {
+        assert(load != nullptr);
+
+        if (load == nullptr) {
+            continue;
+        }
+
+        std::uint64_t effectivePriority = load->getPriority();
+
+        LoadScheduleEvaluation scheduleEvaluation{
+            false,
+            false
+        };
+
+        const bool scheduleEvaluated =
+            scheduleEvaluator_.evaluateSchedule(
+                *load,
+                currentTimeProvider_,
+                scheduleEvaluation
+            );
+
+        assert(scheduleEvaluated);
+
+        if (scheduleEvaluated && scheduleEvaluation.isScheduleActive) {
+            effectivePriority += ACTIVE_SCHEDULE_PRIORITY_BOOST;
+        }
+
+        totalPriority += effectivePriority;
+    }
+
+    return totalPriority;
+}
+
+
 float BestFirstSearch::calculateG(
     const std::vector<const Load*>& combination
 )
 {
     // Represents the search depth of the current configuration.
-    return static_cast<float>(
-        combination.size()
-    );
+    return static_cast<float>(combination.size());
 }
 
 
@@ -330,41 +380,13 @@ float BestFirstSearch::calculateH(
     for (const Load* load : combination) {
         assert(load != nullptr);
 
-        if (load == nullptr) {
-            continue;
-        }
-
-        LoadScheduleEvaluation scheduleEvaluation{
-            false,
-            false,
-            0.0F
-        };
-
-        const bool scheduleEvaluated =
-            scheduleEvaluator_.evaluateSchedule(
-                *load,
-                currentTimeProvider_,
-                scheduleEvaluation
-            );
-
-        assert(scheduleEvaluated);
-
-        // Include power demand in the heuristic cost.
-        totalHeuristicCost +=
-            load->getPowerRatingWatts();
-
-        // Include schedule penalty when schedule evaluation succeeds.
-        if (scheduleEvaluated) {
-            totalHeuristicCost +=
-                scheduleEvaluation.futureSchedulePenalty;
+        if (load != nullptr) {
+            totalHeuristicCost += load->getPowerRatingWatts();
         }
     }
 
-    // Return the average heuristic cost of the configuration.
     return totalHeuristicCost /
-           static_cast<float>(
-               combination.size()
-           );
+           static_cast<float>(combination.size());
 }
 
 

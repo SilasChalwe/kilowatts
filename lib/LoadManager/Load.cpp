@@ -23,7 +23,7 @@ Load::Load(
       powerType_(powerType),
       priority_(priority),
       mode_(mode),
-      schedule_{false, 0U, 0U}
+      schedule_{false, 0U, 0U, 0U, 0U}
 {
     [[maybe_unused]] const bool powerRatingValid =
         setPowerRatingWatts(powerRatingWatts);
@@ -169,7 +169,22 @@ bool Load::setSchedule(AutoSchedule schedule)
         return true;
     }
 
-    if (schedule.hour > 23U || schedule.minute > 59U) {
+    if (schedule.startHour > 23U ||
+        schedule.startMinute > 59U ||
+        schedule.endHour > 23U ||
+        schedule.endMinute > 59U) {
+        return false;
+    }
+
+    const std::uint16_t startMinutes =
+        static_cast<std::uint16_t>(schedule.startHour) * 60U +
+        schedule.startMinute;
+
+    const std::uint16_t endMinutes =
+        static_cast<std::uint16_t>(schedule.endHour) * 60U +
+        schedule.endMinute;
+
+    if (startMinutes == endMinutes) {
         return false;
     }
 
@@ -186,7 +201,7 @@ AutoSchedule Load::getSchedule() const
 
 void Load::clearSchedule()
 {
-    schedule_ = {false, 0U, 0U};
+    schedule_ = {false, 0U, 0U, 0U, 0U};
 }
 
 

@@ -140,23 +140,44 @@ bool parseSchedule(const char* text, AutoSchedule& schedule)
     if (text == nullptr) return false;
 
     if (same(text, "none") || same(text, "off")) {
-        schedule = AutoSchedule{false, 0U, 0U};
+        schedule = AutoSchedule{};
         return true;
     }
 
-    unsigned int hour = 0U;
-    unsigned int minute = 0U;
+    unsigned int startHour = 0U;
+    unsigned int startMinute = 0U;
+    unsigned int endHour = 0U;
+    unsigned int endMinute = 0U;
     char trailing = '\0';
 
-    if (std::sscanf(text, "%u:%u%c", &hour, &minute, &trailing) != 2 ||
-        hour > 23U || minute > 59U) {
+    if (std::sscanf(
+            text,
+            "%u:%u-%u:%u%c",
+            &startHour,
+            &startMinute,
+            &endHour,
+            &endMinute,
+            &trailing) != 4 ||
+        startHour > 23U ||
+        startMinute > 59U ||
+        endHour > 23U ||
+        endMinute > 59U) {
+        return false;
+    }
+
+    const unsigned int startTotalMinutes = startHour * 60U + startMinute;
+    const unsigned int endTotalMinutes = endHour * 60U + endMinute;
+
+    if (startTotalMinutes == endTotalMinutes) {
         return false;
     }
 
     schedule = AutoSchedule{
         true,
-        static_cast<std::uint8_t>(hour),
-        static_cast<std::uint8_t>(minute)};
+        static_cast<std::uint8_t>(startHour),
+        static_cast<std::uint8_t>(startMinute),
+        static_cast<std::uint8_t>(endHour),
+        static_cast<std::uint8_t>(endMinute)};
     return true;
 }
 
@@ -256,12 +277,12 @@ void loadUsage()
         "  load show MAC PIN\n"
         "  load add [mac=MAC] pin=PIN name=NAME power=W priority=N "
         "type=AC|DC active_high=on|off mode=FIXED_OFF|FIXED_ON|AUTO_OFF|AUTO_ON "
-        "schedule=HH:MM|none\n"
+        "schedule=HH:MM-HH:MM|none\n"
         "  load remove MAC PIN\n"
         "  load set MAC PIN [priority=N] "
-        "[mode=FIXED_OFF|FIXED_ON|AUTO_OFF|AUTO_ON] [schedule=HH:MM|none]\n\n"
+        "[mode=FIXED_OFF|FIXED_ON|AUTO_OFF|AUTO_ON] [schedule=HH:MM-HH:MM|none]\n\n"
         "The load configuration matches Load.h exactly: name, power rating, "
-        "priority, AC/DC type, mode and optional AUTO schedule.\n"
+        "priority, AC/DC type, mode and optional AUTO schedule window.\n"
         "'load set' changes priority/mode/schedule on a Load that already "
         "exists; provide at least one of priority=, mode=, schedule=.\n");
 }
@@ -1038,5 +1059,3 @@ int CentralConsole::clear(int argc, char** argv)
     std::fflush(stdout);
     return 0;
 }
-
-} // namespace kilowatts

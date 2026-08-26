@@ -20,45 +20,72 @@ bool LoadScheduleEvaluator::evaluateSchedule(
 
     const AutoSchedule schedule = load.getSchedule();
 
-    const bool hasEnabledSchedule = schedule.enabled;
-
-    const bool scheduleIsDue =
-        hasEnabledSchedule &&
-        isScheduledTimeDue(schedule, currentTimeProvider);
-
-    // An unscheduled Load and a Load whose schedule has already arrived
-    // both receive no penalty; only a Load with a schedule still in the
-    // future receives the penalty applied later by BestFirstSearch.
-    const float futureSchedulePenalty =
-        (hasEnabledSchedule && !scheduleIsDue) ? 1.0F : 0.0F;
-
-    result.hasEnabledSchedule = hasEnabledSchedule;
-    result.isScheduledTimeDue = scheduleIsDue;
-    result.futureSchedulePenalty = futureSchedulePenalty;
+    result.hasEnabledSchedule = schedule.enabled;
+    result.isScheduleActive =
+        schedule.enabled &&
+        isScheduleActive(schedule, currentTimeProvider);
 
     return true;
 }
 
 
-bool LoadScheduleEvaluator::isScheduledTimeDue(
+bool LoadScheduleEvaluator::isTimeWithinSchedule(
+    const AutoSchedule& schedule,
+    std::uint8_t currentHour,
+    std::uint8_t currentMinute)
+{
+    if (!schedule.enabled ||
+        schedule.startHour > 23U ||
+        schedule.startMinute > 59U ||
+        schedule.endHour > 23U ||
+        schedule.endMinute > 59U ||
+        currentHour > 23U ||
+        currentMinute > 59U) {
+        return false;
+    }
+
+    const std::uint16_t currentMinutes =
+        static_cast<std::uint16_t>(currentHour) * 60U + currentMinute;
+
+    const std::uint16_t startMinutes =
+        static_cast<std::uint16_t>(schedule.startHour) * 60U +
+        schedule.startMinute;
+
+    const std::uint16_t endMinutes =
+        static_cast<std::uint16_t>(schedule.endHour) * 60U +
+        schedule.endMinute;
+
+    if (startMinutes == endMinutes) {
+        return false;
+    }
+
+    if (startMinutes < endMinutes) {
+        return currentMinutes >= startMinutes &&
+               currentMinutes < endMinutes;
+    }
+
+    // A later start than end represents a window crossing midnight.
+    return currentMinutes >= startMinutes ||
+           currentMinutes < endMinutes;
+}
+
+
+bool LoadScheduleEvaluator::isScheduleActive(
     const AutoSchedule& schedule,
     const CurrentTimeProvider& currentTimeProvider) const
 {
     std::uint8_t currentHour = 0U;
     std::uint8_t currentMinute = 0U;
 
-    // An unavailable clock can never confirm a schedule is due, regardless
-    // of why time isn't available yet (no NTP sync, no manual entry, etc).
     if (!currentTimeProvider.getCurrentLocalHour(currentHour) ||
         !currentTimeProvider.getCurrentLocalMinute(currentMinute)) {
         return false;
     }
 
-    if (currentHour > schedule.hour) {
-        return true;
-    }
-
-    return currentHour == schedule.hour && currentMinute >= schedule.minute;
+    return isTimeWithinSchedule(
+        schedule,
+        currentHour,
+        currentMinute);
 }
 
 

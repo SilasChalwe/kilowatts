@@ -63,18 +63,70 @@ enum class LoadPowerType : std::uint8_t {
 
 
 /**
- * Preferred running time for an AUTO load.
+ * Preferred running window for an AUTO Load.
  *
  * Example:
- * {true, 6, 0}  means 06:00.
- * {true, 20, 0} means 20:00.
+ * {true, 6, 0, 8, 0} means the schedule is active from 06:00 up to 08:00.
+ * {true, 22, 0, 2, 0} represents an overnight window from 22:00 to 02:00.
  *
- * enabled = false means no preferred time has been set.
+ * enabled = false means no preferred running window has been set.
+ *
+ * The three-argument constructor is retained for older start-only call
+ * sites and creates a one-hour window. New configuration paths should
+ * always provide both start and end times explicitly.
  */
 struct AutoSchedule {
     bool enabled;
-    std::uint8_t hour;
-    std::uint8_t minute;
+
+    union {
+        std::uint8_t startHour;
+        std::uint8_t hour; // Legacy alias for startHour.
+    };
+
+    union {
+        std::uint8_t startMinute;
+        std::uint8_t minute; // Legacy alias for startMinute.
+    };
+
+    std::uint8_t endHour;
+    std::uint8_t endMinute;
+
+    AutoSchedule()
+        : enabled(false),
+          startHour(0U),
+          startMinute(0U),
+          endHour(0U),
+          endMinute(0U)
+    {
+    }
+
+    AutoSchedule(
+        bool scheduleEnabled,
+        std::uint8_t scheduleStartHour,
+        std::uint8_t scheduleStartMinute,
+        std::uint8_t scheduleEndHour,
+        std::uint8_t scheduleEndMinute)
+        : enabled(scheduleEnabled),
+          startHour(scheduleEnabled ? scheduleStartHour : 0U),
+          startMinute(scheduleEnabled ? scheduleStartMinute : 0U),
+          endHour(scheduleEnabled ? scheduleEndHour : 0U),
+          endMinute(scheduleEnabled ? scheduleEndMinute : 0U)
+    {
+    }
+
+    AutoSchedule(
+        bool scheduleEnabled,
+        std::uint8_t scheduleStartHour,
+        std::uint8_t scheduleStartMinute)
+        : enabled(scheduleEnabled),
+          startHour(scheduleEnabled ? scheduleStartHour : 0U),
+          startMinute(scheduleEnabled ? scheduleStartMinute : 0U),
+          endHour(scheduleEnabled
+              ? static_cast<std::uint8_t>((scheduleStartHour + 1U) % 24U)
+              : 0U),
+          endMinute(scheduleEnabled ? scheduleStartMinute : 0U)
+    {
+    }
 };
 
 
@@ -248,14 +300,16 @@ public:
 
 
     /**
-     * Sets the preferred running time for an AUTO Load.
+     * Sets the preferred running window for an AUTO Load.
      *
-     * hour must be 0 to 23.
-     * minute must be 0 to 59.
+     * startHour/endHour must be 0 to 23.
+     * startMinute/endMinute must be 0 to 59.
+     * Start and end must not be the same time. An end earlier than the
+     * start represents a window that crosses midnight.
      *
      * Returns false when:
      * - the Load is not Auto, or
-     * - the time is invalid.
+     * - the schedule window is invalid.
      */
     bool setSchedule(AutoSchedule schedule);
 
@@ -264,7 +318,7 @@ public:
     AutoSchedule getSchedule() const;
 
 
-    /** Removes the preferred AUTO running time. */
+    /** Removes the preferred AUTO running window. */
     void clearSchedule();
 
 
@@ -308,7 +362,7 @@ private:
     LoadMode::Value mode_;
 
 
-    /** Preferred running time for an AUTO Load. */
+    /** Preferred running window for an AUTO Load. */
     AutoSchedule schedule_;
 };
 

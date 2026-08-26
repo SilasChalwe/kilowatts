@@ -21,11 +21,6 @@ static constexpr std::size_t MAX_LOADS_PER_NODE_PACKET = 3U;
  *
  * The owning Node MAC is carried by NodeReportPacket. Together with relayPin
  * that forms Load::Id.
- *
- * This packet mirrors the current Load model. It deliberately contains no
- * nominal voltage/current or startup-watts fields, and no relay/GPIO
- * confirmation state — Load does not model physical relay feedback (see
- * Load.h), so there is nothing here to report.
  */
 struct LoadReportPacket {
     char name[16];
@@ -38,8 +33,10 @@ struct LoadReportPacket {
     float powerRatingWatts;
 
     std::uint8_t scheduleEnabled;
-    std::uint8_t scheduleHour;
-    std::uint8_t scheduleMinute;
+    std::uint8_t scheduleStartHour;
+    std::uint8_t scheduleStartMinute;
+    std::uint8_t scheduleEndHour;
+    std::uint8_t scheduleEndMinute;
 };
 
 struct NodeReportPacket {
