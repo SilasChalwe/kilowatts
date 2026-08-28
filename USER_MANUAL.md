@@ -89,6 +89,53 @@ Open the Central serial monitor at 115200 baud.
 pio device monitor -e central
 ```
 
+### Interactive console tips
+
+- **Prompt & help:** The console prompt is `kilowatts >`. Type `help` to list top-level commands or `<command> help` to show usage for a specific command (for example `load help`).
+- **Case and syntax:** Commands are matched case-sensitively; use the lower-case command names shown in this manual (`wifi`, `load`, `node`, etc.). Options use `name=value` with no spaces around `=` (for example `ssid=HOME_WIFI` or `pin=16`).
+- **MAC and schedule formats:** MAC addresses use `AA:BB:CC:DD:EE:FF`. Schedules use `HH:MM-HH:MM` or `none`.
+- **Navigation & completion:** Use the UP/DOWN arrow keys for history and press TAB to autocomplete command names.
+- **Combined upload + monitor:** You can upload firmware and immediately open the monitor in one step:
+
+```bash
+pio run -e central -t upload -t monitor
+```
+
+### Example interactive session
+
+Here is a short example of a monitor session showing `wifi scan` and `status`:
+
+```text
+kilowatts >  wifi scan
+WI-FI NETWORKS DETECTED
+No.  SSID                             Signal   Channel
+1    HOME_WIFI                        -52      7
+2    NEIGHBOR_WIFI                    -78      11
+[ OK ] scan completed
+kilowatts >  status
+SYSTEM STATUS
+Wi-Fi       : DISCONNECTED
+MQTT        : DISCONNECTED
+Smart Nodes : 1 / 1 online
+Battery     : NOT AVAILABLE
+Power budget: NOT AVAILABLE
+Control errors: 0
+```
+
+Running `wifi scan` while already connected shows the connected network only, instead of scanning (a real scan would retune the shared radio and interrupt ESP-NOW):
+
+```text
+kilowatts >  wifi scan
+Wi-Fi scan skipped: scanning would retune the shared radio and interrupt ESP-NOW to every Smart Node. Showing the connected network only.
+CONNECTED WI-FI NETWORK
+No.  SSID                             Signal   Channel
+1    HOME_WIFI                        -52      7
+[ OK ] scan completed
+```
+
+These examples demonstrate real console interactions; use `help` or `<command> help` for exact option names and required fields.
+
+
 ### Status and dashboard
 
 ```text
@@ -193,12 +240,22 @@ Simulation is only a test input source for battery measurements/SoC. It is not a
 
 ### System reset
 
+Reboot Central without touching any persisted configuration:
+
 ```text
-system reset confirm=RESET
-system reset mac=AA:BB:CC:DD:EE:FF confirm=RESET
+system reset
 ```
 
-The first command resets Central. The second sends a factory reset command to the target Smart Node.
+Factory-reset Central or a Smart Node — this erases persisted configuration:
+
+```text
+system factory-reset confirm=RESET
+system factory-reset mac=AA:BB:CC:DD:EE:FF confirm=RESET
+```
+
+WARNING: `system factory-reset` erases persisted configuration on the target device. Use `system reset` when you only want to reboot.
+
+To request a non-destructive control action (optimizer run) use the `optimize` command instead.
 
 ## 5. MQTT interface
 
@@ -370,6 +427,7 @@ kilowatts/v1/commands/simulation
 {"commandId":40,"action":"REQUEST_OPTIMIZATION_CYCLE"}
 {"commandId":41,"action":"FACTORY_RESET_NODE","targetNodeMac":"AA:BB:CC:DD:EE:FF","confirm":"FACTORY_RESET_CONFIRMED"}
 {"commandId":42,"action":"FACTORY_RESET_CENTRAL","confirm":"FACTORY_RESET_CONFIRMED"}
+{"commandId":43,"action":"REBOOT_CENTRAL"}
 ```
 
 ## 6. Command acknowledgement meaning

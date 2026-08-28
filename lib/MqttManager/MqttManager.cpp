@@ -107,6 +107,9 @@ bool parseSystemAction(const char* text, SystemCommandAction& action)
     if (std::strcmp(text, "REPORT_OPTIMIZER_INTERVAL") == 0) {
         action = SystemCommandAction::REPORT_OPTIMIZER_INTERVAL; return true;
     }
+    if (std::strcmp(text, "REBOOT_CENTRAL") == 0) {
+        action = SystemCommandAction::REBOOT_CENTRAL; return true;
+    }
     return false;
 }
 

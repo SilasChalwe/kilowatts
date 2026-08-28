@@ -12,3 +12,6 @@ include/KilowattsSecrets.h
 # app + installer web console) nested inside this directory for convenience
 # during development. It must never be committed into the firmware repo.
 kilowatts-mobile/
+
+# Local Wi‑Fi credential helper (create `wifi_screen` from wifi_screen.template)
+wifi_screen

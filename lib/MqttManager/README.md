@@ -39,6 +39,9 @@ The current MQTT schema version is `3`.
 - `REQUEST_OPTIMIZATION_CYCLE`
 - `FACTORY_RESET_CENTRAL`
 - `FACTORY_RESET_NODE`
+- `REBOOT_CENTRAL`
+- `SET_OPTIMIZER_INTERVAL`
+- `REPORT_OPTIMIZER_INTERVAL`
 
 `commands/simulation` supports:
 
@@ -74,6 +77,6 @@ The current Load configuration JSON contains only the current model:
 
 ## System state
 
-`state/system` reports only current fields. It does not publish deleted power-policy placeholders or fake relay/physical confirmation state. Power-flow data includes battery/main electrical limits, fixed ON power, AUTO budget, selected AUTO power and remaining AUTO budget.
+`state/system` reports only current fields. It does not publish deleted power-policy placeholders or fake relay/physical confirmation state. Power-flow data includes battery/main electrical limits, fixed load power, power budget, automatic load power and remaining power.
 
 Wi-Fi and MQTT broker credential bootstrap remains Console-side because MQTT cannot be used before network/broker connectivity exists.

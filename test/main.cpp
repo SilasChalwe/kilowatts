@@ -236,9 +236,101 @@ void caseMultipleAutoLoadsRespectBudget()
  * duration each time, not silently keep computing against the first
  * (original) value it was ever given.
  */
+/*
+ * Scenario tests: public black-box behavior of the planning engine under
+ * realistic operating profiles. These use the same BestFirstSearch API as
+ * production but model the household, mining, and hospital cases directly.
+ */
+void caseHomeScenario()
+{
+    g_currentCase = "CASE 9 (home scenario)";
+
+    const float availablePowerWatts = 180.0F;
+    const Load lights = makeLoad(11U, "Lights", 80.0F, 3U, LoadMode::Auto::ON);
+    const Load fridge = makeLoad(12U, "Fridge", 120.0F, 6U, LoadMode::Auto::ON);
+    const Load waterPump = makeLoad(13U, "Water pump", 100.0F, 8U, LoadMode::Auto::ON);
+
+    const std::vector<const Load*> automaticLoads{&lights, &fridge, &waterPump};
+    const CurrentTimeProvider timeProvider;
+    const BestFirstSearch search(availablePowerWatts, automaticLoads, timeProvider);
+    const std::vector<const Load*>& selected = search.getBestCombination();
+
+    bool hasLights = false;
+    bool hasPump = false;
+    bool hasFridge = false;
+    for (const Load* load : selected) {
+        if (load == &lights) hasLights = true;
+        if (load == &waterPump) hasPump = true;
+        if (load == &fridge) hasFridge = true;
+    }
+
+    check(selected.size() == 2U, "home scenario selects exactly two loads under a 180 W budget");
+    check(hasLights && hasPump && !hasFridge,
+          "home scenario keeps essential water + lights while leaving the higher-power fridge out");
+}
+
+void caseMineScenario()
+{
+    g_currentCase = "CASE 10 (mine scenario)";
+
+    const float availablePowerWatts = 220.0F;
+    const Load ventilation = makeLoad(21U, "Ventilation", 110.0F, 30U, LoadMode::Auto::ON);
+    const Load waterPump = makeLoad(22U, "Water pump", 95.0F, 25U, LoadMode::Auto::ON);
+    const Load conveyor = makeLoad(23U, "Conveyor", 90.0F, 18U, LoadMode::Auto::ON);
+
+    const std::vector<const Load*> automaticLoads{&ventilation, &waterPump, &conveyor};
+    const CurrentTimeProvider timeProvider;
+    const BestFirstSearch search(availablePowerWatts, automaticLoads, timeProvider);
+    const std::vector<const Load*>& selected = search.getBestCombination();
+
+    bool hasVentilation = false;
+    bool hasPump = false;
+    bool hasConveyor = false;
+    for (const Load* load : selected) {
+        if (load == &ventilation) hasVentilation = true;
+        if (load == &waterPump) hasPump = true;
+        if (load == &conveyor) hasConveyor = true;
+    }
+
+    check(selected.size() == 2U, "mine scenario selects the best feasible 2-load combination");
+    check(hasVentilation && hasPump && !hasConveyor,
+          "mine scenario prioritizes ventilation + water pump over the lower-priority conveyor");
+}
+
+void caseHospitalScenario()
+{
+    g_currentCase = "CASE 11 (hospital scenario)";
+
+    const float availablePowerWatts = 350.0F;
+    const Load ventilator = makeLoad(31U, "Ventilator", 220.0F, 40U, LoadMode::Auto::ON);
+    const Load monitor = makeLoad(32U, "Patient monitor", 120.0F, 35U, LoadMode::Auto::ON);
+    const Load lights = makeLoad(33U, "Critical lights", 90.0F, 18U, LoadMode::Auto::ON);
+    const Load laundry = makeLoad(34U, "Laundry", 150.0F, 7U, LoadMode::Auto::ON);
+
+    const std::vector<const Load*> automaticLoads{&ventilator, &monitor, &lights, &laundry};
+    const CurrentTimeProvider timeProvider;
+    const BestFirstSearch search(availablePowerWatts, automaticLoads, timeProvider);
+    const std::vector<const Load*>& selected = search.getBestCombination();
+
+    bool hasVentilator = false;
+    bool hasMonitor = false;
+    bool hasLights = false;
+    bool hasLaundry = false;
+    for (const Load* load : selected) {
+        if (load == &ventilator) hasVentilator = true;
+        if (load == &monitor) hasMonitor = true;
+        if (load == &lights) hasLights = true;
+        if (load == &laundry) hasLaundry = true;
+    }
+
+    check(selected.size() == 2U, "hospital scenario selects the best feasible 2-load critical combination");
+    check(hasVentilator && hasMonitor && !hasLights && !hasLaundry,
+          "hospital scenario prioritizes life-support ventilation + monitoring over lower-critical loads");
+}
+
 void caseRemainingRuntimeDrivesEachRecompute()
 {
-    g_currentCase = "CASE 9 (remaining runtime, not original, is used each cycle)";
+    g_currentCase = "CASE 12 (remaining runtime, not original, is used each cycle)";
 
     PowerManager powerManager;
     check(prepareBudget(powerManager, 80.0F, 20.0F, 8.0F, 0.0F), "initial 8h-remaining budget computed");
@@ -322,6 +414,9 @@ int main()
     caseFixedOnConsumesAllSustainablePower();
     caseFixedOnExceedsSustainableTotal();
     caseMultipleAutoLoadsRespectBudget();
+    caseHomeScenario();
+    caseMineScenario();
+    caseHospitalScenario();
     caseRemainingRuntimeDrivesEachRecompute();
     caseSimulationAndHardwarePathShareOneCalculation();
 

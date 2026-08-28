@@ -23,6 +23,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -318,12 +319,37 @@ void espNowCommunicationTask(void* parameter)
     TickType_t lastReport = xTaskGetTickCount();
     TickType_t lastDiscovery = 0U;
 
+    int discoveryFailures = 0;
+    const int DISCOVERY_FAILURES_BEFORE_SWEEP = 3;
     while (true) {
         const TickType_t now = xTaskGetTickCount();
         if (!communication.hasUpstreamNode() &&
             (now - lastDiscovery) >= pdMS_TO_TICKS(DISCOVERY_RETRY_PERIOD_MS)) {
             lastDiscovery = now;
-            communication.discoverUpstreamNode(DISCOVERY_WINDOW_MS);
+            const bool discovered = communication.discoverUpstreamNode(DISCOVERY_WINDOW_MS);
+            if (!discovered) {
+                discoveryFailures++;
+            } else {
+                discoveryFailures = 0;
+            }
+
+            if (discoveryFailures >= DISCOVERY_FAILURES_BEFORE_SWEEP) {
+                ESP_LOGW(TAG, "Discovery failed %d times, performing channel sweep...", discoveryFailures);
+                discoveryFailures = 0;
+                for (uint8_t ch = 1; ch <= 13; ++ch) {
+                    esp_err_t setCh = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+                    if (setCh != ESP_OK) {
+                        ESP_LOGW(TAG, "esp_wifi_set_channel(%u) failed: %s", ch, esp_err_to_name(setCh));
+                        continue;
+                    }
+                    ESP_LOGI(TAG, "Attempting discovery on channel %u", ch);
+                    if (communication.discoverUpstreamNode(DISCOVERY_WINDOW_MS)) {
+                        ESP_LOGI(TAG, "Discovery succeeded on channel %u", ch);
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                }
+            }
         }
 
         EspNowCommunication::ReceivedMessage received{};

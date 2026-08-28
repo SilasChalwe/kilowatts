@@ -130,7 +130,11 @@ public:
     /** Number of reconnection attempts made since begin(), for diagnostics. */
     std::uint32_t getReconnectAttemptCount() const;
 
-    /** Prints nearby 2.4 GHz networks for console provisioning. */
+    /**
+     * Prints nearby 2.4 GHz networks for console provisioning. When already
+     * connected, prints the connected network only instead of scanning —
+     * a real scan would retune the shared radio and interrupt ESP-NOW.
+     */
     bool printNearbyNetworks() const;
 
     /** Performs a short TCP reachability check through the connected router. */

@@ -40,6 +40,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -306,6 +307,30 @@ std::uint32_t allocateConsoleCommandId()
         nextConsoleCommandId = 0x80000001U;
     }
     return nextConsoleCommandId;
+}
+
+esp_timer_handle_t centralRestartTimer = nullptr;
+
+/*
+ * Restarts Central after delayMicroseconds via a one-shot esp_timer, so the
+ * caller (a console/MQTT command handler) can return its result first instead
+ * of the process vanishing mid-response, the way an inline esp_restart() does.
+ */
+void scheduleCentralRestart(std::uint64_t delayMicroseconds)
+{
+    if (centralRestartTimer == nullptr) {
+        const esp_timer_create_args_t timerArgs = {
+            [](void*) { esp_restart(); },
+            nullptr,
+            ESP_TIMER_TASK,
+            "kw_central_restart",
+            true};
+        if (esp_timer_create(&timerArgs, &centralRestartTimer) != ESP_OK) {
+            esp_restart();
+            return;
+        }
+    }
+    esp_timer_start_once(centralRestartTimer, delayMicroseconds);
 }
 
 const char* wifiStateText(WiFiConnectionState state)
@@ -1313,10 +1338,10 @@ void runOptimizationCycle(bool printDashboard)
         }
         std::printf("------------------------------------------------------------\n");
         if (latestPlanningSnapshot.budgetValid) {
-            std::printf("AUTO available power  : %.2f W\n", static_cast<double>(latestPlanningSnapshot.automaticAvailablePowerWatts));
-            std::printf("Fixed ON power        : %.2f W\n", static_cast<double>(latestPlanningSnapshot.fixedOnPowerWatts));
-            std::printf("AUTO selected power   : %.2f W\n", static_cast<double>(latestPlanningSnapshot.selectedAutomaticPowerWatts));
-            std::printf("AUTO remaining power  : %.2f W\n", static_cast<double>(latestPlanningSnapshot.finalRemainingPowerWatts));
+            std::printf("Power budget          : %.2f W\n", static_cast<double>(latestPlanningSnapshot.automaticAvailablePowerWatts));
+            std::printf("Fixed load power      : %.2f W\n", static_cast<double>(latestPlanningSnapshot.fixedOnPowerWatts));
+            std::printf("Automatic load power  : %.2f W\n", static_cast<double>(latestPlanningSnapshot.selectedAutomaticPowerWatts));
+            std::printf("Remaining power       : %.2f W\n", static_cast<double>(latestPlanningSnapshot.finalRemainingPowerWatts));
             if (latestPlanningSnapshot.budget.runtimeBudgetActive) {
                 std::printf("Required runtime      : %.2f h remaining | sustainable %.2f W | %s\n",
                             static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()),
@@ -1331,7 +1356,7 @@ void runOptimizationCycle(bool printDashboard)
         std::printf("Fixed ON / OFF        : %u / %u\n",
                     static_cast<unsigned int>(latestPlanningSnapshot.fixedOnCount),
                     static_cast<unsigned int>(latestPlanningSnapshot.fixedOffCount));
-        std::printf("AUTO selected         : %u / %u\n",
+        std::printf("Automatic loads       : %u / %u\n",
                     static_cast<unsigned int>(latestPlanningSnapshot.automaticSelectedCount),
                     static_cast<unsigned int>(latestPlanningSnapshot.automaticCandidateCount));
         std::printf("============================================================\n\n");
@@ -1859,6 +1884,11 @@ CommandResult handleSystemCommand(
             static_cast<unsigned long>(request.optimizerIntervalSeconds));
 
         return commandResult(true, true, text);
+    }
+
+    if (request.action == SystemCommandAction::REBOOT_CENTRAL) {
+        scheduleCentralRestart(1500000ULL);
+        return commandResult(true, true, "Central restarting in 1.5 seconds");
     }
 
     if (request.action == SystemCommandAction::FACTORY_RESET_CENTRAL) {
@@ -2516,10 +2546,11 @@ CommandResult consoleSystem(
 {
     /*
      * CentralConsole already required explicit confirm=RESET before invoking
-     * this callback, and built request as the exact same SystemCommandRequest
-     * MQTT's parser builds — so factory reset (Central or Node) runs through
-     * the one shared handler instead of a second, independently maintained
-     * implementation.
+     * this callback for the factory-reset actions (Central or Node; a plain
+     * reboot needs no confirmation), and built request as the exact same
+     * SystemCommandRequest MQTT's parser builds — so every system action runs
+     * through the one shared handler instead of a second, independently
+     * maintained implementation.
      */
     return handleSystemCommand(nullptr, request);
 }

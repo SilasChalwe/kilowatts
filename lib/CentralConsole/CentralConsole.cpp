@@ -333,8 +333,10 @@ void systemUsage()
 {
     std::printf(
         "Usage:\n"
-        "  system reset confirm=RESET\n"
-        "  system reset mac=AA:BB:CC:DD:EE:FF confirm=RESET\n");
+        "  system reset\n"
+        "  system factory-reset confirm=RESET\n"
+        "  system factory-reset mac=AA:BB:CC:DD:EE:FF confirm=RESET\n"
+        "reset reboots Central only; factory-reset erases persisted configuration.\n");
 }
 
 NetworkCommandRequest makeNetworkRequest(
@@ -375,7 +377,7 @@ bool CentralConsole::begin(const Callbacks& callbacks)
         {"mqtt", "MQTT status and configuration", nullptr, &CentralConsole::mqtt, nullptr, nullptr, nullptr},
         {"simulation", "Control the battery-input simulator", nullptr, &CentralConsole::simulation, nullptr, nullptr, nullptr},
         {"sim", "Alias for simulation", nullptr, &CentralConsole::simulation, nullptr, nullptr, nullptr},
-        {"system", "Central or Smart Node reset", nullptr, &CentralConsole::system, nullptr, nullptr, nullptr},
+        {"system", "Reboot Central, or factory-reset Central or a Smart Node", nullptr, &CentralConsole::system, nullptr, nullptr, nullptr},
         {"clear", "Clear the terminal", nullptr, &CentralConsole::clear, nullptr, nullptr, nullptr},
     };
 
@@ -1016,14 +1018,28 @@ int CentralConsole::system(int argc, char** argv)
         return helpRequested(argc, argv) ? 0 : 1;
     }
 
-    if (!same(argv[1], "reset")) {
+    if (same(argv[1], "reset")) {
+        if (option(argc, argv, "mac") != nullptr) {
+            std::printf("[FAIL] system reset reboots Central only; use system factory-reset mac=... for a Smart Node\n");
+            return 1;
+        }
+
+        SystemCommandRequest request{};
+        request.commandId = allocateConsoleCommandId();
+        request.action = SystemCommandAction::REBOOT_CENTRAL;
+        request.hasTargetNodeMacAddress = false;
+
+        return showResult(active_->callbacks_.system(active_->callbacks_.context, request));
+    }
+
+    if (!same(argv[1], "factory-reset")) {
         systemUsage();
         return 1;
     }
 
     const char* confirmation = option(argc, argv, "confirm");
     if (!same(confirmation, "RESET")) {
-        std::printf("[FAIL] reset requires confirm=RESET\n");
+        std::printf("[FAIL] factory-reset requires confirm=RESET\n");
         return 1;
     }
 
@@ -1059,3 +1075,4 @@ int CentralConsole::clear(int argc, char** argv)
     std::fflush(stdout);
     return 0;
 }
+} // namespace kilowatts

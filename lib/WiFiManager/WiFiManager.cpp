@@ -276,8 +276,24 @@ std::uint32_t WiFiManager::getReconnectAttemptCount() const
 bool WiFiManager::printNearbyNetworks() const
 {
     if (isConnected()) {
-        std::printf("Wi-Fi scan skipped: do not scan while Central is connected; ESP-NOW must keep its radio channel.\n");
-        return false;
+        std::printf(
+            "Wi-Fi scan skipped: scanning would retune the shared radio and interrupt ESP-NOW to every "
+            "Smart Node. Showing the connected network only.\n");
+
+        wifi_ap_record_t accessPoint{};
+        if (esp_wifi_sta_get_ap_info(&accessPoint) != ESP_OK) {
+            std::printf("Connected network details are currently unavailable.\n");
+            return false;
+        }
+
+        std::printf("CONNECTED WI-FI NETWORK\n");
+        std::printf("%-4s %-32s %-8s %-8s\n", "No.", "SSID", "Signal", "Channel");
+        std::printf("%-4u %-32s %-8d %-8u\n",
+                    1U,
+                    reinterpret_cast<const char*>(accessPoint.ssid),
+                    static_cast<int>(accessPoint.rssi),
+                    static_cast<unsigned int>(accessPoint.primary));
+        return true;
     }
 
     wifi_scan_config_t scanConfig{};

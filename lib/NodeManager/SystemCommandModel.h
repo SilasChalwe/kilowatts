@@ -63,7 +63,9 @@ enum class SystemCommandAction : std::uint8_t {
     FACTORY_RESET_CENTRAL = 2U,
     FACTORY_RESET_NODE = 3U,
     SET_OPTIMIZER_INTERVAL = 4U,
-    REPORT_OPTIMIZER_INTERVAL = 5U
+    REPORT_OPTIMIZER_INTERVAL = 5U,
+    /** Reboots Central only; never touches NVS, unlike FACTORY_RESET_CENTRAL. */
+    REBOOT_CENTRAL = 6U
 };
 
 struct SystemCommandRequest {
