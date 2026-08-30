@@ -54,20 +54,6 @@ static const char* TAG = "CENTRAL";
 
 namespace {
 
-/*
- * ---------------------------------------------------------------------------
- * Runtime ownership
- * ---------------------------------------------------------------------------
- *
- * Central has two roles:
- *
- * 1. coordinator - battery monitoring, planning, ESP-NOW and MQTT;
- * 2. physical Node - it may own Loads and relay channels of its own.
- *
- * Smart Node Loads arrive through ESP-NOW. Central's local Loads and all
- * eligible Smart Node Loads are combined into one planning view before
- * LoadFilter separates Fixed and Auto Loads.
- */
 EspNowCommunication communication(kilowatts::KILOWATTS_RADIO_CHANNEL);
 CurrentTimeProvider currentTimeProvider;
 WiFiManager wifiManager(kilowatts::KILOWATTS_RADIO_CHANNEL);
@@ -103,12 +89,11 @@ std::uint32_t relayCommandErrorCount = 0U;
 bool mqttStarted = false;
 bool mqttCredentialsUnavailableLogged = false;
 
-/* Previous-cycle values for MQTT alert edge-detection - see publishCurrentState(). */
 bool previousBatteryReserveReached = false;
 bool previousRequiredRuntimeAchievable = true;
 bool previousHardwareBatteryReadingValid = true;
+bool previousMeasuredPowerExceededBudget = false;
 
-/** Per-node online/offline edge tracking for the NODE_OFFLINE alert. */
 struct NodeOnlineTracking {
     Load::MacAddress macAddress;
     bool wasOnline;
@@ -119,14 +104,7 @@ std::uint32_t optimizerIntervalMilliseconds = CentralNodeConfig::DEFAULT_OPTIMIZ
 
 struct PlanningSnapshot {
     bool budgetValid = false;
-    PowerBudget budget{
-        0.0F, 0.0F, 0.0F, 0.0F,
-        0.0F, 0.0F, 0.0F, 0.0F,
-        false, 0.0F, true};
-    float fixedOnPowerWatts = 0.0F;
-    float automaticAvailablePowerWatts = 0.0F;
-    float selectedAutomaticPowerWatts = 0.0F;
-    float finalRemainingPowerWatts = 0.0F;
+    PowerBudget budget{};
     std::size_t fixedOnCount = 0U;
     std::size_t fixedOffCount = 0U;
     std::size_t automaticCandidateCount = 0U;
@@ -134,10 +112,6 @@ struct PlanningSnapshot {
 };
 
 PlanningSnapshot latestPlanningSnapshot{};
-
-/* ------------------------------------------------------------------------- */
-/* Optimizer interval configuration                                          */
-/* ------------------------------------------------------------------------- */
 
 constexpr const char* OPTIMIZER_NVS_NAMESPACE = "kw_optimizer";
 constexpr const char* OPTIMIZER_NVS_INTERVAL_SECONDS_KEY = "interval_s";
@@ -154,8 +128,7 @@ std::uint32_t optimizerMaxIntervalSeconds()
 
 bool isValidOptimizerIntervalSeconds(std::uint32_t seconds)
 {
-    return seconds >= optimizerMinIntervalSeconds() &&
-           seconds <= optimizerMaxIntervalSeconds();
+    return seconds >= optimizerMinIntervalSeconds() && seconds <= optimizerMaxIntervalSeconds();
 }
 
 std::uint32_t getOptimizerIntervalSeconds()
@@ -168,17 +141,6 @@ std::uint32_t getOptimizerIntervalMilliseconds()
     return optimizerIntervalMilliseconds;
 }
 
-/*
- * Applies any console-saved radio channel override before communication
- * (ESP-NOW) and wifiManager are initialised. Must run before
- * communication.initialize() - EspNowCommunication::setChannel() only
- * takes effect while !initialized_ - and before wifiManager.begin(),
- * which is why this runs first thing in CentralApplication::runApp(),
- * ahead of every other startup step. communication.initialize() (called
- * right after this) brings up NVS itself via nvs_flash_init(), which is
- * safe to call twice - ESP-IDF treats a second call on an
- * already-initialized partition as a no-op.
- */
 void applyRadioChannelOverride()
 {
     esp_err_t result = nvs_flash_init();
@@ -186,9 +148,7 @@ void applyRadioChannelOverride()
         (void)nvs_flash_erase();
         result = nvs_flash_init();
     }
-    if (result != ESP_OK) {
-        return;
-    }
+    if (result != ESP_OK) return;
 
     std::uint8_t channel = 0U;
     if (radioChannelStore.load(channel)) {
@@ -200,16 +160,10 @@ void applyRadioChannelOverride()
 void loadOptimizerIntervalConfiguration()
 {
     nvs_handle_t handle = 0;
-    if (nvs_open(OPTIMIZER_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return;
-    }
+    if (nvs_open(OPTIMIZER_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
 
     std::uint32_t savedSeconds = 0U;
-    const esp_err_t result = nvs_get_u32(
-        handle,
-        OPTIMIZER_NVS_INTERVAL_SECONDS_KEY,
-        &savedSeconds);
-
+    const esp_err_t result = nvs_get_u32(handle, OPTIMIZER_NVS_INTERVAL_SECONDS_KEY, &savedSeconds);
     nvs_close(handle);
 
     if (result == ESP_OK && isValidOptimizerIntervalSeconds(savedSeconds)) {
@@ -219,46 +173,19 @@ void loadOptimizerIntervalConfiguration()
 
 bool saveOptimizerIntervalSeconds(std::uint32_t seconds)
 {
-    if (!isValidOptimizerIntervalSeconds(seconds)) {
-        return false;
-    }
+    if (!isValidOptimizerIntervalSeconds(seconds)) return false;
 
     nvs_handle_t handle = 0;
     esp_err_t result = nvs_open(OPTIMIZER_NVS_NAMESPACE, NVS_READWRITE, &handle);
-
-    if (result == ESP_OK) {
-        result = nvs_set_u32(
-            handle,
-            OPTIMIZER_NVS_INTERVAL_SECONDS_KEY,
-            seconds);
-    }
-
-    if (result == ESP_OK) {
-        result = nvs_commit(handle);
-    }
-
-    if (handle != 0) {
-        nvs_close(handle);
-    }
-
-    if (result != ESP_OK) {
-        return false;
-    }
+    if (result == ESP_OK) result = nvs_set_u32(handle, OPTIMIZER_NVS_INTERVAL_SECONDS_KEY, seconds);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    if (handle != 0) nvs_close(handle);
+    if (result != ESP_OK) return false;
 
     optimizerIntervalMilliseconds = seconds * 1000U;
     return true;
 }
 
-
-/*
- * Tracks the wall-clock reference point the currently configured
- * requiredRuntimeHours target counts down from, so "remaining required
- * runtime" actually decreases across planning cycles (item 13 of the
- * runtime architecture) instead of staying a static divisor. Reset
- * whenever the configured target itself changes (a fresh countdown
- * starts "now"). PowerManager stays wall-clock-agnostic; this state lives
- * here in Central's own runtime orchestration.
- */
 float runtimeTargetReferenceHours = 0.0F;
 std::int64_t runtimeTargetReferenceEpochSeconds = 0;
 bool runtimeTargetReferenceValid = false;
@@ -268,41 +195,18 @@ float computeRemainingRequiredRuntimeHours(
     bool currentTimeValid,
     std::int64_t nowEpochSeconds)
 {
-    if (configuredRequiredRuntimeHours <= 0.0F) {
-        /* No runtime target configured — disables the runtime budget. */
-        return 0.0F;
-    }
+    if (configuredRequiredRuntimeHours <= 0.0F) return 0.0F;
+    if (!currentTimeValid) return configuredRequiredRuntimeHours;
 
-    if (!currentTimeValid) {
-        /*
-         * Elapsed time cannot be measured yet (no NTP sync / manual time
-         * set this boot). Use the full configured target as the safe
-         * starting assumption rather than guessing an elapsed duration.
-         */
-        return configuredRequiredRuntimeHours;
-    }
-
-    if (!runtimeTargetReferenceValid ||
-        runtimeTargetReferenceHours != configuredRequiredRuntimeHours) {
-
+    if (!runtimeTargetReferenceValid || runtimeTargetReferenceHours != configuredRequiredRuntimeHours) {
         runtimeTargetReferenceHours = configuredRequiredRuntimeHours;
         runtimeTargetReferenceEpochSeconds = nowEpochSeconds;
         runtimeTargetReferenceValid = true;
     }
 
     const float elapsedHours =
-        static_cast<float>(nowEpochSeconds - runtimeTargetReferenceEpochSeconds) /
-        3600.0F;
-
-    const float remainingHours =
-        configuredRequiredRuntimeHours - elapsedHours;
-
-    /*
-     * Once the requested horizon has been reached, the runtime target is
-     * fulfilled and no longer constrains AUTO allocation. Returning zero
-     * disables the runtime budget inside PowerManager while the immediate
-     * electrical/current limits remain active.
-     */
+        static_cast<float>(nowEpochSeconds - runtimeTargetReferenceEpochSeconds) / 3600.0F;
+    const float remainingHours = configuredRequiredRuntimeHours - elapsedHours;
     return remainingHours > 0.0F ? remainingHours : 0.0F;
 }
 
@@ -316,49 +220,32 @@ struct PendingHardwareCommand {
 std::vector<PendingHardwareCommand> pendingHardwareCommands;
 std::uint32_t nextConsoleCommandId = 0x80000000U;
 
-
-/* ------------------------------------------------------------------------- */
-/* Small helpers                                                             */
-/* ------------------------------------------------------------------------- */
-
 template <std::size_t N>
 void copyText(char (&destination)[N], const char* source)
 {
     static_assert(N > 0U, "destination buffer must not be empty");
-
     if (source == nullptr) {
         destination[0] = '\0';
         return;
     }
 
     std::size_t index = 0U;
-
-    while ((index + 1U) < N &&
-           source[index] != '\0') {
+    while ((index + 1U) < N && source[index] != '\0') {
         destination[index] = source[index];
         ++index;
     }
-
     destination[index] = '\0';
 }
-
 
 std::uint32_t allocateConsoleCommandId()
 {
     ++nextConsoleCommandId;
-    if (nextConsoleCommandId == 0U) {
-        nextConsoleCommandId = 0x80000001U;
-    }
+    if (nextConsoleCommandId == 0U) nextConsoleCommandId = 0x80000001U;
     return nextConsoleCommandId;
 }
 
 esp_timer_handle_t centralRestartTimer = nullptr;
 
-/*
- * Restarts Central after delayMicroseconds via a one-shot esp_timer, so the
- * caller (a console/MQTT command handler) can return its result first instead
- * of the process vanishing mid-response, the way an inline esp_restart() does.
- */
 void scheduleCentralRestart(std::uint64_t delayMicroseconds)
 {
     if (centralRestartTimer == nullptr) {
@@ -398,7 +285,6 @@ const char* timeSourceText(TimeSource source)
     }
     return "UNKNOWN";
 }
-
 
 const char* measurementSourceText(MeasurementSource source)
 {
@@ -441,32 +327,25 @@ const char* hardwareConfigurationFailureText(HardwareConfigurationFailureReason 
 
 bool isCommissionedLifecycle(NodeLifecycleState state)
 {
-    return state == NodeLifecycleState::COMMISSIONED ||
-           state == NodeLifecycleState::OPERATIONAL;
+    return state == NodeLifecycleState::COMMISSIONED || state == NodeLifecycleState::OPERATIONAL;
 }
 
-bool isNodeOnline(
-    const CentralNodeRegistry::PlanningNode& node,
-    std::uint32_t nowMilliseconds)
+bool isNodeOnline(const CentralNodeRegistry::PlanningNode& node, std::uint32_t nowMilliseconds)
 {
     return node.isCentralNode ||
-           (nowMilliseconds - node.lastSeenMilliseconds) <=
-               CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS;
+           (nowMilliseconds - node.lastSeenMilliseconds) <= CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS;
 }
 
 bool isCommissionedSmartNode(const Load::MacAddress& macAddress)
 {
     const auto* record = commissioningRegistry.findByMac(macAddress);
-    return record != nullptr &&
-           record->role == NodeRole::SMART &&
-           isCommissionedLifecycle(record->lifecycleState);
+    return record != nullptr && record->role == NodeRole::SMART && isCommissionedLifecycle(record->lifecycleState);
 }
 
 bool batteryTelemetryIsFresh(std::uint32_t nowMilliseconds)
 {
     return batteryReadingValid &&
-           (nowMilliseconds - batteryReadingMilliseconds) <=
-               CentralNodeConfig::BATTERY_TELEMETRY_STALE_TIMEOUT_MILLISECONDS;
+           (nowMilliseconds - batteryReadingMilliseconds) <= CentralNodeConfig::BATTERY_TELEMETRY_STALE_TIMEOUT_MILLISECONDS;
 }
 
 bool findNextHopFromCentral(
@@ -475,33 +354,22 @@ bool findNextHopFromCentral(
     Load::MacAddress& nextHop)
 {
     const auto* current = registry.findNodeByMacAddress(destinationMac);
-    if (current == nullptr || current->isCentralNode) {
-        return false;
-    }
+    if (current == nullptr || current->isCentralNode) return false;
 
     for (std::size_t depth = 0U; depth <= registry.getNumberOfNodes(); ++depth) {
         if (current->nextHopToCentralMacAddress == centralMac) {
             nextHop = current->node.getMacAddress();
             return true;
         }
-
         current = registry.findNodeByMacAddress(current->nextHopToCentralMacAddress);
-        if (current == nullptr || current->isCentralNode) {
-            return false;
-        }
+        if (current == nullptr || current->isCentralNode) return false;
     }
-
     return false;
 }
 
-bool routeToSmartNode(
-    const Load::MacAddress& destinationMac,
-    Load::MacAddress& nextHop)
+bool routeToSmartNode(const Load::MacAddress& destinationMac, Load::MacAddress& nextHop)
 {
-    return findNextHopFromCentral(
-        communication.getLocalMacAddress(),
-        destinationMac,
-        nextHop);
+    return findNextHopFromCentral(communication.getLocalMacAddress(), destinationMac, nextHop);
 }
 
 CommandResult commandResult(bool accepted, bool completed, const char* reason)
@@ -513,26 +381,16 @@ CommandResult commandResult(bool accepted, bool completed, const char* reason)
     return result;
 }
 
-
-/*
- * BestFirstSearch stores its last result on Load as a plain byte.  Keep the
- * values here rather than coupling the runtime to an older BestFirstSearch
- * diagnostic API that no longer exists.
- */
 constexpr std::uint8_t BEST_FIRST_NONE = 0U;
-constexpr std::uint8_t BEST_FIRST_LOW_BATTERY = 1U;
 constexpr std::uint8_t BEST_FIRST_POWER_BUDGET_EXCEEDED = 2U;
-constexpr std::uint8_t BEST_FIRST_BATTERY_CURRENT_LIMIT = 3U;
-constexpr std::uint8_t BEST_FIRST_MAIN_LIMIT_EXCEEDED = 4U;
-constexpr std::uint8_t BEST_FIRST_BRANCH_LIMIT_EXCEEDED = 5U;
 
 const char* loadModeText(LoadMode::Value mode)
 {
     switch (mode) {
         case LoadMode::Value::FIXED_OFF: return "FIXED_OFF";
-        case LoadMode::Value::FIXED_ON:  return "FIXED_ON";
-        case LoadMode::Value::AUTO_OFF:  return "AUTO_OFF";
-        case LoadMode::Value::AUTO_ON:   return "AUTO_ON";
+        case LoadMode::Value::FIXED_ON: return "FIXED_ON";
+        case LoadMode::Value::AUTO_OFF: return "AUTO_OFF";
+        case LoadMode::Value::AUTO_ON: return "AUTO_ON";
     }
     return "UNKNOWN";
 }
@@ -550,18 +408,12 @@ const char* bestFirstRejectionText(std::uint8_t reason)
 {
     switch (reason) {
         case BEST_FIRST_NONE: return "NONE";
-        case BEST_FIRST_LOW_BATTERY: return "LOW_BATTERY";
         case BEST_FIRST_POWER_BUDGET_EXCEEDED: return "POWER_BUDGET_EXCEEDED";
-        case BEST_FIRST_BATTERY_CURRENT_LIMIT: return "BATTERY_CURRENT_LIMIT";
-        case BEST_FIRST_MAIN_LIMIT_EXCEEDED: return "MAIN_LIMIT_EXCEEDED";
-        case BEST_FIRST_BRANCH_LIMIT_EXCEEDED: return "BRANCH_LIMIT_EXCEEDED";
         default: return "UNKNOWN";
     }
 }
 
-bool containsLoadPointer(
-    const std::vector<const Load*>& loads,
-    const Load* candidate)
+bool containsLoadPointer(const std::vector<const Load*>& loads, const Load* candidate)
 {
     return std::find(loads.begin(), loads.end(), candidate) != loads.end();
 }
@@ -569,9 +421,7 @@ bool containsLoadPointer(
 PendingHardwareCommand* findPendingHardwareCommand(std::uint32_t commandId)
 {
     for (PendingHardwareCommand& pending : pendingHardwareCommands) {
-        if (pending.commandId == commandId) {
-            return &pending;
-        }
+        if (pending.commandId == commandId) return &pending;
     }
     return nullptr;
 }
@@ -582,92 +432,33 @@ void removePendingHardwareCommand(std::uint32_t commandId)
         std::remove_if(
             pendingHardwareCommands.begin(),
             pendingHardwareCommands.end(),
-            [commandId](const PendingHardwareCommand& item) {
-                return item.commandId == commandId;
-            }),
+            [commandId](const PendingHardwareCommand& item) { return item.commandId == commandId; }),
         pendingHardwareCommands.end());
 }
 
-
-
-/* ------------------------------------------------------------------------- */
-/* Central local Node hardware                                               */
-/* ------------------------------------------------------------------------- */
-
 void configureLocalHardware(const Load::MacAddress& localMac)
 {
-    /*
-     * Central is also a physical Node and may own local relay Loads.
-     *
-     * IMPORTANT:
-     * PowerManager hardware initialization does NOT belong here.
-     * PowerManager::initializeBus() is private and is called internally by
-     * PowerManager::initialize().
-     */
     centralNode = Node(localMac);
 
     if (centralLoadHardwareStore.loadPersisted()) {
-        HardwareConfigurationFailureReason reason =
-            HardwareConfigurationFailureReason::NONE;
-
-        (void)centralLoadHardwareStore.applyPersistedConfigurations(
-            relays,
-            centralNode,
-            reason);
+        HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
+        (void)centralLoadHardwareStore.applyPersistedConfigurations(relays, centralNode, reason);
     }
 
     registry.addLocalCentralNode(
         CentralNodeConfig::CENTRAL_NODE_NAME,
         centralNode,
-        static_cast<std::uint32_t>(
-            pdTICKS_TO_MS(xTaskGetTickCount())));
+        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())));
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* Battery monitoring                                                        */
-/* ------------------------------------------------------------------------- */
-
-/**
- * Selecting a battery measurement source (`sensor sim` / `sensor ina219`)
- * must work on its own - it must not depend on `battery configure` /
- * `battery limits` having been run manually first, and it must never
- * invent a value for either: every installation's battery/sensor facts
- * are genuinely different, so nothing is hardcoded here. Simulation mode
- * skips requiring them entirely (see the matching skip in
- * PowerManager::initialize()) because it doesn't read them - only
- * setSimulatedMeasurements()/setSimulatedStateOfChargePercent() do, fed
- * directly by `simulation values ...`. Hardware mode still correctly
- * requires real installer-entered values; it reports "not configured"
- * rather than defaulting when they're missing.
- */
 bool applyBatteryConfiguration(
     const CentralConfigurationStore::BatterySensorConfiguration& configuration,
     bool restorePersistedStateOfCharge)
 {
-    const bool simulating = batteryMonitor.isSimulationEnabled();
+    if (!configuration.configured || !CentralConfigurationStore::isValidBatterySensor(configuration)) return false;
 
-    if (!simulating &&
-        (!configuration.configured ||
-         !CentralConfigurationStore::isValidBatterySensor(configuration))) {
-        return false;
-    }
-
-    /*
-     * PowerManager's public initialization API owns both I2C bus creation and
-     * INA219 setup. Never call initializeBus()/initializeSensor() here; both
-     * are private implementation details.
-     *
-     * The current PowerManager also needs the battery/main electrical limits
-     * because it owns P_available. Those limits come from Central's persisted
-     * power policy; namespace.h must not invent them.
-     */
-    const auto& fullConfiguration =
-        centralConfigurationStore.getConfiguration();
-
-    if (!simulating && !fullConfiguration.powerLimits.configured) {
-        return false;
-    }
+    const auto& planning = centralConfigurationStore.getConfiguration().powerPlanning;
+    if (!planning.configured || !CentralConfigurationStore::isValidPowerPlanning(planning)) return false;
 
     const PowerManager::BusConfiguration busConfiguration{
         CentralNodeConfig::I2C_SERIAL_DATA_PIN,
@@ -683,19 +474,9 @@ bool applyBatteryConfiguration(
     const PowerManager::BatteryConfiguration batteryConfiguration{
         configuration.nominalVoltageVolts,
         configuration.batteryCapacityAmpHours,
-        fullConfiguration.powerLimits.minimumStateOfChargePercent,
-        fullConfiguration.powerLimits.maximumBatteryDischargeCurrentAmps};
+        planning.minimumStateOfChargePercent};
 
-    const PowerManager::MainBusConfiguration mainBusConfiguration{
-        fullConfiguration.powerLimits.maximumMainCurrentAmps};
-
-    if (!batteryMonitor.initialize(
-            busConfiguration,
-            sensorConfiguration,
-            batteryConfiguration,
-            mainBusConfiguration)) {
-        return false;
-    }
+    if (!batteryMonitor.initialize(busConfiguration, sensorConfiguration, batteryConfiguration)) return false;
 
     return batteryMonitor.initializeStateOfCharge(
         configuration.initialStateOfChargePercent,
@@ -705,10 +486,7 @@ bool applyBatteryConfiguration(
 bool applyPersistedBatterySensorConfiguration()
 {
     const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
-    if (!battery.configured) {
-        return false;
-    }
-
+    if (!battery.configured) return false;
     (void)applyBatteryConfiguration(battery, true);
     return batteryMonitor.isStateOfChargeValid();
 }
@@ -716,7 +494,6 @@ bool applyPersistedBatterySensorConfiguration()
 void sensorAcquisitionTask(void* parameter)
 {
     (void)parameter;
-
     TickType_t previousTick = xTaskGetTickCount();
     std::uint32_t cyclesSincePersist = 0U;
 
@@ -724,18 +501,13 @@ void sensorAcquisitionTask(void* parameter)
         vTaskDelay(pdMS_TO_TICKS(CentralNodeConfig::SENSOR_ACQUISITION_PERIOD_MILLISECONDS));
 
         const TickType_t nowTick = xTaskGetTickCount();
-        const float deltaSeconds =
-            static_cast<float>(pdTICKS_TO_MS(nowTick - previousTick)) / 1000.0F;
+        const float deltaSeconds = static_cast<float>(pdTICKS_TO_MS(nowTick - previousTick)) / 1000.0F;
         previousTick = nowTick;
 
-        if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) {
-            continue;
-        }
+        if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) continue;
 
         const bool simulating = batteryMonitor.isSimulationEnabled();
-        const bool canRead =
-            simulating ||
-            batteryMonitor.isInitialized();
+        const bool canRead = simulating || batteryMonitor.isInitialized();
 
         if (canRead && batteryMonitor.updateMeasurements()) {
             latestBatteryMeasurements = batteryMonitor.getMeasurements();
@@ -755,14 +527,8 @@ void sensorAcquisitionTask(void* parameter)
             batteryReadingValid = false;
         }
 
-        /*
-         * Simulation "failing" (no simulation values fed yet) is a normal,
-         * expected state, not a hardware fault - only alert for a real
-         * INA219 that stops responding once selected.
-         */
         const bool alertOnHardwareFailureEdge =
-            !simulating &&
-            batteryReadingValid != previousHardwareBatteryReadingValid;
+            !simulating && batteryReadingValid != previousHardwareBatteryReadingValid;
         const bool hardwareReadingNowValid = batteryReadingValid;
         previousHardwareBatteryReadingValid = batteryReadingValid;
 
@@ -779,67 +545,39 @@ void sensorAcquisitionTask(void* parameter)
     }
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* Central planning model                                                    */
-/* ------------------------------------------------------------------------- */
-
 void applyStoredLoadSettings()
 {
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
         const auto* planningNode = registry.getNode(nodeIndex);
-        if (planningNode == nullptr) {
-            continue;
-        }
+        if (planningNode == nullptr) continue;
 
-        for (std::size_t loadIndex = 0U;
-             loadIndex < planningNode->node.getNumberOfLoads();
-             ++loadIndex) {
+        for (std::size_t loadIndex = 0U; loadIndex < planningNode->node.getNumberOfLoads(); ++loadIndex) {
             const Load* current = planningNode->node.getLoad(loadIndex);
-            if (current == nullptr) {
-                continue;
-            }
+            if (current == nullptr) continue;
 
-            Load* mutableLoad = registry.findMutableLoad(
-                current->getMacAddress(),
-                current->getRelayPin());
-            if (mutableLoad != nullptr) {
-                (void)centralLoadConfigurationStore.applyToLoad(*mutableLoad);
-            }
+            Load* mutableLoad = registry.findMutableLoad(current->getMacAddress(), current->getRelayPin());
+            if (mutableLoad != nullptr) (void)centralLoadConfigurationStore.applyToLoad(*mutableLoad);
         }
     }
 }
 
-void buildLoadFilter(
-    LoadFilter& filter,
-    std::uint32_t nowMilliseconds)
+void buildLoadFilter(LoadFilter& filter, std::uint32_t nowMilliseconds)
 {
     filter.reset();
 
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
         const auto* planningNode = registry.getNode(nodeIndex);
-        if (planningNode == nullptr) {
-            continue;
-        }
+        if (planningNode == nullptr) continue;
 
-        /*
-         * Central is always part of the planning set because it is the local
-         * Node. A Smart Node participates only while it is commissioned and
-         * online.
-         */
         if (!planningNode->isCentralNode &&
             (!isNodeOnline(*planningNode, nowMilliseconds) ||
              !isCommissionedSmartNode(planningNode->node.getMacAddress()))) {
             continue;
         }
 
-        for (std::size_t loadIndex = 0U;
-             loadIndex < planningNode->node.getNumberOfLoads();
-             ++loadIndex) {
+        for (std::size_t loadIndex = 0U; loadIndex < planningNode->node.getNumberOfLoads(); ++loadIndex) {
             const Load* load = planningNode->node.getLoad(loadIndex);
-            if (load != nullptr) {
-                (void)filter.addLoad(*load);
-            }
+            if (load != nullptr) (void)filter.addLoad(*load);
         }
     }
 }
@@ -849,9 +587,7 @@ float sumFixedOnPowerWatts(const LoadFilter& filter)
     float total = 0.0F;
     for (std::size_t index = 0U; index < filter.getNumberOfFixedOnLoads(); ++index) {
         const Load* load = filter.getFixedOnLoad(index);
-        if (load != nullptr) {
-            total += load->getPowerRatingWatts();
-        }
+        if (load != nullptr) total += load->getPowerRatingWatts();
     }
     return total;
 }
@@ -862,18 +598,14 @@ void resetFixedRejectionReasons(const LoadFilter& filter)
         const Load* load = filter.getFixedOnLoad(index);
         if (load == nullptr) continue;
         Load* mutableLoad = registry.findMutableLoad(load->getMacAddress(), load->getRelayPin());
-        if (mutableLoad != nullptr) {
-            mutableLoad->setLastBestFirstRejectionReason(BEST_FIRST_NONE);
-        }
+        if (mutableLoad != nullptr) mutableLoad->setLastBestFirstRejectionReason(BEST_FIRST_NONE);
     }
 
     for (std::size_t index = 0U; index < filter.getNumberOfFixedOffLoads(); ++index) {
         const Load* load = filter.getFixedOffLoad(index);
         if (load == nullptr) continue;
         Load* mutableLoad = registry.findMutableLoad(load->getMacAddress(), load->getRelayPin());
-        if (mutableLoad != nullptr) {
-            mutableLoad->setLastBestFirstRejectionReason(BEST_FIRST_NONE);
-        }
+        if (mutableLoad != nullptr) mutableLoad->setLastBestFirstRejectionReason(BEST_FIRST_NONE);
     }
 }
 
@@ -883,9 +615,7 @@ void recordAutoRejectionReason(const LoadFilter& filter, std::uint8_t reason)
         const Load* load = filter.getAutoCandidateLoad(index);
         if (load == nullptr) continue;
         Load* mutableLoad = registry.findMutableLoad(load->getMacAddress(), load->getRelayPin());
-        if (mutableLoad != nullptr) {
-            mutableLoad->setLastBestFirstRejectionReason(reason);
-        }
+        if (mutableLoad != nullptr) mutableLoad->setLastBestFirstRejectionReason(reason);
     }
 }
 
@@ -894,15 +624,10 @@ std::vector<const Load*> automaticCandidates(const LoadFilter& filter)
     std::vector<const Load*> result;
     result.reserve(filter.getNumberOfAutoCandidateLoads());
 
-    for (std::size_t index = 0U;
-         index < filter.getNumberOfAutoCandidateLoads();
-         ++index) {
+    for (std::size_t index = 0U; index < filter.getNumberOfAutoCandidateLoads(); ++index) {
         const Load* load = filter.getAutoCandidateLoad(index);
-        if (load != nullptr) {
-            result.push_back(load);
-        }
+        if (load != nullptr) result.push_back(load);
     }
-
     return result;
 }
 
@@ -911,70 +636,39 @@ std::vector<RelayCommandDispatcher::RelayTarget> buildRelayTargets(
     const std::vector<const Load*>& selectedAutoLoads)
 {
     (void)selectedAutoLoads;
-
     std::vector<RelayCommandDispatcher::RelayTarget> targets;
 
     auto append = [&targets](const Load* load) {
         if (load == nullptr) return;
         targets.push_back(RelayCommandDispatcher::RelayTarget{
-            load->getMacAddress(),
-            load->getRelayPin(),
-            load->isOn()});
+            load->getMacAddress(), load->getRelayPin(), load->isOn()});
     };
 
-    /*
-     * Single state rule:
-     * Console, MQTT, and relay dispatch all read the same Load::mode.
-     * Optimizer must update AUTO_ON/AUTO_OFF before this function runs.
-     */
-    for (std::size_t i = 0U; i < filter.getNumberOfFixedOffLoads(); ++i) {
-        append(filter.getFixedOffLoad(i));
-    }
-
-    for (std::size_t i = 0U; i < filter.getNumberOfAutoCandidateLoads(); ++i) {
-        append(filter.getAutoCandidateLoad(i));
-    }
-
-    for (std::size_t i = 0U; i < filter.getNumberOfFixedOnLoads(); ++i) {
-        append(filter.getFixedOnLoad(i));
-    }
-
+    for (std::size_t i = 0U; i < filter.getNumberOfFixedOffLoads(); ++i) append(filter.getFixedOffLoad(i));
+    for (std::size_t i = 0U; i < filter.getNumberOfAutoCandidateLoads(); ++i) append(filter.getAutoCandidateLoad(i));
+    for (std::size_t i = 0U; i < filter.getNumberOfFixedOnLoads(); ++i) append(filter.getFixedOnLoad(i));
     return RelayCommandDispatcher::buildDispatchOrder(targets);
 }
+
 bool dispatchRelayTargetAndWait(const RelayCommandDispatcher::RelayTarget& target)
 {
     const Load::MacAddress localMac = communication.getLocalMacAddress();
 
-    /*
-     * A target belonging to Central is actuated locally. Smart Node targets
-     * use the ESP-NOW path below. Neither path stores a hardware state in
-     * Load. For a local target, success means only that the ESP-IDF GPIO
-     * write call succeeded; Kilowatts has no downstream-device feedback.
-     */
     if (target.nodeMacAddress == localMac) {
-        const bool success =
-            relays.setRelayState(target.relayPin, target.desiredOn);
-
-        if (!success &&
-            xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
+        const bool success = relays.setRelayState(target.relayPin, target.desiredOn);
+        if (!success && xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
             ++relayCommandErrorCount;
             xSemaphoreGive(stateMutex);
         }
-
         return success;
     }
 
     Load::MacAddress nextHop{};
     std::uint32_t commandId = 0U;
 
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) {
-        return false;
-    }
-
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) return false;
     const bool routeFound = routeToSmartNode(target.nodeMacAddress, nextHop);
-    if (routeFound) {
-        commandId = relayCommandDispatcher.beginCommand(target);
-    }
+    if (routeFound) commandId = relayCommandDispatcher.beginCommand(target);
     xSemaphoreGive(stateMutex);
 
     if (!routeFound || commandId == 0U) {
@@ -984,8 +678,7 @@ bool dispatchRelayTargetAndWait(const RelayCommandDispatcher::RelayTarget& targe
 
     RelayCommandPacket packet{};
     packet.relayPin = target.relayPin;
-    packet.desiredState = static_cast<std::uint8_t>(
-        target.desiredOn ? RelayCommandState::ON : RelayCommandState::OFF);
+    packet.desiredState = static_cast<std::uint8_t>(target.desiredOn ? RelayCommandState::ON : RelayCommandState::OFF);
     packet.commandId = commandId;
 
     if (!communication.sendTo(
@@ -1001,8 +694,7 @@ bool dispatchRelayTargetAndWait(const RelayCommandDispatcher::RelayTarget& targe
         return false;
     }
 
-    const TickType_t deadline =
-        xTaskGetTickCount() +
+    const TickType_t deadline = xTaskGetTickCount() +
         pdMS_TO_TICKS(CentralNodeConfig::RELAY_COMMAND_ACK_TIMEOUT_MILLISECONDS);
 
     while (xTaskGetTickCount() < deadline) {
@@ -1011,13 +703,7 @@ bool dispatchRelayTargetAndWait(const RelayCommandDispatcher::RelayTarget& targe
             pending = relayCommandDispatcher.isPending(commandId);
             xSemaphoreGive(stateMutex);
         }
-
         if (!pending) {
-            /*
-             * The acknowledgement's own success flag is the only outcome
-             * this class learns. It means the Smart Node's GPIO write call
-             * succeeded; it says nothing about a downstream device.
-             */
             bool success = false;
             if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(100U)) == pdTRUE) {
                 success = relayCommandDispatcher.wasCommandSuccessful(commandId);
@@ -1025,28 +711,21 @@ bool dispatchRelayTargetAndWait(const RelayCommandDispatcher::RelayTarget& targe
             }
             return success;
         }
-
         vTaskDelay(pdMS_TO_TICKS(20U));
     }
 
     if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
-        if (relayCommandDispatcher.completeCommand(commandId, false)) {
-            ++relayCommandErrorCount;
-        }
+        if (relayCommandDispatcher.completeCommand(commandId, false)) ++relayCommandErrorCount;
         xSemaphoreGive(stateMutex);
     }
     return false;
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* State publication                                                         */
-/* ------------------------------------------------------------------------- */
-
 SystemStateInputs makeSystemStateInputs()
 {
     SystemStateInputs inputs{};
     const auto& configuration = centralConfigurationStore.getConfiguration();
+    const auto& planning = configuration.powerPlanning;
 
     inputs.batterySensorConfigured = configuration.batterySensor.configured;
     inputs.batteryNominalVoltageVolts = configuration.batterySensor.nominalVoltageVolts;
@@ -1056,75 +735,48 @@ SystemStateInputs makeSystemStateInputs()
     inputs.stateOfChargeValid = batteryMonitor.isStateOfChargeValid();
     inputs.stateOfChargeSourceText = stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource());
 
-    /*
-     * batteryFullEnergyWh = capacityAmpHours * nominalVoltageVolts (item 10
-     * of the runtime architecture). Stored/usable energy are both derived
-     * from it and only meaningful once SoC/power-limits are actually valid.
-     */
-    const float batteryFullEnergyWattHours =
-        configuration.batterySensor.batteryCapacityAmpHours *
-        configuration.batterySensor.nominalVoltageVolts;
+    const float fullEnergyWh =
+        configuration.batterySensor.batteryCapacityAmpHours * configuration.batterySensor.nominalVoltageVolts;
+    inputs.batteryRatedEnergyWattHours = fullEnergyWh;
+    inputs.batteryStoredEnergyWattHours = inputs.stateOfChargeValid
+        ? fullEnergyWh * (inputs.stateOfChargePercent / 100.0F)
+        : 0.0F;
 
-    inputs.batteryRatedEnergyWattHours = batteryFullEnergyWattHours;
-
-    inputs.batteryStoredEnergyWattHours =
-        inputs.stateOfChargeValid
-            ? batteryFullEnergyWattHours * (inputs.stateOfChargePercent / 100.0F)
-            : 0.0F;
-
-    const bool reserveKnown =
-        inputs.stateOfChargeValid &&
-        configuration.powerLimits.configured;
-
-    inputs.batteryUsableEnergyWattHours =
-        reserveKnown
-            ? batteryFullEnergyWattHours *
-                  (std::max(0.0F, inputs.stateOfChargePercent -
-                                      configuration.powerLimits.minimumStateOfChargePercent) /
-                   100.0F)
-            : 0.0F;
+    const bool reserveKnown = inputs.stateOfChargeValid && planning.configured;
+    inputs.batteryUsableEnergyWattHours = reserveKnown
+        ? fullEnergyWh *
+            (std::max(0.0F, inputs.stateOfChargePercent - planning.minimumStateOfChargePercent) / 100.0F)
+        : 0.0F;
 
     inputs.batteryVoltageVolts = latestBatteryMeasurements.voltageVolts;
     inputs.batteryCurrentAmps = latestBatteryMeasurements.currentAmps;
-    inputs.currentBatteryOutputPowerWatts = latestBatteryMeasurements.powerWatts;
+    inputs.P_measured = latestBatteryMeasurements.powerWatts;
     inputs.batteryMeasurementSourceText = measurementSourceText(batteryMonitor.getMeasurementSource());
+    inputs.batteryReserveReached = reserveKnown &&
+        inputs.stateOfChargePercent <= planning.minimumStateOfChargePercent;
 
-    inputs.batteryReserveReached =
-        reserveKnown &&
-        inputs.stateOfChargePercent <= configuration.powerLimits.minimumStateOfChargePercent;
-
-    inputs.requiredRuntimeConfigured = configuration.powerLimits.requiredRuntimeHours > 0.0F;
-    inputs.requiredRuntimeHours = configuration.powerLimits.requiredRuntimeHours;
+    inputs.requiredRuntimeConfigured = planning.configured && planning.requiredRuntimeHours > 0.0F;
+    inputs.requiredRuntimeHours = planning.requiredRuntimeHours;
     inputs.remainingRuntimeHours = batteryMonitor.getRemainingRequiredRuntimeHours();
-
-    inputs.runtimeEstimateValid =
-        reserveKnown &&
-        inputs.currentBatteryOutputPowerWatts > 0.0F;
-
-    inputs.estimatedRuntimeHours =
-        inputs.runtimeEstimateValid
-            ? inputs.batteryUsableEnergyWattHours / inputs.currentBatteryOutputPowerWatts
-            : 0.0F;
-
-    inputs.maximumPowerForRequiredRuntimeWatts =
-        latestPlanningSnapshot.budgetValid && latestPlanningSnapshot.budget.runtimeBudgetActive
-            ? latestPlanningSnapshot.budget.sustainableTotalPowerWatts
-            : 0.0F;
-
+    inputs.runtimeEstimateValid = reserveKnown && inputs.P_measured > 0.0F;
+    inputs.estimatedRuntimeHours = inputs.runtimeEstimateValid
+        ? inputs.batteryUsableEnergyWattHours / inputs.P_measured
+        : 0.0F;
+    inputs.P_runtime = latestPlanningSnapshot.budgetValid && latestPlanningSnapshot.budget.runtimeBudgetActive
+        ? latestPlanningSnapshot.budget.P_runtime
+        : 0.0F;
     inputs.requiredRuntimeAchievable =
-        !latestPlanningSnapshot.budgetValid ||
-        latestPlanningSnapshot.budget.requiredRuntimeAchievable;
+        !latestPlanningSnapshot.budgetValid || latestPlanningSnapshot.budget.requiredRuntimeAchievable;
 
-    inputs.batteryMaximumPowerWatts =
-        latestPlanningSnapshot.budget.batteryMaximumPowerWatts;
-    inputs.mainMaximumPowerWatts =
-        latestPlanningSnapshot.budget.mainMaximumPowerWatts;
-    inputs.fixedOnPowerWatts = latestPlanningSnapshot.fixedOnPowerWatts;
-    inputs.automaticPowerBudgetWatts = latestPlanningSnapshot.automaticAvailablePowerWatts;
-    inputs.selectedAutoLoadPowerWatts =
-        latestPlanningSnapshot.selectedAutomaticPowerWatts;
-    inputs.remainingAutomaticBudgetWatts =
-        latestPlanningSnapshot.finalRemainingPowerWatts;
+    if (latestPlanningSnapshot.budgetValid) {
+        inputs.P_budget = latestPlanningSnapshot.budget.P_budget;
+        inputs.P_reserve = latestPlanningSnapshot.budget.P_reserve;
+        inputs.P_usable = latestPlanningSnapshot.budget.P_usable;
+        inputs.P_fixed = latestPlanningSnapshot.budget.P_fixed;
+        inputs.P_auto_available = latestPlanningSnapshot.budget.P_auto_available;
+        inputs.P_auto = latestPlanningSnapshot.budget.P_auto;
+        inputs.P_remaining = latestPlanningSnapshot.budget.P_remaining;
+    }
 
     inputs.wifiConnected = wifiManager.isConnected();
     inputs.wifiStateText = wifiStateText(wifiManager.getState());
@@ -1133,20 +785,14 @@ SystemStateInputs makeSystemStateInputs()
     inputs.currentTimeSourceText = timeSourceText(currentTimeProvider.getCurrentTimeSource());
     inputs.lastOptimizationEpochSeconds = lastOptimizationEpochSeconds;
     inputs.pinCommandErrorCount = relayCommandErrorCount;
-
     return inputs;
 }
 
 void publishCurrentState()
 {
-    if (!mqttManager.isConnected()) {
-        return;
-    }
+    if (!mqttManager.isConnected()) return;
 
-    const std::uint32_t now =
-        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
-
-    // Refresh availability before collecting the larger retained state set.
+    const std::uint32_t now = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
     (void)mqttManager.publishStatus();
 
     SystemStateInputs systemInputs{};
@@ -1155,39 +801,22 @@ void publishCurrentState()
     std::string nodesJson;
     std::string configNodesJson;
 
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
-        return;
-    }
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) return;
 
     applyStoredLoadSettings();
     systemInputs = makeSystemStateInputs();
     treeJson = TopologyTree::buildTreeJson(
-        registry,
-        commissioningRegistry,
-        CentralNodeConfig::MQTT_SCHEMA_VERSION,
-        now,
-        CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS);
-    loadsJson = TopologyTree::buildLoadsJson(
-        registry,
-        CentralNodeConfig::MQTT_SCHEMA_VERSION);
+        registry, commissioningRegistry, CentralNodeConfig::MQTT_SCHEMA_VERSION,
+        now, CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS);
+    loadsJson = TopologyTree::buildLoadsJson(registry, CentralNodeConfig::MQTT_SCHEMA_VERSION);
     nodesJson = NodeRegistryJson::buildStateNodesJson(
-        commissioningRegistry,
-        registry,
-        CentralNodeConfig::MQTT_SCHEMA_VERSION,
-        now,
-        CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS);
+        commissioningRegistry, registry, CentralNodeConfig::MQTT_SCHEMA_VERSION,
+        now, CentralNodeConfig::NODE_REPORT_TIMEOUT_MILLISECONDS);
     configNodesJson = NodeRegistryJson::buildConfigNodesJson(
-        commissioningRegistry,
-        registry,
-        CentralNodeConfig::MQTT_SCHEMA_VERSION);
+        commissioningRegistry, registry, CentralNodeConfig::MQTT_SCHEMA_VERSION);
 
     xSemaphoreGive(stateMutex);
 
-    /*
-     * Alerts fire only on the transition, not every cycle the condition
-     * stays true/false - the retained state/system topic above already
-     * carries the current value for anyone polling it.
-     */
     if (systemInputs.batteryReserveReached != previousBatteryReserveReached) {
         mqttManager.publishAlert(
             "BATTERY_RESERVE",
@@ -1208,11 +837,22 @@ void publishCurrentState()
         previousRequiredRuntimeAchievable = systemInputs.requiredRuntimeAchievable;
     }
 
+    const bool measuredPowerExceededBudget =
+        latestPlanningSnapshot.budgetValid && batteryReadingValid &&
+        systemInputs.P_measured > systemInputs.P_budget;
+    if (measuredPowerExceededBudget != previousMeasuredPowerExceededBudget) {
+        mqttManager.publishAlert(
+            "MEASURED_POWER_BUDGET",
+            measuredPowerExceededBudget ? "warning" : "info",
+            measuredPowerExceededBudget
+                ? "measured power is above the configured P_budget"
+                : "measured power returned within the configured P_budget");
+        previousMeasuredPowerExceededBudget = measuredPowerExceededBudget;
+    }
+
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
         const auto* planningNode = registry.getNode(nodeIndex);
-        if (planningNode == nullptr || planningNode->isCentralNode) {
-            continue;
-        }
+        if (planningNode == nullptr || planningNode->isCentralNode) continue;
 
         const bool onlineNow = isNodeOnline(*planningNode, now);
         const Load::MacAddress nodeMac = planningNode->node.getMacAddress();
@@ -1232,17 +872,9 @@ void publishCurrentState()
 
         if (tracking->wasOnline != onlineNow) {
             char detail[64]{};
-            std::snprintf(
-                detail,
-                sizeof(detail),
-                "Smart Node %s",
+            std::snprintf(detail, sizeof(detail), "Smart Node %s",
                 onlineNow ? "came back online" : "stopped reporting and is now offline");
-
-            mqttManager.publishAlert(
-                "NODE_OFFLINE",
-                onlineNow ? "info" : "warning",
-                detail);
-
+            mqttManager.publishAlert("NODE_OFFLINE", onlineNow ? "info" : "warning", detail);
             tracking->wasOnline = onlineNow;
         }
     }
@@ -1258,70 +890,44 @@ void publishCurrentState()
     (void)mqttManager.publish(MqttManager::TOPIC_CONFIG_NODES, configNodesJson, 0, true);
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* Planning cycle                                                            */
-/* ------------------------------------------------------------------------- */
-
-
 bool schedulesEqual(const AutoSchedule& first, const AutoSchedule& second)
 {
-    return first.enabled == second.enabled &&
-           first.hour == second.hour &&
-           first.minute == second.minute;
+    return first.enabled == second.enabled && first.hour == second.hour && first.minute == second.minute;
 }
 
 bool updateAutoRuntimeState(Load& load, bool requestedOn)
 {
-    if (!load.isAuto()) {
-        return false;
-    }
+    if (!load.isAuto()) return false;
 
-    const LoadMode::Value newMode =
-        requestedOn ? LoadMode::Auto::ON : LoadMode::Auto::OFF;
-
+    const LoadMode::Value newMode = requestedOn ? LoadMode::Auto::ON : LoadMode::Auto::OFF;
     const LoadConfigurationStore::ConfigurationEntry entry{
-        load.getMacAddress(),
-        load.getRelayPin(),
-        load.getPriority(),
-        newMode,
-        load.getSchedule()};
+        load.getMacAddress(), load.getRelayPin(), load.getPriority(), newMode, load.getSchedule()};
 
     LoadConfigurationStore::ConfigurationEntry previous{};
     const bool hadPrevious = centralLoadConfigurationStore.findConfiguration(
-        load.getMacAddress(),
-        load.getRelayPin(),
-        previous);
+        load.getMacAddress(), load.getRelayPin(), previous);
 
     const bool changed =
-        !hadPrevious ||
-        previous.priority != entry.priority ||
-        previous.mode != entry.mode ||
-        !schedulesEqual(previous.schedule, entry.schedule) ||
-        load.getMode() != newMode;
+        !hadPrevious || previous.priority != entry.priority || previous.mode != entry.mode ||
+        !schedulesEqual(previous.schedule, entry.schedule) || load.getMode() != newMode;
 
     load.setMode(newMode);
     (void)centralLoadConfigurationStore.setConfiguration(entry);
-
     return changed;
 }
-
 
 void dispatchRelayOrderWithOnStagger(
     const std::vector<RelayCommandDispatcher::RelayTarget>& dispatchOrder)
 {
     bool firstOn = true;
-
     for (const auto& target : dispatchOrder) {
         if (target.desiredOn) {
             vTaskDelay(pdMS_TO_TICKS(
                 firstOn
                     ? CentralNodeConfig::RELAY_ON_FIRST_DELAY_MILLISECONDS
                     : CentralNodeConfig::RELAY_ON_BETWEEN_DELAY_MILLISECONDS));
-
             firstOn = false;
         }
-
         (void)dispatchRelayTargetAndWait(target);
     }
 }
@@ -1331,14 +937,10 @@ void runOptimizationCycle(bool printDashboard)
     std::vector<RelayCommandDispatcher::RelayTarget> dispatchOrder;
     std::vector<const Load*> selectedAutoLoads;
 
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U)) != pdTRUE) {
-        return;
-    }
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U)) != pdTRUE) return;
 
     applyStoredLoadSettings();
-
-    const std::uint32_t now =
-        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
+    const std::uint32_t now = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
 
     LoadFilter filter;
     buildLoadFilter(filter, now);
@@ -1348,120 +950,86 @@ void runOptimizationCycle(bool printDashboard)
     snapshot.fixedOnCount = filter.getNumberOfFixedOnLoads();
     snapshot.fixedOffCount = filter.getNumberOfFixedOffLoads();
     snapshot.automaticCandidateCount = filter.getNumberOfAutoCandidateLoads();
-    snapshot.fixedOnPowerWatts = sumFixedOnPowerWatts(filter);
 
+    const float P_fixed = sumFixedOnPowerWatts(filter);
     const auto& configuration = centralConfigurationStore.getConfiguration();
+    const auto& planning = configuration.powerPlanning;
 
-    const bool inputsReady =
-        configuration.batterySensor.configured &&
-        configuration.powerLimits.configured &&
-        batteryMonitor.isInitialized() &&
-        batteryMonitor.isStateOfChargeValid() &&
-        batteryTelemetryIsFresh(now) &&
-        latestBatteryMeasurements.voltageVolts > 0.0F;
+    const float remainingRequiredRuntimeHours = computeRemainingRequiredRuntimeHours(
+        planning.requiredRuntimeHours,
+        currentTimeProvider.isCurrentTimeValid(),
+        static_cast<std::int64_t>(std::time(nullptr)));
 
-    const float remainingRequiredRuntimeHours =
-        computeRemainingRequiredRuntimeHours(
-            configuration.powerLimits.requiredRuntimeHours,
-            currentTimeProvider.isCurrentTimeValid(),
-            static_cast<std::int64_t>(std::time(nullptr)));
+    const bool runtimeTargetActive = planning.requiredRuntimeHours > 0.0F;
+    const bool runtimeInputsReady = !runtimeTargetActive ||
+        (configuration.batterySensor.configured && batteryMonitor.isStateOfChargeValid());
 
-    if (inputsReady &&
-        batteryMonitor.setCommittedPowerWatts(snapshot.fixedOnPowerWatts) &&
+    if (planning.configured && runtimeInputsReady &&
+        batteryMonitor.setPowerBudgetWatts(planning.P_budget) &&
+        batteryMonitor.setPowerReserveWatts(planning.P_reserve) &&
+        batteryMonitor.setFixedPowerWatts(P_fixed) &&
+        batteryMonitor.setAutoPowerWatts(0.0F) &&
         batteryMonitor.setRemainingRequiredRuntimeHours(remainingRequiredRuntimeHours) &&
         batteryMonitor.updatePowerBudget()) {
 
         snapshot.budgetValid = true;
         snapshot.budget = batteryMonitor.getPowerBudget();
-        snapshot.automaticAvailablePowerWatts = snapshot.budget.availablePowerWatts;
-
         const std::vector<const Load*> autoLoads = automaticCandidates(filter);
 
-        /*
-         * Current BestFirstSearch runs in its constructor.  It receives only
-         * P_available, the existing Auto Load pointers, and the time provider.
-         */
         BestFirstSearch search(
-            snapshot.automaticAvailablePowerWatts,
+            snapshot.budget.P_auto_available,
             autoLoads,
             currentTimeProvider);
-
         selectedAutoLoads = search.getBestCombination();
 
         bool autoRuntimeStateChanged = false;
+        float P_auto = 0.0F;
 
         for (const Load* load : autoLoads) {
             if (load == nullptr) continue;
 
-            Load* mutableLoad = registry.findMutableLoad(
-                load->getMacAddress(),
-                load->getRelayPin());
+            Load* mutableLoad = registry.findMutableLoad(load->getMacAddress(), load->getRelayPin());
             if (mutableLoad == nullptr) continue;
 
             const bool selected = containsLoadPointer(selectedAutoLoads, load);
             mutableLoad->setLastBestFirstRejectionReason(
                 selected ? BEST_FIRST_NONE : BEST_FIRST_POWER_BUDGET_EXCEEDED);
-
-            autoRuntimeStateChanged =
-                updateAutoRuntimeState(*mutableLoad, selected) ||
-                autoRuntimeStateChanged;
+            autoRuntimeStateChanged = updateAutoRuntimeState(*mutableLoad, selected) || autoRuntimeStateChanged;
 
             if (selected) {
-                snapshot.selectedAutomaticPowerWatts += load->getPowerRatingWatts();
+                P_auto += load->getPowerRatingWatts();
                 ++snapshot.automaticSelectedCount;
             }
         }
 
-        if (autoRuntimeStateChanged) {
-            (void)centralLoadConfigurationStore.persist();
-        }
+        if (autoRuntimeStateChanged) (void)centralLoadConfigurationStore.persist();
 
-        snapshot.finalRemainingPowerWatts = std::max(
-            0.0F,
-            snapshot.automaticAvailablePowerWatts -
-                snapshot.selectedAutomaticPowerWatts);
+        if (batteryMonitor.setAutoPowerWatts(P_auto) && batteryMonitor.updatePowerBudget()) {
+            snapshot.budget = batteryMonitor.getPowerBudget();
+        } else {
+            snapshot.budgetValid = false;
+        }
     } else {
         recordAutoRejectionReason(filter, BEST_FIRST_POWER_BUDGET_EXCEEDED);
 
         bool autoRuntimeStateChanged = false;
-        for (std::size_t i = 0U;
-             i < filter.getNumberOfAutoCandidateLoads();
-             ++i) {
+        for (std::size_t i = 0U; i < filter.getNumberOfAutoCandidateLoads(); ++i) {
             const Load* load = filter.getAutoCandidateLoad(i);
-            if (load == nullptr) {
-                continue;
+            if (load == nullptr) continue;
+            Load* mutableLoad = registry.findMutableLoad(load->getMacAddress(), load->getRelayPin());
+            if (mutableLoad != nullptr) {
+                autoRuntimeStateChanged = updateAutoRuntimeState(*mutableLoad, false) || autoRuntimeStateChanged;
             }
-
-            Load* mutableLoad = registry.findMutableLoad(
-                load->getMacAddress(),
-                load->getRelayPin());
-            if (mutableLoad == nullptr) {
-                continue;
-            }
-
-            autoRuntimeStateChanged =
-                updateAutoRuntimeState(*mutableLoad, false) ||
-                autoRuntimeStateChanged;
         }
-
-        if (autoRuntimeStateChanged) {
-            (void)centralLoadConfigurationStore.persist();
-        }
-
-        snapshot.automaticAvailablePowerWatts = 0.0F;
-        snapshot.selectedAutomaticPowerWatts = 0.0F;
-        snapshot.finalRemainingPowerWatts = 0.0F;
+        if (autoRuntimeStateChanged) (void)centralLoadConfigurationStore.persist();
     }
 
     latestPlanningSnapshot = snapshot;
-
     if (currentTimeProvider.isCurrentTimeValid()) {
-        lastOptimizationEpochSeconds =
-            static_cast<std::int64_t>(std::time(nullptr));
+        lastOptimizationEpochSeconds = static_cast<std::int64_t>(std::time(nullptr));
     }
 
     dispatchOrder = buildRelayTargets(filter, selectedAutoLoads);
-
     xSemaphoreGive(stateMutex);
 
     dispatchRelayOrderWithOnStagger(dispatchOrder);
@@ -1470,58 +1038,52 @@ void runOptimizationCycle(bool printDashboard)
         std::printf("\n============================================================\n");
         std::printf("                    KILOWATTS DASHBOARD\n");
         std::printf("============================================================\n");
-        std::printf("Battery source        : %s\n", measurementSourceText(batteryMonitor.getMeasurementSource()));
+        std::printf("Measurement source   : %s\n", measurementSourceText(batteryMonitor.getMeasurementSource()));
         if (batteryReadingValid) {
-            std::printf("Battery voltage       : %.2f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
-            std::printf("Battery current       : %.2f A\n", static_cast<double>(latestBatteryMeasurements.currentAmps));
-            std::printf("Battery power         : %.2f W\n", static_cast<double>(latestBatteryMeasurements.powerWatts));
+            std::printf("Voltage              : %.2f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
+            std::printf("Current              : %.2f A\n", static_cast<double>(latestBatteryMeasurements.currentAmps));
+            std::printf("P_measured           : %.2f W\n", static_cast<double>(latestBatteryMeasurements.powerWatts));
         } else {
-            std::printf("Battery telemetry     : NOT AVAILABLE\n");
+            std::printf("P_measured           : NOT AVAILABLE\n");
         }
         if (batteryMonitor.isStateOfChargeValid()) {
-            std::printf("Battery SoC           : %.1f %%\n", static_cast<double>(batteryMonitor.getStateOfChargePercent()));
+            std::printf("Battery SoC          : %.1f %%\n", static_cast<double>(batteryMonitor.getStateOfChargePercent()));
         } else {
-            std::printf("Battery SoC           : NOT AVAILABLE\n");
+            std::printf("Battery SoC          : NOT AVAILABLE\n");
         }
         std::printf("------------------------------------------------------------\n");
-        if (latestPlanningSnapshot.budgetValid) {
-            std::printf("Available power passed to Best-First : %.2f W\n", static_cast<double>(latestPlanningSnapshot.automaticAvailablePowerWatts));
-            std::printf("Fixed load power      : %.2f W\n", static_cast<double>(latestPlanningSnapshot.fixedOnPowerWatts));
-            std::printf("Automatic load power  : %.2f W\n", static_cast<double>(latestPlanningSnapshot.selectedAutomaticPowerWatts));
-            std::printf("Remaining power       : %.2f W\n", static_cast<double>(latestPlanningSnapshot.finalRemainingPowerWatts));
-            if (latestPlanningSnapshot.budget.runtimeBudgetActive) {
-                std::printf("Required runtime      : %.2f h remaining | sustainable %.2f W | %s\n",
-                            static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()),
-                            static_cast<double>(latestPlanningSnapshot.budget.sustainableTotalPowerWatts),
-                            latestPlanningSnapshot.budget.requiredRuntimeAchievable ? "ACHIEVABLE" : "NOT ACHIEVABLE");
-            } else {
-                std::printf("Required runtime      : NOT CONFIGURED\n");
+        if (snapshot.budgetValid) {
+            std::printf("P_budget             : %.2f W\n", static_cast<double>(snapshot.budget.P_budget));
+            std::printf("P_reserve            : %.2f W\n", static_cast<double>(snapshot.budget.P_reserve));
+            std::printf("P_usable             : %.2f W\n", static_cast<double>(snapshot.budget.P_usable));
+            std::printf("P_fixed              : %.2f W\n", static_cast<double>(snapshot.budget.P_fixed));
+            std::printf("P_auto_available     : %.2f W\n", static_cast<double>(snapshot.budget.P_auto_available));
+            std::printf("P_auto               : %.2f W\n", static_cast<double>(snapshot.budget.P_auto));
+            std::printf("P_remaining          : %.2f W\n", static_cast<double>(snapshot.budget.P_remaining));
+            if (snapshot.budget.runtimeBudgetActive) {
+                std::printf("P_runtime            : %.2f W | %.2f h remaining | %s\n",
+                    static_cast<double>(snapshot.budget.P_runtime),
+                    static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()),
+                    snapshot.budget.requiredRuntimeAchievable ? "ACHIEVABLE" : "NOT ACHIEVABLE");
             }
         } else {
-            std::printf("Available power passed to Best-First : NOT AVAILABLE\n");
+            std::printf("Power planning       : NOT AVAILABLE\n");
         }
-        std::printf("Fixed ON / OFF        : %u / %u\n",
-                    static_cast<unsigned int>(latestPlanningSnapshot.fixedOnCount),
-                    static_cast<unsigned int>(latestPlanningSnapshot.fixedOffCount));
-        std::printf("Automatic loads       : %u / %u\n",
-                    static_cast<unsigned int>(latestPlanningSnapshot.automaticSelectedCount),
-                    static_cast<unsigned int>(latestPlanningSnapshot.automaticCandidateCount));
+        std::printf("Fixed ON / OFF       : %u / %u\n",
+            static_cast<unsigned int>(snapshot.fixedOnCount),
+            static_cast<unsigned int>(snapshot.fixedOffCount));
+        std::printf("Automatic loads      : %u / %u\n",
+            static_cast<unsigned int>(snapshot.automaticSelectedCount),
+            static_cast<unsigned int>(snapshot.automaticCandidateCount));
         std::printf("============================================================\n\n");
     }
 
     publishCurrentState();
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* MQTT / infrastructure tasks                                               */
-/* ------------------------------------------------------------------------- */
-
 void checkMqttStartTrigger()
 {
-    if (mqttStarted || !wifiManager.isConnected()) {
-        return;
-    }
+    if (mqttStarted || !wifiManager.isConnected()) return;
 
     MqttCredentialsStore::Credentials credentials{};
     if (!mqttCredentialsStore.load(credentials)) {
@@ -1553,21 +1115,11 @@ void checkMqttStartTrigger()
 void optimizationTask(void* parameter)
 {
     (void)parameter;
-
-    /*
-     * Give Wi-Fi, battery acquisition and Node reports a short boot window.
-     * After that, the optimizer runs automatically forever.
-     */
     vTaskDelay(pdMS_TO_TICKS(5000U));
 
     while (true) {
         checkMqttStartTrigger();
         runOptimizationCycle(false);
-
-        /*
-         * Manual optimize/MQTT requests wake this early.
-         * Otherwise it waits for the configured automatic interval.
-         */
         (void)xSemaphoreTake(
             optimizationTriggerSemaphore,
             pdMS_TO_TICKS(getOptimizerIntervalMilliseconds()));
@@ -1577,9 +1129,7 @@ void optimizationTask(void* parameter)
 void checkWiFiProvisioningTrigger()
 {
     if (wifiManager.isConnected()) {
-        if (wifiProvisioningPortal.isActive()) {
-            wifiProvisioningPortal.end();
-        }
+        if (wifiProvisioningPortal.isActive()) wifiProvisioningPortal.end();
         return;
     }
 
@@ -1612,39 +1162,24 @@ void watchdogTask(void* parameter)
             (void)commissioningRegistry.updateDiagnostics(localMac, diagnostics);
             xSemaphoreGive(stateMutex);
         }
-
         publishCurrentState();
     }
 }
-
-
-/* ------------------------------------------------------------------------- */
-/* ESP-NOW acknowledgement and receive path                                  */
-/* ------------------------------------------------------------------------- */
 
 void handleRelayAcknowledgement(
     const Load::MacAddress& originMac,
     const RelayCommandAcknowledgementPacket& acknowledgement)
 {
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) {
-        return;
-    }
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) return;
 
     const auto* pending = relayCommandDispatcher.findPendingCommand(acknowledgement.commandId);
-    if (pending != nullptr &&
-        pending->nodeMacAddress == originMac &&
+    if (pending != nullptr && pending->nodeMacAddress == originMac &&
         pending->relayPin == acknowledgement.relayPin &&
         pending->desiredOn == (acknowledgement.requestedState == static_cast<std::uint8_t>(RelayCommandState::ON))) {
-
         const bool success = acknowledgement.success != 0U;
-
-        if (!success) {
-            ++relayCommandErrorCount;
-        }
-
+        if (!success) ++relayCommandErrorCount;
         (void)relayCommandDispatcher.completeCommand(acknowledgement.commandId, success);
     }
-
     xSemaphoreGive(stateMutex);
 }
 
@@ -1657,12 +1192,9 @@ void handleHardwareConfigurationAcknowledgement(
 
     if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
         PendingHardwareCommand* pending = findPendingHardwareCommand(acknowledgement.commandId);
-        if (pending != nullptr &&
-            pending->nodeMacAddress == originMac &&
-            pending->relayPin == acknowledgement.relayPin) {
+        if (pending != nullptr && pending->nodeMacAddress == originMac && pending->relayPin == acknowledgement.relayPin) {
             known = true;
             remove = pending->remove;
-
             if (acknowledgement.success != 0U && remove) {
                 (void)registry.removeLoad(originMac, acknowledgement.relayPin);
                 (void)centralLoadConfigurationStore.removeConfiguration(originMac, acknowledgement.relayPin);
@@ -1673,9 +1205,7 @@ void handleHardwareConfigurationAcknowledgement(
         xSemaphoreGive(stateMutex);
     }
 
-    if (!known) {
-        return;
-    }
+    if (!known) return;
 
     char target[18]{};
     formatMacAddressText(target, sizeof(target), originMac);
@@ -1685,17 +1215,12 @@ void handleHardwareConfigurationAcknowledgement(
         acknowledgement.commandId,
         remove ? "REMOVE_LOAD" : "CONFIGURE_LOAD",
         success ? AckStatus::APPLIED : AckStatus::FAILED,
-        success
-            ? "applied"
-            : hardwareConfigurationFailureText(
-                  static_cast<HardwareConfigurationFailureReason>(acknowledgement.failureReason)),
+        success ? "applied" : hardwareConfigurationFailureText(
+            static_cast<HardwareConfigurationFailureReason>(acknowledgement.failureReason)),
         target);
 
     if (success) {
-        mqttManager.publishEvent(
-            remove ? "LOAD_REMOVED" : "LOAD_CONFIGURED",
-            target,
-            nullptr);
+        mqttManager.publishEvent(remove ? "LOAD_REMOVED" : "LOAD_CONFIGURED", target, nullptr);
         xSemaphoreGive(optimizationTriggerSemaphore);
     }
 }
@@ -1706,16 +1231,10 @@ void handleCommissionAcknowledgement(
 {
     bool applied = false;
     if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
-        const NodeLifecycleState state =
-            static_cast<NodeLifecycleState>(acknowledgement.resultingState);
+        const NodeLifecycleState state = static_cast<NodeLifecycleState>(acknowledgement.resultingState);
         applied = commissioningRegistry.applyCommissionResult(
-            originMac,
-            acknowledgement.commandId,
-            acknowledgement.success != 0U,
-            state);
-        if (applied) {
-            (void)commissioningRegistry.persist();
-        }
+            originMac, acknowledgement.commandId, acknowledgement.success != 0U, state);
+        if (applied) (void)commissioningRegistry.persist();
         xSemaphoreGive(stateMutex);
     }
 
@@ -1738,9 +1257,7 @@ void handleIdentityReport(
     std::uint32_t nowMilliseconds)
 {
     if (report.role > static_cast<std::uint8_t>(NodeRole::SMART) ||
-        report.relayCapabilityCount > MAX_RELAY_GPIO_CAPABILITIES) {
-        return;
-    }
+        report.relayCapabilityCount > MAX_RELAY_GPIO_CAPABILITIES) return;
 
     NodeCommissioningRegistry::Diagnostics diagnostics{};
     diagnostics.freeHeapBytes = report.freeHeapBytes;
@@ -1754,9 +1271,7 @@ void handleIdentityReport(
     diagnostics.temperatureCelsius = report.temperatureCelsius;
     copyText(diagnostics.resetReason, report.resetReason);
 
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) {
-        return;
-    }
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) != pdTRUE) return;
 
     (void)commissioningRegistry.recordDiscovered(
         originMac,
@@ -1767,7 +1282,6 @@ void handleIdentityReport(
         report.relayCapabilityCount,
         nowMilliseconds);
     (void)commissioningRegistry.updateDiagnostics(originMac, diagnostics);
-
     xSemaphoreGive(stateMutex);
 }
 
@@ -1778,12 +1292,9 @@ void espNowCommunicationTask(void* parameter)
 
     while (true) {
         EspNowCommunication::ReceivedMessage received{};
-        if (!communication.receive(received, 500U)) {
-            continue;
-        }
+        if (!communication.receive(received, 500U)) continue;
 
-        const bool localDestination =
-            communication.isMessageForThisNode(received.message);
+        const bool localDestination = communication.isMessageForThisNode(received.message);
         const auto type = received.message.header.messageType;
         const Load::MacAddress originMac = received.message.header.originMacAddress;
 
@@ -1791,15 +1302,10 @@ void espNowCommunicationTask(void* parameter)
             Load::MacAddress nextHop{};
             bool found = false;
             if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(200U)) == pdTRUE) {
-                found = findNextHopFromCentral(
-                    localMac,
-                    received.message.header.destinationMacAddress,
-                    nextHop);
+                found = findNextHopFromCentral(localMac, received.message.header.destinationMacAddress, nextHop);
                 xSemaphoreGive(stateMutex);
             }
-            if (found) {
-                (void)communication.forwardMessageTo(nextHop, received.message);
-            }
+            if (found) (void)communication.forwardMessageTo(nextHop, received.message);
             continue;
         }
 
@@ -1813,18 +1319,13 @@ void espNowCommunicationTask(void* parameter)
                 registry.applyNodeReport(
                     report,
                     static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())));
-                if (accepted) {
-                    /* Persisted Central user settings override unrelated report refreshes. */
-                    const auto* node = registry.findNodeByMacAddress(originMac);
-                    if (node != nullptr) {
-                        for (std::size_t i = 0U; i < node->node.getNumberOfLoads(); ++i) {
-                            const Load* load = node->node.getLoad(i);
-                            if (load == nullptr) continue;
-                            Load* mutableLoad = registry.findMutableLoad(originMac, load->getRelayPin());
-                            if (mutableLoad != nullptr) {
-                                (void)centralLoadConfigurationStore.applyToLoad(*mutableLoad);
-                            }
-                        }
+                const auto* node = registry.findNodeByMacAddress(originMac);
+                if (node != nullptr) {
+                    for (std::size_t i = 0U; i < node->node.getNumberOfLoads(); ++i) {
+                        const Load* load = node->node.getLoad(i);
+                        if (load == nullptr) continue;
+                        Load* mutableLoad = registry.findMutableLoad(originMac, load->getRelayPin());
+                        if (mutableLoad != nullptr) (void)centralLoadConfigurationStore.applyToLoad(*mutableLoad);
                     }
                 }
                 xSemaphoreGive(stateMutex);
@@ -1839,10 +1340,7 @@ void espNowCommunicationTask(void* parameter)
                 originMac,
                 EspNowCommunication::MessageType::NODE_REPORT_ACK,
                 acknowledgement);
-
-            if (accepted) {
-                xSemaphoreGive(optimizationTriggerSemaphore);
-            }
+            if (accepted) xSemaphoreGive(optimizationTriggerSemaphore);
             continue;
         }
 
@@ -1912,30 +1410,16 @@ void espNowCommunicationTask(void* parameter)
     }
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* Command handlers                                                          */
-/* ------------------------------------------------------------------------- */
-
 CommandResult handleLoadCommand(void* context, const LoadCommandRequest& request)
 {
     (void)context;
-
     if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
         return commandResult(false, false, "state is busy");
     }
 
-    Load* load =
-        registry.findMutableLoad(
-            request.nodeMacAddress,
-            request.relayPin);
-
-    const Load::MacAddress localMac =
-        communication.getLocalMacAddress();
-
-    const bool validOwner =
-        request.nodeMacAddress == localMac ||
-        isCommissionedSmartNode(request.nodeMacAddress);
+    Load* load = registry.findMutableLoad(request.nodeMacAddress, request.relayPin);
+    const Load::MacAddress localMac = communication.getLocalMacAddress();
+    const bool validOwner = request.nodeMacAddress == localMac || isCommissionedSmartNode(request.nodeMacAddress);
 
     if (load == nullptr || !validOwner) {
         xSemaphoreGive(stateMutex);
@@ -1946,26 +1430,13 @@ CommandResult handleLoadCommand(void* context, const LoadCommandRequest& request
     LoadMode::Value mode = load->getMode();
     AutoSchedule schedule = load->getSchedule();
 
-    if (request.hasPriority) {
-        priority = request.priority;
-    }
-    if (request.hasMode) {
-        mode = request.mode;
-    }
-    if (request.hasSchedule) {
-        schedule = request.schedule;
-    }
-
-    if (mode == LoadMode::Fixed::ON || mode == LoadMode::Fixed::OFF) {
-        schedule = AutoSchedule{false, 0U, 0U};
-    }
+    if (request.hasPriority) priority = request.priority;
+    if (request.hasMode) mode = request.mode;
+    if (request.hasSchedule) schedule = request.schedule;
+    if (mode == LoadMode::Fixed::ON || mode == LoadMode::Fixed::OFF) schedule = AutoSchedule{false, 0U, 0U};
 
     LoadConfigurationStore::ConfigurationEntry entry{
-        request.nodeMacAddress,
-        request.relayPin,
-        priority,
-        mode,
-        schedule};
+        request.nodeMacAddress, request.relayPin, priority, mode, schedule};
 
     const bool saved =
         centralLoadConfigurationStore.setConfiguration(entry) &&
@@ -1973,11 +1444,7 @@ CommandResult handleLoadCommand(void* context, const LoadCommandRequest& request
         centralLoadConfigurationStore.persist();
 
     xSemaphoreGive(stateMutex);
-
-    if (!saved) {
-        return commandResult(false, false, "could not save Load settings");
-    }
-
+    if (!saved) return commandResult(false, false, "could not save Load settings");
     xSemaphoreGive(optimizationTriggerSemaphore);
     return commandResult(true, true, "applied");
 }
@@ -1995,12 +1462,8 @@ CommandResult handleSystemCommand(
 
     if (request.action == SystemCommandAction::REPORT_OPTIMIZER_INTERVAL) {
         char text[96]{};
-        std::snprintf(
-            text,
-            sizeof(text),
-            "optimizer interval is %lu seconds",
+        std::snprintf(text, sizeof(text), "optimizer interval is %lu seconds",
             static_cast<unsigned long>(getOptimizerIntervalSeconds()));
-
         return commandResult(true, true, text);
     }
 
@@ -2008,29 +1471,20 @@ CommandResult handleSystemCommand(
         if (!request.hasOptimizerIntervalSeconds ||
             !isValidOptimizerIntervalSeconds(request.optimizerIntervalSeconds)) {
             char text[128]{};
-            std::snprintf(
-                text,
-                sizeof(text),
-                "optimizer interval must be %lu..%lu seconds",
+            std::snprintf(text, sizeof(text), "optimizer interval must be %lu..%lu seconds",
                 static_cast<unsigned long>(optimizerMinIntervalSeconds()),
                 static_cast<unsigned long>(optimizerMaxIntervalSeconds()));
-
             return commandResult(false, false, text);
         }
 
         if (!saveOptimizerIntervalSeconds(request.optimizerIntervalSeconds)) {
             return commandResult(false, false, "could not save optimizer interval");
         }
-
         xSemaphoreGive(optimizationTriggerSemaphore);
 
         char text[96]{};
-        std::snprintf(
-            text,
-            sizeof(text),
-            "optimizer interval set to %lu seconds",
+        std::snprintf(text, sizeof(text), "optimizer interval set to %lu seconds",
             static_cast<unsigned long>(request.optimizerIntervalSeconds));
-
         return commandResult(true, true, text);
     }
 
@@ -2044,11 +1498,8 @@ CommandResult handleSystemCommand(
             std::strcmp(request.confirmText, "FACTORY_RESET_CONFIRMED") != 0) {
             return commandResult(false, false, "reset confirmation required");
         }
-
         const esp_err_t erased = nvs_flash_erase();
-        if (erased != ESP_OK) {
-            return commandResult(false, false, "Central NVS erase failed");
-        }
+        if (erased != ESP_OK) return commandResult(false, false, "Central NVS erase failed");
         (void)nvs_flash_init();
         vTaskDelay(pdMS_TO_TICKS(100U));
         esp_restart();
@@ -2056,36 +1507,25 @@ CommandResult handleSystemCommand(
     }
 
     if (request.action == SystemCommandAction::FACTORY_RESET_NODE) {
-        if (!request.hasTargetNodeMacAddress) {
-            return commandResult(false, false, "targetNodeMac required");
-        }
+        if (!request.hasTargetNodeMacAddress) return commandResult(false, false, "targetNodeMac required");
 
         Load::MacAddress nextHop{};
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-        const bool routeFound =
-            routeToSmartNode(request.targetNodeMacAddress, nextHop);
+        const bool routeFound = routeToSmartNode(request.targetNodeMacAddress, nextHop);
         xSemaphoreGive(stateMutex);
-
-        if (!routeFound) {
-            return commandResult(false, false, "no ESP-NOW route to target Node");
-        }
+        if (!routeFound) return commandResult(false, false, "no ESP-NOW route to target Node");
 
         FactoryResetCommandPacket packet{};
         packet.commandId = request.commandId;
         packet.confirmToken = FACTORY_RESET_CONFIRM_TOKEN;
-
         const bool sent = communication.sendTo(
             nextHop,
             request.targetNodeMacAddress,
             EspNowCommunication::MessageType::FACTORY_RESET_COMMAND,
             packet);
-
-        return commandResult(
-            sent,
-            false,
-            sent ? "factory reset dispatched" : "ESP-NOW send failed");
+        return commandResult(sent, false, sent ? "factory reset dispatched" : "ESP-NOW send failed");
     }
 
     return commandResult(false, false, "unsupported system command");
@@ -2113,7 +1553,6 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
         if (!CentralConfigurationStore::isValidBatterySensor(configuration)) {
             xSemaphoreGive(stateMutex);
             return commandResult(false, false, "invalid battery monitor configuration");
@@ -2125,24 +1564,22 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
             centralConfigurationStore.persist();
 
         bool monitorReady = false;
-        if (stored) {
+        if (stored && centralConfigurationStore.getConfiguration().powerPlanning.configured) {
             monitorReady = applyBatteryConfiguration(configuration, previous.configured);
             batteryReadingValid = false;
         }
-
         xSemaphoreGive(stateMutex);
 
-        if (!stored) {
-            return commandResult(false, false, "could not persist battery monitor configuration");
-        }
-
+        if (!stored) return commandResult(false, false, "could not persist battery monitor configuration");
         xSemaphoreGive(optimizationTriggerSemaphore);
+
+        if (!centralConfigurationStore.getConfiguration().powerPlanning.configured) {
+            return commandResult(true, true, "battery monitor saved; configure power planning to initialize battery state");
+        }
         return commandResult(
             true,
             true,
-            monitorReady
-                ? "battery monitor configured"
-                : "configuration saved; INA219 is not currently responding");
+            monitorReady ? "battery monitor configured" : "configuration saved; INA219 is not currently responding");
     }
 
     if (request.action == ConfigCommandAction::COMMISSION_NODE ||
@@ -2155,17 +1592,11 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
         const bool known = commissioningRegistry.findByMac(request.nodeMacAddress) != nullptr;
         const bool routeFound = routeToSmartNode(request.nodeMacAddress, nextHop);
         const bool accepted = known && routeFound && commissioningRegistry.requestCommissioning(
-            request.nodeMacAddress,
-            request.friendlyName,
-            request.commandId);
-
-        if (accepted) {
-            (void)commissioningRegistry.persist();
-        }
+            request.nodeMacAddress, request.friendlyName, request.commandId);
+        if (accepted) (void)commissioningRegistry.persist();
         xSemaphoreGive(stateMutex);
 
         if (!accepted) {
@@ -2184,15 +1615,12 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
     }
 
     if (request.action == ConfigCommandAction::DECOMMISSION_NODE) {
-        if (request.nodeMacAddress == localMac) {
-            return commandResult(false, false, "Central cannot decommission itself");
-        }
+        if (request.nodeMacAddress == localMac) return commandResult(false, false, "Central cannot decommission itself");
 
         Load::MacAddress nextHop{};
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
         const bool routeFound = routeToSmartNode(request.nodeMacAddress, nextHop);
         const bool decommissioned = commissioningRegistry.decommission(request.nodeMacAddress);
         if (decommissioned) {
@@ -2201,9 +1629,7 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         }
         xSemaphoreGive(stateMutex);
 
-        if (!decommissioned) {
-            return commandResult(false, false, "unknown Node or invalid lifecycle transition");
-        }
+        if (!decommissioned) return commandResult(false, false, "unknown Node or invalid lifecycle transition");
 
         if (routeFound) {
             DecommissionCommandPacket packet{};
@@ -2214,25 +1640,14 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
                 EspNowCommunication::MessageType::DECOMMISSION_COMMAND,
                 packet);
         }
-
         xSemaphoreGive(optimizationTriggerSemaphore);
         return commandResult(true, !routeFound, routeFound ? "decommission dispatched" : "decommissioned at Central; Node is offline");
     }
 
     if (request.action == ConfigCommandAction::CONFIGURE_LOAD) {
-        if (!request.hasLoadConfiguration) {
-            return commandResult(false, false, "loadConfiguration required");
-        }
+        if (!request.hasLoadConfiguration) return commandResult(false, false, "loadConfiguration required");
 
         if (request.nodeMacAddress == localMac) {
-            /*
-             * Central is also a physical Node (see configureLocalHardware()
-             * above) and owns Loads through the exact same
-             * NodeLoadHardwareStore/LoadConfiguration model a Smart Node
-             * uses locally in applyConfigureLoadCommand() — there is one
-             * Load model; only the dispatch path (local GPIO here vs.
-             * ESP-NOW below) differs.
-             */
             NodeLoadHardwareStore::LoadConfiguration configuration{};
             copyText(configuration.name, request.loadName);
             configuration.relayPin = request.relayPin;
@@ -2243,33 +1658,22 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
             configuration.priority = request.priority;
             configuration.schedule = request.schedule;
 
-            HardwareConfigurationFailureReason reason =
-                HardwareConfigurationFailureReason::NONE;
-
+            HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
             if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
                 return commandResult(false, false, "state is busy");
             }
 
             const bool configured = centralLoadHardwareStore.configureNewLoad(
                 configuration, relays, centralNode, reason);
-
             if (configured) {
                 registry.addLocalCentralNode(
                     CentralNodeConfig::CENTRAL_NODE_NAME,
                     centralNode,
-                    static_cast<std::uint32_t>(
-                        pdTICKS_TO_MS(xTaskGetTickCount())));
+                    static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())));
             }
-
             xSemaphoreGive(stateMutex);
 
-            if (!configured) {
-                return commandResult(
-                    false,
-                    false,
-                    hardwareConfigurationFailureText(reason));
-            }
-
+            if (!configured) return commandResult(false, false, hardwareConfigurationFailureText(reason));
             xSemaphoreGive(optimizationTriggerSemaphore);
             return commandResult(true, true, "Central Load configured");
         }
@@ -2278,15 +1682,12 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
         const bool allowed = isCommissionedSmartNode(request.nodeMacAddress);
         const bool routeFound = allowed && routeToSmartNode(request.nodeMacAddress, nextHop);
         xSemaphoreGive(stateMutex);
 
         if (!allowed || !routeFound) {
-            return commandResult(
-                false,
-                false,
+            return commandResult(false, false,
                 allowed ? "no ESP-NOW route to Smart Node" : "Smart Node is not commissioned");
         }
 
@@ -2308,27 +1709,23 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
             request.nodeMacAddress,
             EspNowCommunication::MessageType::CONFIGURE_LOAD_COMMAND,
             packet);
-
-        return commandResult(
-            sent,
-            false,
-            sent ? "configuration dispatched" : "ESP-NOW send failed");
+        return commandResult(sent, false, sent ? "configuration dispatched" : "ESP-NOW send failed");
     }
 
-    if (request.action == ConfigCommandAction::CONFIGURE_POWER_LIMITS) {
-        if (!request.hasPowerLimitsConfiguration || request.nodeMacAddress != localMac) {
-            return commandResult(false, false, "power limits configuration targets Central only");
+    if (request.action == ConfigCommandAction::CONFIGURE_POWER_PLANNING) {
+        if (!request.hasPowerPlanningConfiguration || request.nodeMacAddress != localMac) {
+            return commandResult(false, false, "power planning configuration targets Central only");
         }
 
-        const CentralConfigurationStore::PowerLimitsConfiguration configuration{
+        const CentralConfigurationStore::PowerPlanningConfiguration configuration{
             true,
+            request.P_budget,
+            request.P_reserve,
             request.minimumStateOfChargePercent,
-            request.maximumBatteryDischargeCurrentAmps,
-            request.maximumMainCurrentAmps,
             request.requiredRuntimeHours};
 
-        if (!CentralConfigurationStore::isValidPowerLimits(configuration)) {
-            return commandResult(false, false, "invalid power limits configuration");
+        if (!CentralConfigurationStore::isValidPowerPlanning(configuration)) {
+            return commandResult(false, false, "invalid power planning configuration");
         }
 
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
@@ -2336,75 +1733,45 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         }
 
         const bool stored =
-            centralConfigurationStore.setPowerLimits(configuration) &&
+            centralConfigurationStore.setPowerPlanning(configuration) &&
             centralConfigurationStore.persist();
 
-        bool monitorReady = false;
         if (stored) {
-            const auto& existingBattery =
-                centralConfigurationStore.getConfiguration().batterySensor;
-
-            if (existingBattery.configured) {
-                monitorReady = applyBatteryConfiguration(existingBattery, true);
+            const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
+            if (battery.configured) {
+                (void)applyBatteryConfiguration(battery, true);
                 batteryReadingValid = false;
             }
         }
-
         xSemaphoreGive(stateMutex);
 
-        if (!stored) {
-            return commandResult(false, false, "could not persist power limits configuration");
-        }
-
+        if (!stored) return commandResult(false, false, "could not persist power planning configuration");
         xSemaphoreGive(optimizationTriggerSemaphore);
-        return commandResult(
-            true,
-            true,
-            monitorReady || !centralConfigurationStore.getConfiguration().batterySensor.configured
-                ? "power limits configured"
-                : "power limits saved; INA219 is not currently responding");
+        return commandResult(true, true, "power planning configured");
     }
 
     if (request.action == ConfigCommandAction::REMOVE_LOAD) {
-        if (!request.hasRelayPin) {
-            return commandResult(false, false, "relayPin required");
-        }
+        if (!request.hasRelayPin) return commandResult(false, false, "relayPin required");
 
         if (request.nodeMacAddress == localMac) {
-            HardwareConfigurationFailureReason reason =
-                HardwareConfigurationFailureReason::NONE;
-
+            HardwareConfigurationFailureReason reason = HardwareConfigurationFailureReason::NONE;
             if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
                 return commandResult(false, false, "state is busy");
             }
-
-            const bool removed =
-                centralLoadHardwareStore.removeLoad(
-                    request.relayPin,
-                    relays,
-                    centralNode,
-                    reason);
+            const bool removed = centralLoadHardwareStore.removeLoad(
+                request.relayPin, relays, centralNode, reason);
 
             if (removed) {
                 (void)centralLoadConfigurationStore.removeConfiguration(localMac, request.relayPin);
                 (void)centralLoadConfigurationStore.persist();
-
                 registry.addLocalCentralNode(
                     CentralNodeConfig::CENTRAL_NODE_NAME,
                     centralNode,
-                    static_cast<std::uint32_t>(
-                        pdTICKS_TO_MS(xTaskGetTickCount())));
+                    static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount())));
             }
-
             xSemaphoreGive(stateMutex);
 
-            if (!removed) {
-                return commandResult(
-                    false,
-                    false,
-                    hardwareConfigurationFailureText(reason));
-            }
-
+            if (!removed) return commandResult(false, false, hardwareConfigurationFailureText(reason));
             xSemaphoreGive(optimizationTriggerSemaphore);
             return commandResult(true, true, "Central Load removed");
         }
@@ -2413,70 +1780,36 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
-        const bool allowed =
-            isCommissionedSmartNode(request.nodeMacAddress);
-
-        const bool routeFound =
-            allowed &&
-            routeToSmartNode(
-                request.nodeMacAddress,
-                nextHop);
-
+        const bool allowed = isCommissionedSmartNode(request.nodeMacAddress);
+        const bool routeFound = allowed && routeToSmartNode(request.nodeMacAddress, nextHop);
         xSemaphoreGive(stateMutex);
 
         if (!allowed || !routeFound) {
-            return commandResult(
-                false,
-                false,
-                allowed
-                    ? "no ESP-NOW route to Smart Node"
-                    : "Smart Node is not commissioned");
+            return commandResult(false, false,
+                allowed ? "no ESP-NOW route to Smart Node" : "Smart Node is not commissioned");
         }
 
         RemoveLoadCommandPacket packet{};
         packet.commandId = request.commandId;
         packet.relayPin = request.relayPin;
+        const bool sent = communication.sendTo(
+            nextHop,
+            request.nodeMacAddress,
+            EspNowCommunication::MessageType::CONFIGURE_LOAD_COMMAND,
+            packet);
 
-        const bool sent =
-            communication.sendTo(
-                nextHop,
-                request.nodeMacAddress,
-                EspNowCommunication::MessageType::CONFIGURE_LOAD_COMMAND,
-                packet);
-
-        if (sent &&
-            xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
-
-            pendingHardwareCommands.push_back(
-                PendingHardwareCommand{
-                    request.commandId,
-                    request.nodeMacAddress,
-                    request.relayPin,
-                    true});
-
+        if (sent && xSemaphoreTake(stateMutex, pdMS_TO_TICKS(250U)) == pdTRUE) {
+            pendingHardwareCommands.push_back(PendingHardwareCommand{
+                request.commandId, request.nodeMacAddress, request.relayPin, true});
             xSemaphoreGive(stateMutex);
         }
-
-        return commandResult(
-            sent,
-            false,
-            sent
-                ? "remove dispatched; awaiting Smart Node confirmation"
-                : "ESP-NOW send failed");
+        return commandResult(sent, false,
+            sent ? "remove dispatched; awaiting Smart Node confirmation" : "ESP-NOW send failed");
     }
 
     return commandResult(false, false, "unsupported configuration command");
 }
 
-/**
- * Shared by Console (`simulation ...`) and MQTT (commands/simulation): the
- * ONLY thing either transport does is call the SAME PowerManager simulation
- * API already used by sensorAcquisitionTask - enableSimulation() switches
- * which measurement path updateMeasurements() reads from, and
- * setSimulatedMeasurements() feeds that path its next value. No second
- * engine, no second PowerManager.
- */
 CommandResult handleSimulationCommand(void* context, const SimulationCommandRequest& request)
 {
     (void)context;
@@ -2485,112 +1818,40 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
-        const bool enabled = batteryMonitor.enableSimulation(true);
-        bool monitorReady = false;
-
-        if (enabled) {
-            batteryReadingValid = false;
-
-            /*
-             * Selecting simulation is self-sufficient by construction, not
-             * by defaulting anything: applyBatteryConfiguration() and
-             * PowerManager::initialize() both skip requiring sensor/battery
-             * configuration while simulationEnabled_ is true (enabled just
-             * above), so this succeeds even starting from a completely
-             * blank configuration - no battery configure/limits required
-             * first, and nothing invented.
-             */
-            const auto& configuration =
-                centralConfigurationStore.getConfiguration();
-
-            monitorReady = applyBatteryConfiguration(
-                configuration.batterySensor,
-                true);
-        }
-
+        const bool ok = batteryMonitor.enableSimulation(true);
+        batteryReadingValid = false;
         xSemaphoreGive(stateMutex);
-
-        if (!enabled) {
-            return commandResult(false, false, "simulation could not start");
-        }
-
-        /*
-         * Without this, measurementSource/state wouldn't reach MQTT
-         * subscribers until the next periodic publish (watchdogTask, up
-         * to WATCHDOG_PERIOD_MILLISECONDS later) - see SET_VALUES below,
-         * which already wakes the optimizer early for the same reason.
-         */
-        xSemaphoreGive(optimizationTriggerSemaphore);
-
-        return commandResult(
-            true,
-            monitorReady,
-            monitorReady
-                ? "simulation enabled; battery monitor ready"
-                : "simulation enabled; battery monitor configuration invalid");
+        if (ok) xSemaphoreGive(optimizationTriggerSemaphore);
+        return commandResult(ok, ok, ok ? "simulation input enabled" : "simulation could not start");
     }
 
     if (request.action == SimulationCommandAction::DISABLE) {
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
         const bool ok = batteryMonitor.enableSimulation(false);
-        bool monitorReady = false;
-
+        batteryReadingValid = false;
         if (ok) {
-            batteryReadingValid = false;
-
-            /*
-             * Hardware mode genuinely needs real, installer-entered sensor
-             * and battery values (see applyBatteryConfiguration()) - unlike
-             * simulation, nothing is skipped here. If they haven't been set
-             * yet, this correctly reports "not configured" below rather
-             * than inventing a shunt/capacity/voltage that would silently
-             * misreport a real installation's actual battery.
-             */
-            const auto& configuration =
-                centralConfigurationStore.getConfiguration();
-
-            monitorReady = applyBatteryConfiguration(
-                configuration.batterySensor,
-                true);
+            const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
+            if (battery.configured && centralConfigurationStore.getConfiguration().powerPlanning.configured) {
+                (void)applyBatteryConfiguration(battery, true);
+            }
         }
-
         xSemaphoreGive(stateMutex);
-
-        if (!ok) {
-            return commandResult(false, false, "hardware mode could not be restored");
-        }
-
-        xSemaphoreGive(optimizationTriggerSemaphore);
-
-        const bool batterySensorConfigured =
-            centralConfigurationStore.getConfiguration().batterySensor.configured;
-
-        return commandResult(
-            true,
-            monitorReady,
-            monitorReady
-                ? "hardware battery input enabled; battery monitor ready"
-                : (batterySensorConfigured
-                       ? "hardware battery input enabled; INA219 is not currently responding"
-                       : "hardware battery input enabled; run battery configure/battery limits with this installation's real values first"));
+        if (ok) xSemaphoreGive(optimizationTriggerSemaphore);
+        return commandResult(ok, ok, ok ? "INA219 input selected" : "hardware input could not be selected");
     }
 
     if (request.action == SimulationCommandAction::SET_VALUES) {
-        if (!request.hasElectricalMeasurements &&
-            !request.hasStateOfChargePercent) {
+        if (!request.hasElectricalMeasurements && !request.hasStateOfChargePercent) {
             return commandResult(false, false, "simulation values required");
         }
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-
         if (!batteryMonitor.isSimulationEnabled()) {
             xSemaphoreGive(stateMutex);
-            return commandResult(false, false, "enable simulation before setting simulation values");
+            return commandResult(false, false, "enable simulation before setting values");
         }
 
         bool ok = true;
@@ -2599,12 +1860,9 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
                 request.batteryVoltageVolts,
                 request.batteryCurrentAmps);
         }
-
         if (ok && request.hasStateOfChargePercent) {
-            ok = batteryMonitor.setSimulatedStateOfChargePercent(
-                request.stateOfChargePercent);
+            ok = batteryMonitor.setSimulatedStateOfChargePercent(request.stateOfChargePercent);
         }
-
         if (ok && request.hasElectricalMeasurements) {
             ok = batteryMonitor.updateMeasurements();
             if (ok) {
@@ -2615,24 +1873,14 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
             }
         }
         xSemaphoreGive(stateMutex);
-
-        if (ok) {
-            xSemaphoreGive(optimizationTriggerSemaphore);
-        }
-        return commandResult(ok, ok, ok ? "simulated battery values applied" : "invalid simulated battery values");
+        if (ok) xSemaphoreGive(optimizationTriggerSemaphore);
+        return commandResult(ok, ok, ok ? "simulation values applied" : "invalid simulation values");
     }
 
     return commandResult(false, false, "unsupported simulation command");
 }
 
-
-/* ------------------------------------------------------------------------- */
-/* Console adapters and views                                                */
-/* ------------------------------------------------------------------------- */
-
-CommandResult consoleConfigureBattery(
-    void*,
-    const BatterySensorCommandRequest& request)
+CommandResult consoleConfigureBattery(void*, const BatterySensorCommandRequest& request)
 {
     ConfigCommandRequest command{};
     command.commandId = allocateConsoleCommandId();
@@ -2650,18 +1898,16 @@ CommandResult consoleConfigureBattery(
     return commandResult(result.accepted, result.completed, result.reason);
 }
 
-CommandResult consoleConfigurePowerLimits(
-    void*,
-    const PowerLimitsCommandRequest& request)
+CommandResult consoleConfigurePowerPlanning(void*, const PowerPlanningCommandRequest& request)
 {
     ConfigCommandRequest command{};
     command.commandId = allocateConsoleCommandId();
-    command.action = ConfigCommandAction::CONFIGURE_POWER_LIMITS;
+    command.action = ConfigCommandAction::CONFIGURE_POWER_PLANNING;
     command.nodeMacAddress = communication.getLocalMacAddress();
-    command.hasPowerLimitsConfiguration = true;
+    command.hasPowerPlanningConfiguration = true;
+    command.P_budget = request.P_budget;
+    command.P_reserve = request.P_reserve;
     command.minimumStateOfChargePercent = request.minimumStateOfChargePercent;
-    command.maximumBatteryDischargeCurrentAmps = request.maximumBatteryDischargeCurrentAmps;
-    command.maximumMainCurrentAmps = request.maximumMainCurrentAmps;
     command.requiredRuntimeHours = request.requiredRuntimeHours;
 
     const CommandResult result = handleConfigCommand(nullptr, command);
@@ -2688,19 +1934,12 @@ CommandResult consoleNodeCommand(void*, const NodeCommandRequest& request)
     return commandResult(result.accepted, result.completed, result.reason);
 }
 
-/**
- * Console's `load set` is the SAME LoadCommandRequest MQTT's commands/load
- * topic builds — see SystemCommandModel.h — so this is a pass-through to
- * the one shared handler, exactly like consoleSystem() below.
- */
 CommandResult consoleLoadCommand(void*, const LoadCommandRequest& request)
 {
     return handleLoadCommand(nullptr, request);
 }
 
-CommandResult consoleConfigureLoad(
-    void*,
-    const LoadConfigurationCommandRequest& request)
+CommandResult consoleConfigureLoad(void*, const LoadConfigurationCommandRequest& request)
 {
     ConfigCommandRequest command{};
     command.commandId = allocateConsoleCommandId();
@@ -2733,18 +1972,8 @@ CommandResult consoleRemoveLoad(void*, const RemoveLoadCommandRequest& request)
     return commandResult(result.accepted, result.completed, result.reason);
 }
 
-CommandResult consoleSystem(
-    void*,
-    const SystemCommandRequest& request)
+CommandResult consoleSystem(void*, const SystemCommandRequest& request)
 {
-    /*
-     * CentralConsole already required explicit confirm=RESET before invoking
-     * this callback for the factory-reset actions (Central or Node; a plain
-     * reboot needs no confirmation), and built request as the exact same
-     * SystemCommandRequest MQTT's parser builds — so every system action runs
-     * through the one shared handler instead of a second, independently
-     * maintained implementation.
-     */
     return handleSystemCommand(nullptr, request);
 }
 
@@ -2756,8 +1985,7 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
             std::printf("Configured : %s\n", wifiCredentialsStore.isConfigured() ? "YES" : "NO");
             std::printf("State      : %s\n", wifiStateText(wifiManager.getState()));
             std::printf("Channel    : %u\n", static_cast<unsigned int>(wifiManager.getConnectedChannel()));
-            std::printf("Radio Ch.  : %u\n",
-                         static_cast<unsigned int>(communication.getChannel()));
+            std::printf("Radio Ch.  : %u\n", static_cast<unsigned int>(communication.getChannel()));
             return commandResult(true, true, "status printed");
         }
         if (request.action == NetworkCommandRequest::Action::SCAN) {
@@ -2770,27 +1998,18 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
         }
         if (request.action == NetworkCommandRequest::Action::SET) {
             const bool ok = wifiCredentialsStore.save(request.ssid, request.wifiPassword);
-            if (!ok) {
-                return commandResult(false, false, "Wi-Fi credentials rejected");
-            }
+            if (!ok) return commandResult(false, false, "Wi-Fi credentials rejected");
 
-            /*
-             * Auto-detect the Access Point's actual channel instead of
-             * requiring the installer to read it off 'wifi scan' and type
-             * it separately via 'wifi channel N' - the common case (the
-             * SSID is in range right now) needs only this one command.
-             */
             std::uint8_t discoveredChannel = 0U;
             if (wifiManager.findChannelForSsid(request.ssid, discoveredChannel) &&
                 radioChannelStore.save(discoveredChannel)) {
                 char text[80];
                 std::snprintf(text, sizeof(text), "Wi-Fi saved on channel %u; restart Central to apply",
-                              static_cast<unsigned int>(discoveredChannel));
+                    static_cast<unsigned int>(discoveredChannel));
                 return commandResult(true, true, text);
             }
             return commandResult(true, true,
-                "Wi-Fi saved; restart Central to apply (SSID not currently in range - "
-                "set the radio channel manually with 'wifi channel N' if it still mismatches)");
+                "Wi-Fi saved; restart Central to apply (SSID not currently in range - set the radio channel manually if it still mismatches)");
         }
         if (request.action == NetworkCommandRequest::Action::SET_CHANNEL) {
             const bool ok = radioChannelStore.save(request.wifiChannel);
@@ -2799,7 +2018,8 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
         }
         if (request.action == NetworkCommandRequest::Action::CLEAR) {
             const bool ok = wifiCredentialsStore.clear();
-            return commandResult(ok, ok, ok ? "Wi-Fi credentials cleared; restart Central" : "Wi-Fi credentials could not be cleared");
+            return commandResult(ok, ok,
+                ok ? "Wi-Fi credentials cleared; restart Central" : "Wi-Fi credentials could not be cleared");
         }
     }
 
@@ -2807,8 +2027,8 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
         std::printf("MQTT\n");
         std::printf("Configured : %s\n", mqttCredentialsStore.isConfigured() ? "YES" : "NO");
         std::printf("State      : %s\n",
-                    mqttManager.getState() == MqttConnectionState::CONNECTED ? "CONNECTED" :
-                    (mqttManager.getState() == MqttConnectionState::CONNECTING ? "CONNECTING" : "DISCONNECTED"));
+            mqttManager.getState() == MqttConnectionState::CONNECTED ? "CONNECTED" :
+            (mqttManager.getState() == MqttConnectionState::CONNECTING ? "CONNECTING" : "DISCONNECTED"));
         return commandResult(true, true, "status printed");
     }
     if (request.action == NetworkCommandRequest::Action::SET) {
@@ -2828,15 +2048,14 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
     if (request.action == NetworkCommandRequest::Action::CLEAR) {
         const bool ok = mqttCredentialsStore.clear();
         if (ok) mqttStarted = false;
-        return commandResult(ok, ok, ok ? "MQTT credentials cleared; restart Central" : "MQTT credentials could not be cleared");
+        return commandResult(ok, ok,
+            ok ? "MQTT credentials cleared; restart Central" : "MQTT credentials could not be cleared");
     }
 
     return commandResult(false, false, "unsupported network command");
 }
 
-CommandResult consoleSimulation(
-    void*,
-    const SimulationCommandRequest& request)
+CommandResult consoleSimulation(void*, const SimulationCommandRequest& request)
 {
     return handleSimulationCommand(nullptr, request);
 }
@@ -2861,13 +2080,12 @@ void consoleStatus(void*)
         return;
     }
 
-    const std::uint32_t now =
-        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
+    const std::uint32_t now = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
     std::size_t onlineSmartNodes = 0U;
     std::size_t totalSmartNodes = 0U;
     for (std::size_t i = 0U; i < registry.getNumberOfNodes(); ++i) {
         const auto* node = registry.getNode(i);
-        if (node == nullptr) continue;
+        if (node == nullptr || node->isCentralNode) continue;
         ++totalSmartNodes;
         if (isNodeOnline(*node, now)) ++onlineSmartNodes;
     }
@@ -2876,12 +2094,15 @@ void consoleStatus(void*)
     std::printf("Wi-Fi       : %s\n", wifiStateText(wifiManager.getState()));
     std::printf("MQTT        : %s\n", mqttManager.isConnected() ? "CONNECTED" : "DISCONNECTED");
     std::printf("Smart Nodes : %u / %u online\n",
-                static_cast<unsigned int>(onlineSmartNodes),
-                static_cast<unsigned int>(totalSmartNodes));
+        static_cast<unsigned int>(onlineSmartNodes),
+        static_cast<unsigned int>(totalSmartNodes));
     std::printf("Battery     : %s\n", batteryTelemetryIsFresh(now) ? "AVAILABLE" : "NOT AVAILABLE");
-    std::printf("Available power passed to Best-First: %s\n", latestPlanningSnapshot.budgetValid ? "AVAILABLE" : "NOT AVAILABLE");
+    std::printf("Power plan  : %s\n", latestPlanningSnapshot.budgetValid ? "AVAILABLE" : "NOT AVAILABLE");
+    if (latestPlanningSnapshot.budgetValid) {
+        std::printf("P_auto_available: %.2f W\n",
+            static_cast<double>(latestPlanningSnapshot.budget.P_auto_available));
+    }
     std::printf("Control errors: %u\n", static_cast<unsigned int>(relayCommandErrorCount));
-
     xSemaphoreGive(stateMutex);
 }
 
@@ -2892,19 +2113,23 @@ void consoleBatteryStatus(void*)
         return;
     }
 
-    const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
+    const auto& configuration = centralConfigurationStore.getConfiguration();
+    const auto& battery = configuration.batterySensor;
+    const auto& planning = configuration.powerPlanning;
+
     std::printf("BATTERY MONITOR\n");
     std::printf("Configuration      : %s\n", battery.configured ? "CONFIGURED" : "NOT CONFIGURED");
     std::printf("Measurement source : %s\n", measurementSourceText(batteryMonitor.getMeasurementSource()));
     if (batteryReadingValid) {
         std::printf("Voltage            : %.3f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
         std::printf("Current            : %.3f A\n", static_cast<double>(latestBatteryMeasurements.currentAmps));
-        std::printf("Power              : %.3f W\n", static_cast<double>(latestBatteryMeasurements.powerWatts));
+        std::printf("P_measured         : %.3f W\n", static_cast<double>(latestBatteryMeasurements.powerWatts));
     } else {
         std::printf("Voltage            : --\n");
         std::printf("Current            : --\n");
-        std::printf("Power              : --\n");
+        std::printf("P_measured         : --\n");
     }
+
     if (batteryMonitor.isStateOfChargeValid()) {
         std::printf("State of Charge    : %.2f %%\n", static_cast<double>(batteryMonitor.getStateOfChargePercent()));
         std::printf("SoC source         : %s\n", stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource()));
@@ -2913,31 +2138,19 @@ void consoleBatteryStatus(void*)
         std::printf("SoC source         : UNKNOWN\n");
     }
 
-    const auto& powerLimits = centralConfigurationStore.getConfiguration().powerLimits;
-    std::printf("Power limits       : %s\n", powerLimits.configured ? "CONFIGURED" : "NOT CONFIGURED");
-    if (powerLimits.configured) {
-        std::printf("Reserve/min SoC    : %.1f %%\n", static_cast<double>(powerLimits.minimumStateOfChargePercent));
-        std::printf("Max discharge      : %.2f A\n", static_cast<double>(powerLimits.maximumBatteryDischargeCurrentAmps));
-        std::printf("Max main current   : %.2f A\n", static_cast<double>(powerLimits.maximumMainCurrentAmps));
-        if (powerLimits.requiredRuntimeHours > 0.0F) {
-            float remainingRequiredRuntimeHours =
-                batteryMonitor.getRemainingRequiredRuntimeHours();
-
-            if (remainingRequiredRuntimeHours <= 0.0F) {
-                remainingRequiredRuntimeHours = computeRemainingRequiredRuntimeHours(
-                    powerLimits.requiredRuntimeHours,
-                    currentTimeProvider.isCurrentTimeValid(),
-                    static_cast<std::int64_t>(std::time(nullptr)));
-            }
-
-            std::printf("Required runtime   : %.2f h (target) | %.2f h remaining\n",
-                        static_cast<double>(powerLimits.requiredRuntimeHours),
-                        static_cast<double>(remainingRequiredRuntimeHours));
+    std::printf("Power planning     : %s\n", planning.configured ? "CONFIGURED" : "NOT CONFIGURED");
+    if (planning.configured) {
+        std::printf("P_budget           : %.2f W\n", static_cast<double>(planning.P_budget));
+        std::printf("P_reserve          : %.2f W\n", static_cast<double>(planning.P_reserve));
+        std::printf("Minimum SoC        : %.1f %%\n", static_cast<double>(planning.minimumStateOfChargePercent));
+        if (planning.requiredRuntimeHours > 0.0F) {
+            std::printf("Required runtime   : %.2f h | %.2f h remaining\n",
+                static_cast<double>(planning.requiredRuntimeHours),
+                static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()));
         } else {
             std::printf("Required runtime   : NOT CONFIGURED\n");
         }
     }
-
     xSemaphoreGive(stateMutex);
 }
 
@@ -2948,8 +2161,7 @@ void consoleNodes(void*)
         return;
     }
 
-    const std::uint32_t now =
-        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
+    const std::uint32_t now = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
     std::printf("NODES\n");
     for (std::size_t i = 0U; i < registry.getNumberOfNodes(); ++i) {
         const auto* node = registry.getNode(i);
@@ -2958,16 +2170,13 @@ void consoleNodes(void*)
         formatMacAddressText(mac, sizeof(mac), node->node.getMacAddress());
         const auto* record = commissioningRegistry.findByMac(node->node.getMacAddress());
         std::printf("%-7s %-19s %-17s %-10s Loads=%u\n",
-                    node->isCentralNode ? "CENTRAL" : "SMART",
-                    node->nodeName.c_str(),
-                    mac,
-                    isNodeOnline(*node, now) ? "ONLINE" : "OFFLINE",
-                    static_cast<unsigned int>(node->node.getNumberOfLoads()));
-        if (record != nullptr) {
-            std::printf("        lifecycle=%s\n", kilowatts::toText(record->lifecycleState));
-        }
+            node->isCentralNode ? "CENTRAL" : "SMART",
+            node->nodeName.c_str(),
+            mac,
+            isNodeOnline(*node, now) ? "ONLINE" : "OFFLINE",
+            static_cast<unsigned int>(node->node.getNumberOfLoads()));
+        if (record != nullptr) std::printf("        lifecycle=%s\n", kilowatts::toText(record->lifecycleState));
     }
-
     xSemaphoreGive(stateMutex);
 }
 
@@ -2987,8 +2196,7 @@ void consoleNodeStatus(void*, const Load::MacAddress& address)
 
     char mac[18]{};
     formatMacAddressText(mac, sizeof(mac), address);
-    const std::uint32_t now =
-        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
+    const std::uint32_t now = static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
     const auto* record = commissioningRegistry.findByMac(address);
 
     std::printf("NODE STATUS\n");
@@ -3004,13 +2212,12 @@ void consoleNodeStatus(void*, const Load::MacAddress& address)
         const Load* load = node->node.getLoad(i);
         if (load == nullptr) continue;
         std::printf("  pin=%u | %s | %.2f W | priority=%u | %s\n",
-                    static_cast<unsigned int>(load->getRelayPin()),
-                    load->getName().c_str(),
-                    static_cast<double>(load->getPowerRatingWatts()),
-                    static_cast<unsigned int>(load->getPriority()),
-                    loadModeText(load->getMode()));
+            static_cast<unsigned int>(load->getRelayPin()),
+            load->getName().c_str(),
+            static_cast<double>(load->getPowerRatingWatts()),
+            static_cast<unsigned int>(load->getPriority()),
+            loadModeText(load->getMode()));
     }
-
     xSemaphoreGive(stateMutex);
 }
 
@@ -3022,7 +2229,6 @@ void consoleLoads(void*)
     }
 
     applyStoredLoadSettings();
-
     std::printf("LOADS\n");
     std::size_t count = 0U;
     for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
@@ -3035,19 +2241,16 @@ void consoleLoads(void*)
             if (load == nullptr) continue;
             ++count;
             std::printf("%s pin=%u | %-16s | %7.2f W | priority=%u | %-9s | %s\n",
-                        mac,
-                        static_cast<unsigned int>(load->getRelayPin()),
-                        load->getName().c_str(),
-                        static_cast<double>(load->getPowerRatingWatts()),
-                        static_cast<unsigned int>(load->getPriority()),
-                        loadModeText(load->getMode()),
-                        loadPowerTypeText(load->getPowerType()));
+                mac,
+                static_cast<unsigned int>(load->getRelayPin()),
+                load->getName().c_str(),
+                static_cast<double>(load->getPowerRatingWatts()),
+                static_cast<unsigned int>(load->getPriority()),
+                loadModeText(load->getMode()),
+                loadPowerTypeText(load->getPowerType()));
         }
     }
-    if (count == 0U) {
-        std::printf("None\n");
-    }
-
+    if (count == 0U) std::printf("None\n");
     xSemaphoreGive(stateMutex);
 }
 
@@ -3059,7 +2262,6 @@ void consoleLoadStatus(void*, const Load::MacAddress& macAddress, std::uint8_t r
     }
 
     applyStoredLoadSettings();
-
     const Load* load = registry.findMutableLoad(macAddress, relayPin);
     if (load == nullptr) {
         std::printf("Load not found\n");
@@ -3080,13 +2282,13 @@ void consoleLoadStatus(void*, const Load::MacAddress& macAddress, std::uint8_t r
     std::printf("Mode           : %s\n", loadModeText(load->getMode()));
     if (schedule.enabled) {
         std::printf("AUTO schedule  : %02u:%02u\n",
-                    static_cast<unsigned int>(schedule.hour),
-                    static_cast<unsigned int>(schedule.minute));
+            static_cast<unsigned int>(schedule.hour),
+            static_cast<unsigned int>(schedule.minute));
     } else {
         std::printf("AUTO schedule  : none\n");
     }
     std::printf("BFS result     : %s\n",
-                bestFirstRejectionText(load->getLastBestFirstRejectionReason()));
+        bestFirstRejectionText(load->getLastBestFirstRejectionReason()));
 
     if (macAddress == communication.getLocalMacAddress()) {
         bool found = false;
@@ -3099,13 +2301,10 @@ void consoleLoadStatus(void*, const Load::MacAddress& macAddress, std::uint8_t r
                 break;
             }
         }
-        if (!found) {
-            std::printf("Relay polarity : NOT REGISTERED on this Node's RelayController\n");
-        }
+        if (!found) std::printf("Relay polarity : NOT REGISTERED on this Node's RelayController\n");
     } else {
         std::printf("Relay polarity : unavailable (Load is on a Smart Node, not Central)\n");
     }
-
     xSemaphoreGive(stateMutex);
 }
 
