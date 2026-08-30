@@ -40,19 +40,20 @@ public:
         const char* password;
     };
 
-    static constexpr const char* TOPIC_STATE_SYSTEM = "state/system";
+    // External MQTT surface. The UI only needs these five topics.
     static constexpr const char* TOPIC_STATUS = "status";
-    static constexpr const char* TOPIC_STATE_TREE = "state/tree";
-    static constexpr const char* TOPIC_STATE_LOADS = "state/loads";
-    static constexpr const char* TOPIC_STATE_NODES = "state/nodes";
-    static constexpr const char* TOPIC_CONFIG_NODES = "config/nodes";
-    static constexpr const char* TOPIC_EVENTS = "events";
-    static constexpr const char* TOPIC_ALERTS = "alerts";
-    static constexpr const char* TOPIC_COMMANDS_LOAD = "commands/load";
-    static constexpr const char* TOPIC_COMMANDS_SYSTEM = "commands/system";
-    static constexpr const char* TOPIC_COMMANDS_CONFIG = "commands/config";
-    static constexpr const char* TOPIC_COMMANDS_SIMULATION = "commands/simulation";
-    static constexpr const char* TOPIC_ACKS = "acks";
+    static constexpr const char* TOPIC_STATE = "state";
+    static constexpr const char* TOPIC_COMMAND = "command";
+    static constexpr const char* TOPIC_ACK = "ack";
+    static constexpr const char* TOPIC_ALERT = "alert";
+
+    // Internal state-part keys used by Central before MqttManager combines
+    // everything into the single retained `state` topic.
+    static constexpr const char* TOPIC_STATE_SYSTEM = "_state/system";
+    static constexpr const char* TOPIC_STATE_TREE = "_state/tree";
+    static constexpr const char* TOPIC_STATE_LOADS = "_state/loads";
+    static constexpr const char* TOPIC_STATE_NODES = "_state/nodes";
+    static constexpr const char* TOPIC_CONFIG_NODES = "_state/config-nodes";
 
     explicit MqttManager(const char* topicNamespace, const char* deviceId, std::uint32_t schemaVersion);
     ~MqttManager();
@@ -79,14 +80,8 @@ public:
         const char* reason,
         const char* target);
 
+    // Events are sent as informational alerts so there is no separate event topic.
     void publishEvent(const char* eventType, const char* target, const char* detail);
-
-    /**
-     * Pushed only on a state transition (e.g. reserve just reached, not
-     * every cycle it stays reached) - see the call sites in namespace.h.
-     * severity is a free-form string ("warning"/"critical") rather than an
-     * enum so new severities never need a firmware update to add.
-     */
     void publishAlert(const char* alertType, const char* severity, const char* detail);
     void printDiagnosticReport() const;
 
@@ -103,11 +98,17 @@ private:
     void handleSimulationCommandMessage(const char* data, std::size_t dataLength);
 
     std::string fullTopic(const char* topicSuffix) const;
+    bool publishRaw(const char* topicSuffix, const std::string& payload, int qos, bool retain);
+    bool publishCombinedState();
 
     std::string topicNamespace_;
     std::string deviceId_;
     std::string statusTopic_;
     std::uint32_t schemaVersion_;
+
+    std::string stateSystemJson_;
+    std::string stateLoadsJson_;
+    std::string stateNodesJson_;
 
     esp_mqtt_client_handle_t client_;
     std::atomic<MqttConnectionState> state_;
