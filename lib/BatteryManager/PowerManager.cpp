@@ -84,9 +84,7 @@ bool writeFloat(nvs_handle_t handle, const char* key, float value)
 bool readFloat(nvs_handle_t handle, const char* key, float& value)
 {
     std::uint32_t bits = 0U;
-    if (nvs_get_u32(handle, key, &bits) != ESP_OK) {
-        return false;
-    }
+    if (nvs_get_u32(handle, key, &bits) != ESP_OK) return false;
 
     static_assert(sizeof(bits) == sizeof(value), "float must be 32 bits");
     std::memcpy(&value, &bits, sizeof(value));
@@ -122,7 +120,7 @@ const char* toText(StateOfChargeSource source)
 PowerManager::PowerManager()
     : busConfiguration_{0U, 0U, 0U, 0U},
       sensorConfiguration_{0.0F, 0.0F, 1.0F},
-      batteryConfiguration_{0.0F, 0.0F},
+      batteryConfiguration_{0.0F, 0.0F, 0.0F},
       calibration_{0.0F, 0.0F, 1.0F},
       measurements_{0.0F, 0.0F, 0.0F},
       filteredMeasurements_{0.0F, 0.0F, 0.0F},
@@ -136,7 +134,6 @@ PowerManager::PowerManager()
           0.0F, 0.0F, 0.0F,
           0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
           false, 0.0F, true},
-      minimumStateOfChargePercent_(0.0F),
       remainingRequiredRuntimeHours_(0.0F),
       initialized_(false),
       simulationEnabled_(false),
@@ -190,7 +187,8 @@ bool PowerManager::initialize(
     const SensorConfiguration& sensorConfiguration,
     const BatteryConfiguration& batteryConfiguration)
 {
-    if (busConfiguration.clockSpeedHz == 0U) {
+    if (busConfiguration.clockSpeedHz == 0U ||
+        !isValidPercent(batteryConfiguration.minimumStateOfChargePercent)) {
         return false;
     }
 
@@ -237,9 +235,7 @@ bool PowerManager::initialize(
         return true;
     }
 
-    if (!initializeBus() || !initializeSensor()) {
-        return false;
-    }
+    if (!initializeBus() || !initializeSensor()) return false;
 
     initialized_ = true;
     return true;
@@ -253,9 +249,7 @@ bool PowerManager::isInitialized() const
 bool PowerManager::initializeBus()
 {
 #ifdef ESP_PLATFORM
-    if (busHandle_ != nullptr) {
-        return true;
-    }
+    if (busHandle_ != nullptr) return true;
 
     i2c_master_bus_config_t bus{};
     bus.i2c_port = static_cast<i2c_port_num_t>(busConfiguration_.port);
@@ -286,9 +280,7 @@ bool PowerManager::initializeBus()
 bool PowerManager::initializeSensor()
 {
 #ifdef ESP_PLATFORM
-    if (busHandle_ == nullptr) {
-        return false;
-    }
+    if (busHandle_ == nullptr) return false;
 
     if (deviceHandle_ == nullptr) {
         i2c_device_config_t config{};
@@ -307,9 +299,7 @@ bool PowerManager::initializeSensor()
         deviceHandle_ = device;
     }
 
-    if (!isHardwareSensorPresent()) {
-        return false;
-    }
+    if (!isHardwareSensorPresent()) return false;
 
     return writeRegister(
         reinterpret_cast<i2c_master_dev_handle_t>(deviceHandle_),
@@ -430,9 +420,7 @@ bool PowerManager::readSimulatedMeasurements(
 
 bool PowerManager::setCalibration(const Calibration& calibration)
 {
-    if (!isValidCalibration(calibration)) {
-        return false;
-    }
+    if (!isValidCalibration(calibration)) return false;
 
     calibration_ = calibration;
     hasFilteredMeasurement_ = false;
@@ -477,16 +465,12 @@ PowerMeasurements PowerManager::applyExponentialMovingAverage(
 
 bool PowerManager::updateMeasurements()
 {
-    if (!initialized_) {
-        return false;
-    }
+    if (!initialized_) return false;
 
     PowerMeasurements raw{};
 
     if (simulationEnabled_) {
-        if (!readSimulatedMeasurements(raw)) {
-            return false;
-        }
+        if (!readSimulatedMeasurements(raw)) return false;
         measurementSource_ = MeasurementSource::SIMULATED;
     } else {
         if (!readHardwareMeasurements(raw)) {
@@ -540,9 +524,7 @@ bool PowerManager::initializeStateOfCharge(
     float starting,
     bool restorePersistedState)
 {
-    if (!isValidPercent(starting)) {
-        return false;
-    }
+    if (!isValidPercent(starting)) return false;
 
     float persisted = 0.0F;
 
@@ -651,9 +633,7 @@ bool PowerManager::persistStateOfChargeValue(
     float stateOfChargePercent) const
 {
 #ifdef ESP_PLATFORM
-    if (!isValidPercent(stateOfChargePercent)) {
-        return false;
-    }
+    if (!isValidPercent(stateOfChargePercent)) return false;
 
     nvs_handle_t handle = 0;
     if (nvs_open(SOC_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
@@ -680,61 +660,35 @@ bool PowerManager::persistStateOfCharge() const
 
 bool PowerManager::setPowerBudgetWatts(float P_budget)
 {
-    if (!isFinitePositive(P_budget)) {
-        return false;
-    }
-
+    if (!isFinitePositive(P_budget)) return false;
     powerBudget_.P_budget = P_budget;
     return true;
 }
 
 bool PowerManager::setPowerReserveWatts(float P_reserve)
 {
-    if (!isFiniteNonNegative(P_reserve)) {
-        return false;
-    }
-
+    if (!isFiniteNonNegative(P_reserve)) return false;
     powerBudget_.P_reserve = P_reserve;
-    return true;
-}
-
-bool PowerManager::setMinimumStateOfChargePercent(
-    float minimumStateOfChargePercent)
-{
-    if (!isValidPercent(minimumStateOfChargePercent)) {
-        return false;
-    }
-
-    minimumStateOfChargePercent_ = minimumStateOfChargePercent;
     return true;
 }
 
 bool PowerManager::setFixedPowerWatts(float P_fixed)
 {
-    if (!isFiniteNonNegative(P_fixed)) {
-        return false;
-    }
-
+    if (!isFiniteNonNegative(P_fixed)) return false;
     powerBudget_.P_fixed = P_fixed;
     return true;
 }
 
 bool PowerManager::setAutoPowerWatts(float P_auto)
 {
-    if (!isFiniteNonNegative(P_auto)) {
-        return false;
-    }
-
+    if (!isFiniteNonNegative(P_auto)) return false;
     powerBudget_.P_auto = P_auto;
     return true;
 }
 
 bool PowerManager::setRemainingRequiredRuntimeHours(float hours)
 {
-    if (!isFiniteNonNegative(hours)) {
-        return false;
-    }
-
+    if (!isFiniteNonNegative(hours)) return false;
     remainingRequiredRuntimeHours_ = hours;
     return true;
 }
@@ -750,18 +704,20 @@ bool PowerManager::updatePowerBudget()
     const float P_reserve = powerBudget_.P_reserve;
     const float P_fixed = powerBudget_.P_fixed;
     const float P_auto = powerBudget_.P_auto;
+    const float minimumStateOfChargePercent =
+        batteryConfiguration_.minimumStateOfChargePercent;
 
     if (!isFinitePositive(P_budget) ||
         !isFiniteNonNegative(P_reserve) ||
         !isFiniteNonNegative(P_fixed) ||
         !isFiniteNonNegative(P_auto) ||
         P_reserve > P_budget ||
-        !isValidPercent(minimumStateOfChargePercent_)) {
+        !isValidPercent(minimumStateOfChargePercent)) {
         return false;
     }
 
     const bool stateOfChargeRequired =
-        minimumStateOfChargePercent_ > 0.0F ||
+        minimumStateOfChargePercent > 0.0F ||
         remainingRequiredRuntimeHours_ > 0.0F;
 
     if (stateOfChargeRequired && !isStateOfChargeValid()) {
@@ -785,7 +741,7 @@ bool PowerManager::updatePowerBudget()
 
         const float usableSocFraction = std::max(
             0.0F,
-            (stateOfChargePercent_ - minimumStateOfChargePercent_) /
+            (stateOfChargePercent_ - minimumStateOfChargePercent) /
                 100.0F);
 
         const float usableEnergyWh =
@@ -793,19 +749,15 @@ bool PowerManager::updatePowerBudget()
             batteryConfiguration_.nameplateVoltageVolts *
             usableSocFraction;
 
-        P_runtime =
-            usableEnergyWh / remainingRequiredRuntimeHours_;
-
-        if (!std::isfinite(P_runtime)) {
-            return false;
-        }
+        P_runtime = usableEnergyWh / remainingRequiredRuntimeHours_;
+        if (!std::isfinite(P_runtime)) return false;
 
         planningAllowance = std::min(P_usable, P_runtime);
         requiredRuntimeAchievable = P_fixed <= planningAllowance;
     }
 
     if (isStateOfChargeValid() &&
-        stateOfChargePercent_ <= minimumStateOfChargePercent_) {
+        stateOfChargePercent_ <= minimumStateOfChargePercent) {
         planningAllowance = 0.0F;
 
         if (runtimeBudgetActive && P_fixed > 0.0F) {
@@ -845,25 +797,19 @@ float PowerManager::getRemainingPowerWatts() const
 void PowerManager::printDiagnosticReport() const
 {
 #ifdef ESP_PLATFORM
-    ESP_LOGI(
-        TAG,
-        "Measurement source: %s",
-        toText(measurementSource_));
-
+    ESP_LOGI(TAG, "Measurement source: %s", toText(measurementSource_));
     ESP_LOGI(
         TAG,
         "Measured: %.2f V | %.3f A | %.2f W",
         static_cast<double>(measurements_.voltageVolts),
         static_cast<double>(measurements_.currentAmps),
         static_cast<double>(measurements_.powerWatts));
-
     ESP_LOGI(
         TAG,
         "P_budget=%.2f P_reserve=%.2f P_usable=%.2f",
         static_cast<double>(powerBudget_.P_budget),
         static_cast<double>(powerBudget_.P_reserve),
         static_cast<double>(powerBudget_.P_usable));
-
     ESP_LOGI(
         TAG,
         "P_fixed=%.2f P_auto_available=%.2f P_auto=%.2f P_remaining=%.2f",
