@@ -76,10 +76,15 @@ public:
         float emaAlpha;
     };
 
-    /** Battery metadata used by SoC/runtime calculations, not as a power limit. */
+    /**
+     * Battery energy metadata used for SoC/runtime calculations.
+     * minimumStateOfChargePercent is an energy reserve policy, not electrical
+     * hardware protection.
+     */
     struct BatteryConfiguration {
         float nameplateVoltageVolts;
         float capacityAmpHours;
+        float minimumStateOfChargePercent;
     };
 
     struct Calibration {
@@ -124,7 +129,6 @@ public:
 
     bool setPowerBudgetWatts(float P_budget);
     bool setPowerReserveWatts(float P_reserve);
-    bool setMinimumStateOfChargePercent(float minimumStateOfChargePercent);
     bool setFixedPowerWatts(float P_fixed);
     bool setAutoPowerWatts(float P_auto);
     bool setRemainingRequiredRuntimeHours(float remainingRequiredRuntimeHours);
@@ -171,7 +175,6 @@ private:
     bool stateOfChargeInitialized_;
 
     PowerBudget powerBudget_;
-    float minimumStateOfChargePercent_;
     float remainingRequiredRuntimeHours_;
 
     bool initialized_;
