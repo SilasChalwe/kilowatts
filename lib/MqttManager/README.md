@@ -1,285 +1,143 @@
-# MqttManager — Kilowatts MQTT API Reference
+# Kilowatts MQTT
 
-MQTT and the serial Console are two transports for the same Central command handlers. MQTT does not contain a second power-planning implementation.
+MQTT is only a transport for the same Central logic used by the serial console. It does not run a second planner.
 
-Current MQTT schema version: **4**.
+Default namespace: `kilowatts/v1`
 
-## Topic namespace
+## Topics
 
-Every topic is `<namespace>/<suffix>`. The default namespace is `kilowatts/v1`.
+The external MQTT API has only five topics:
 
-| Suffix | Direction | Retained | Purpose |
+| Topic | Direction | Retained | Purpose |
 |---|---|---:|---|
-| `status` | Central -> broker | yes | `online` / `offline` availability |
-| `state/system` | Central -> broker | yes | Battery measurement, power flow and runtime state |
-| `state/tree` | Central -> broker | yes | Node topology |
-| `state/loads` | Central -> broker | yes | All configured Loads |
-| `state/nodes` | Central -> broker | yes | Node registry and online state |
-| `config/nodes` | Central -> broker | yes | Node configuration view |
-| `events` | Central -> broker | no | One-shot system events |
-| `alerts` | Central -> broker | no | State-transition warnings/information |
-| `acks` | Central -> broker | no | Command results |
-| `commands/load` | broker -> Central | no | Change an existing Load |
-| `commands/system` | broker -> Central | no | System commands |
-| `commands/config` | broker -> Central | no | Installation/configuration commands |
-| `commands/simulation` | broker -> Central | no | Select/feed simulated battery input |
+| `status` | Central -> client | yes | `online` / `offline` |
+| `state` | Central -> client | yes | Current system, load and node state |
+| `command` | client -> Central | no | All load, system, configuration and simulation commands |
+| `ack` | Central -> client | no | Command result |
+| `alert` | Central -> client | no | Important state changes and monitoring warnings |
 
-## Power model
-
-The configured installation budget is the planning source of truth.
+Full example topics:
 
 ```text
-P_usable = P_budget - P_reserve
-
-P_auto_available = planningAllowance - P_fixed
-
-P_remaining = P_budget - (P_fixed + P_auto)
+kilowatts/v1/status
+kilowatts/v1/state
+kilowatts/v1/command
+kilowatts/v1/ack
+kilowatts/v1/alert
 ```
 
-When no runtime target is active:
+## State
 
-```text
-planningAllowance = P_usable
-```
-
-When a runtime target is active:
-
-```text
-usableEnergyWh =
-    batteryCapacityAh * nominalVoltageVolts *
-    max(0, SoC - minimumSoC) / 100
-
-P_runtime = usableEnergyWh / remainingRuntimeHours
-
-planningAllowance = min(P_usable, P_runtime)
-```
-
-The INA219 and simulation do **not** create `P_budget`. They supply voltage and current to the same measurement path:
-
-```text
-P_measured = voltage * current
-```
-
-`P_measured` is monitoring data. It is not the unused or maximum power capacity of the battery.
-
-## `state/system`
-
-Example:
+`state` combines the useful retained views into one payload:
 
 ```json
 {
-  "schemaVersion": 4,
-  "battery": {
-    "sensorConfigured": true,
-    "nominalVoltageVolts": 15.0,
-    "capacityAmpHours": 200.0,
-    "ratedEnergyWattHours": 3000.0,
-    "storedEnergyWattHours": 2100.0,
-    "usableEnergyWattHours": 1500.0,
-    "voltageVolts": 15.0,
-    "currentAmps": 4.1,
-    "P_measured": 61.5,
-    "measurementSource": "HARDWARE",
-    "stateOfChargePercent": 70.0,
-    "stateOfChargeValid": true,
-    "stateOfChargeSource": "COULOMB_COUNTING",
-    "batteryReserveReached": false,
-    "requiredRuntimeConfigured": true,
-    "requiredRuntimeHours": 24.0,
-    "remainingRuntimeHours": 24.0,
-    "estimatedRuntimeHours": 24.39,
-    "runtimeEstimateValid": true,
-    "P_runtime": 62.5,
-    "requiredRuntimeAchievable": true
-  },
-  "powerFlow": {
-    "P_budget": 200.0,
-    "P_reserve": 20.0,
-    "P_usable": 180.0,
-    "P_fixed": 40.0,
-    "P_auto_available": 22.5,
-    "P_auto": 20.0,
-    "P_remaining": 140.0
-  },
-  "connectivity": {
-    "wifiConnected": true,
-    "wifiState": "CONNECTED",
-    "mqttConnected": true
-  },
-  "time": {
-    "valid": true,
-    "source": "NTP",
-    "lastOptimizationEpochSeconds": 0
-  },
-  "diagnostics": {
-    "pinCommandErrorCount": 0
-  }
+  "system": { },
+  "loads": { },
+  "nodes": { }
 }
 ```
 
-### Power-field meanings
+The system section reports the same canonical power values used by Central:
 
-| Field | Meaning |
-|---|---|
-| `P_budget` | Configured installation power that the system is allowed to allocate |
-| `P_reserve` | Watts deliberately kept outside normal load allocation |
-| `P_usable` | `P_budget - P_reserve` |
-| `P_fixed` | Sum of all currently FIXED_ON Load ratings |
-| `P_auto_available` | Power passed to Best-First Search for AUTO Loads |
-| `P_auto` | Sum of AUTO Loads selected by Best-First Search |
-| `P_remaining` | `P_budget - (P_fixed + P_auto)` |
-| `P_measured` | Instantaneous measured/simulated `V * I` |
-| `P_runtime` | Average power allowed by the requested battery runtime target |
+```text
+P_budget
+P_reserve
+P_usable
+P_fixed
+P_auto_available
+P_auto
+P_remaining
+P_measured
+P_runtime
+```
 
-`P_remaining` includes both intentionally reserved power and any allocatable power that Best-First did not use.
+`P_measured` comes from the active measurement input. In hardware mode the input is INA219 voltage/current. In simulation mode the input is simulated voltage/current. Both follow the same PowerManager path.
 
-## Configure power planning
+## Command
 
-Publish to `commands/config`:
+Every command is sent to the single `command` topic and includes a `type` field.
+
+### Load command
 
 ```json
 {
-  "commandId": 1001,
+  "type": "load",
+  "commandId": 1,
+  "nodeMac": "AA:BB:CC:DD:EE:FF",
+  "relayPin": 16,
+  "mode": "AUTO_ON"
+}
+```
+
+### Power planning configuration
+
+```json
+{
+  "type": "config",
+  "commandId": 2,
   "action": "CONFIGURE_POWER_PLANNING",
   "nodeMac": "AA:BB:CC:DD:EE:FF",
   "powerPlanning": {
-    "P_budget": 200.0,
-    "P_reserve": 20.0,
-    "minimumStateOfChargePercent": 20.0,
-    "requiredRuntimeHours": 24.0
+    "P_budget": 200,
+    "P_reserve": 20,
+    "minimumStateOfChargePercent": 20,
+    "requiredRuntimeHours": 24
   }
 }
 ```
 
-Rules:
-
-- `P_budget > 0`
-- `P_reserve >= 0`
-- `P_reserve <= P_budget`
-- `minimumStateOfChargePercent` is `0..100`
-- `requiredRuntimeHours >= 0`
-- `requiredRuntimeHours = 0` disables runtime-based allocation
-
-The power-planning command targets the Central node only.
-
-## Configure battery measurement/energy metadata
-
-Publish to `commands/config`:
-
-```json
-{
-  "commandId": 1002,
-  "action": "CONFIGURE_BATTERY_SENSOR",
-  "nodeMac": "AA:BB:CC:DD:EE:FF",
-  "batterySensor": {
-    "shuntResistanceOhms": 0.1,
-    "maximumExpectedCurrentAmps": 3.0,
-    "emaAlpha": 0.5,
-    "batteryCapacityAmpHours": 200.0,
-    "initialStateOfChargePercent": 70.0,
-    "nominalVoltageVolts": 15.0
-  }
-}
-```
-
-`maximumExpectedCurrentAmps` is an INA219 measurement-range configuration value. It is **not** a software over-current protection setting.
-
-Battery capacity and nominal voltage are also used when a runtime target is configured.
-
-## Simulation
-
-Simulation and INA219 feed the same `PowerManager` measurement path. Simulation is only a different source for the input values.
+### Simulation
 
 Enable simulation:
 
 ```json
 {
-  "commandId": 2001,
+  "type": "simulation",
+  "commandId": 3,
   "action": "ENABLE"
 }
 ```
 
-Feed simulated values:
+Provide simulated input:
 
 ```json
 {
-  "commandId": 2002,
+  "type": "simulation",
+  "commandId": 4,
   "action": "SET_VALUES",
   "values": {
-    "batteryVoltageVolts": 15.0,
-    "batteryCurrentAmps": 4.1,
-    "stateOfChargePercent": 70.0
+    "batteryVoltageVolts": 15,
+    "batteryCurrentAmps": 8,
+    "stateOfChargePercent": 70
   }
 }
 ```
 
-Disable simulation and return to INA219 input:
+The simulated instantaneous power is calculated exactly like the INA219 path:
+
+```text
+P_measured = voltage * current
+```
+
+Disable simulation to return to INA219 input:
 
 ```json
 {
-  "commandId": 2003,
+  "type": "simulation",
+  "commandId": 5,
   "action": "DISABLE"
 }
 ```
 
-Voltage and current must be supplied together. SoC can be supplied with them or separately.
-
-## Load commands
-
-`commands/load` changes the priority, configured mode and/or schedule of an existing Load.
-
-Example:
-
-```json
-{
-  "commandId": 3001,
-  "nodeMac": "AA:BB:CC:DD:EE:FF",
-  "relayPin": 4,
-  "priority": 3,
-  "mode": "AUTO_ON"
-}
-```
-
-Valid modes are:
-
-- `FIXED_OFF`
-- `FIXED_ON`
-- `AUTO_OFF`
-- `AUTO_ON`
-
-FIXED_ON demand is accounted before Best-First Search. Best-First Search receives `P_auto_available` and selects AUTO Loads that fit within that value.
-
-## Alerts
-
-Alerts are emitted on transitions, not continuously.
-
-| `alertType` | Meaning |
-|---|---|
-| `BATTERY_RESERVE` | SoC crossed the configured minimum SoC reserve |
-| `RUNTIME_TARGET` | Requested runtime became achievable/unachievable |
-| `BATTERY_SENSOR` | Real INA219 stopped/resumed responding |
-| `MEASURED_POWER_BUDGET` | `P_measured` crossed above/below configured `P_budget` |
-| `NODE_OFFLINE` | Smart Node online state changed |
-
-`MEASURED_POWER_BUDGET` is monitoring. It does not claim that firmware provides electrical hardware protection.
-
-## Best-First rejection reason
-
-The active planning result uses only:
-
-- `NONE`
-- `POWER_BUDGET_EXCEEDED`
-
-The old battery-current, main-current and branch-current rejection reasons are not part of schema 4.
-
 ## Acknowledgements
 
-`acks` payload:
+Every accepted or rejected command is reported on `ack`.
 
 ```json
 {
   "schemaVersion": 4,
-  "commandId": 1001,
+  "commandId": 2,
   "commandType": "CONFIGURE_POWER_PLANNING",
   "status": "APPLIED",
   "reason": "power planning configured",
@@ -287,8 +145,14 @@ The old battery-current, main-current and branch-current rejection reasons are n
 }
 ```
 
-`status` is one of `ACCEPTED`, `APPLIED`, `REJECTED`, or `FAILED`.
+## Alerts
 
-## Hardware-protection boundary
+`alert` is used only for meaningful changes such as:
 
-Kilowatts firmware performs monitoring, planning and relay/GPIO commands. It must not be described as replacing physical electrical protection. Fuses, breakers, BMS cut-offs and other correctly rated protection hardware remain separate from this software power-allocation logic.
+- battery SoC reaching the configured reserve policy;
+- requested runtime becoming unachievable;
+- `P_measured` exceeding configured `P_budget`;
+- a Smart Node going offline;
+- informational configuration events.
+
+These are software monitoring/control messages. They are not claims of hardware electrical protection.
