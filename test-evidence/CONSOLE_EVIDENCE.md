@@ -4,6 +4,13 @@ Board: ESP32-D0WDQ6, MAC `A4:CF:12:0E:32:C0`, port `/dev/ttyUSB0`
 Firmware: `central` environment
 Captured: 2026-08-30, live from the physical board, one continuous operational sequence: build → boot → Wi-Fi/MQTT → power source → 8 loads → Best-First → reboot persistence.
 
+**Evidence status:** this is a historical capture of that session, not the
+authoritative description of the final battery-initialization behavior. The
+temporary default-configuration fix described below was later removed. For the
+current behavior, use `test-evidence/INSTALLATION_TEST_REPORT.md`,
+`USER_MANUAL.md`, and `TEST_REPRODUCTION_GUIDE.md`. The raw console output is
+retained unchanged as evidence of what was observed at capture time.
+
 Open this file with **Markdown Preview** in VS Code (`Ctrl+Shift+V`) and PrtScn whichever sections you want as images.
 
 ---
@@ -12,11 +19,20 @@ Open this file with **Markdown Preview** in VS Code (`Ctrl+Shift+V`) and PrtScn 
 
 Building this evidence run surfaced two genuine firmware bugs, fixed and reflashed before the final capture below:
 
-1. **Battery source selection required manual configuration first.** `sensor sim` / `sensor ina219` only flipped a mode flag — the underlying monitor was never actually initialized unless `battery configure` / `battery limits` had already been run by hand, and picking invalid values there (e.g. a shunt/current combination implying more than the INA219's ±320 mV range) failed silently with no clear reason. Fixed: selecting either source now self-provisions a valid default configuration if none exists yet (`ensureDefaultBatteryConfiguration()` in `src/central/namespace.h`), so `sensor sim` or `sensor ina219` alone is enough to get a working battery monitor. `battery configure` / `battery limits` remain available to enter a real installation's actual values.
+1. **Battery source selection required manual configuration first.** The fix
+   present during this capture temporarily supplied a default configuration.
+   Later review correctly found that installation-specific sensor and battery
+   values must never be invented, so that implementation was removed. The
+   final behavior allows simulation-source selection without INA219
+   calibration while requiring explicit battery profile/limit values for a
+   meaningful installation-specific runtime budget. See the evidence-status
+   note above.
 
 2. **Removing then re-adding a Load on the same pin silently kept the old priority/mode.** `load remove` cleared the hardware store but left a stale entry in the separate `LoadConfigurationStore` (the store that protects a user's chosen priority/mode from being overwritten by a Smart Node's own reports) — so a `load add` on that same pin got silently clobbered back to the old values on the very next planning cycle. Fixed: `load remove` now also clears the matching `LoadConfigurationStore` entry (`lib/LoadManager/Central/LoadConfigurationStore.{h,cpp}`, wired into both the Central and Smart-Node removal paths in `src/central/namespace.h`).
 
-Both fixes: rebuilt for all three firmware targets (`central`, `smart`, `smart_esp32`), 49/49 host tests still pass, reflashed, and verified live below.
+Both fixes as they existed at capture time were rebuilt for all three firmware
+targets, reflashed, and exercised below. The Load removal/re-addition fix
+remains current; the battery fix was subsequently replaced as described above.
 
 ---
 
@@ -71,7 +87,11 @@ Max main current   : 15.00 A
 Required runtime   : 24.00 h (target) | 23.99 h remaining
 ```
 
-**Result:** No physical INA219 is wired to this devkit — genuinely confirmed via the real I2C probe (bounded, non-hanging, per `PowerManager.cpp`), not assumed. Simulation correctly takes over as the measurement source, with no manual configuration step required after this session's fix.
+**Result at capture time:** no physical INA219 was wired to this devkit, and
+the bounded I2C probe correctly reported it unavailable. After the explicit
+`battery limits` and `battery configure` commands shown above, simulation took
+over as the measurement source. This section does not demonstrate the final
+blank-configuration behavior; see `INSTALLATION_TEST_REPORT.md`.
 
 ---
 
@@ -165,7 +185,7 @@ Measurement source : NONE   (correctly cleared — simulation never survives a r
 
 | Step | Result |
 |---|---|
-| Build + upload (with both fixes) | PASS — all 3 firmware targets build clean, 49/49 host tests |
+| Build + upload (with the fixes present at capture time) | PASS — all 3 firmware targets built clean, 49/49 host tests |
 | Power source: INA219 probed → simulation fallback | PASS |
 | 8 loads configured (2 AC/6 DC, 2 FIXED/6 AUTO) | PASS — verified individually |
 | Best-First optimizer real selection | PASS — genuine trade-off (Router+Lights+PhoneCharger, 6/6.43 W) |

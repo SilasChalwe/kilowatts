@@ -28,4 +28,10 @@ Not in isolation — Best-First compares total priority across entire *combinati
 `lib/MqttManager/README.md` — every published and subscribed topic, field by field, with valid ranges and examples.
 
 **Is this project considered finished?**
-The firmware is complete against its stated goals and every fix made this session is live-verified on real hardware (`test-evidence/`, `QA_REPORT_LOAD_SELECTION_SCENARIOS.md`). What remains is listed plainly in `LIMITATIONS.md` (multi-node network validation, a real INA219, mTLS) and `FUTURE_WORK.md` (ideas for what comes next) — neither is a hidden gap, both are explicit, intentional scope boundaries.
+The firmware implementation is complete against the stated dissertation goals
+and the available-hardware validation is documented in `test-evidence/` and
+`QA_REPORT_LOAD_SELECTION_SCENARIOS.md`. This means the completed software
+prototype can be submitted within its declared scope; it does not mean every
+deployment condition was physically validated. The untested multi-node, real
+INA219, long-run, downstream-feedback, and known state-restoration boundaries
+are recorded in `LIMITATIONS.md`, with follow-up work in `FUTURE_WORK.md`.

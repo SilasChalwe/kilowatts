@@ -177,14 +177,14 @@ load add pin=16 name=Lamp power=10 priority=5 type=DC active_high=off mode=AUTO_
 Add or replace a Load on a Smart Node by providing its MAC:
 
 ```text
-load add mac=AA:BB:CC:DD:EE:FF pin=4 name=Fan power=25 priority=10 type=DC active_high=off mode=AUTO_OFF schedule=18:30
+load add mac=AA:BB:CC:DD:EE:FF pin=4 name=Fan power=25 priority=10 type=DC active_high=off mode=AUTO_OFF schedule=18:30-20:00
 ```
 
 Change an existing Load's priority, mode, and/or schedule:
 
 ```text
 load set AA:BB:CC:DD:EE:FF 4 priority=20
-load set AA:BB:CC:DD:EE:FF 4 mode=AUTO_ON schedule=19:00
+load set AA:BB:CC:DD:EE:FF 4 mode=AUTO_ON schedule=19:00-21:00
 load set AA:BB:CC:DD:EE:FF 4 schedule=none
 ```
 
@@ -205,7 +205,7 @@ Current fields:
 | `type=` / `powerType` | `AC` or `DC`. |
 | `priority=` | Higher priority means the AUTO Load is preferred when not all AUTO Loads fit the budget. |
 | `mode=` | `FIXED_ON`, `FIXED_OFF`, `AUTO_ON`, or `AUTO_OFF`. |
-| `schedule=` | `HH:MM` or `none`. |
+| `schedule=` | Active window in `HH:MM-HH:MM` form, or `none`. Start and end must differ; windows may cross midnight. |
 
 ### Measurement source and simulation
 
@@ -220,13 +220,22 @@ simulation values soc=80
 simulation values voltage=12.4 current=3.0 soc=80
 ```
 
-`sensor sim` works immediately — it does **not** require `battery configure`/`battery limits` to have been run first, and the firmware never invents a shunt resistance, capacity, or voltage on your behalf. Simulation mode doesn't need INA219 calibration data at all (there is no physical sensor to calibrate), so nothing is required before `simulation start`/`simulation values` other than selecting `sensor sim`.
+`sensor sim` works immediately — selecting the simulated measurement source does
+not require `battery configure`/`battery limits`, and the firmware never invents
+a shunt resistance, battery capacity, voltage, or site policy. Simulation mode
+does not read the INA219 calibration fields because there is no physical sensor.
+However, source selection by itself is not a complete sizing configuration:
+meaningful current-limit decisions require `battery limits`, and the
+energy/runtime formula requires the intended battery capacity and nominal
+voltage stored by `battery configure`. The exact QA reproduction values are in
+`TEST_REPRODUCTION_GUIDE.md`.
 
 Simulation is only a test input source for battery measurements/SoC — the exact same downstream planning code runs either way (§2 "Battery/runtime objective"). It is not a second planner and does not validate physical hardware. This is also the intended way to size an installation: before ever touching a real INA219, use simulation to feed the loads you expect and observe what the battery/runtime budget can actually sustain, and use that to decide the real `battery limits` reserve/runtime values (see `INSTALLATION_GUIDE.md`).
 
 ### Battery sensor and power limits
 
-`battery limits` is the installation's reserve/runtime **policy** — this is what simulation above is for deciding, and it is never defaulted by the firmware:
+`battery limits` is the installation's reserve/runtime **policy**. It is never
+defaulted by the firmware:
 
 ```text
 battery limits min_soc=20 max_discharge_amps=40 max_main_amps=40 runtime_hours=8
@@ -234,13 +243,21 @@ battery limits min_soc=20 max_discharge_amps=40 max_main_amps=40 runtime_hours=8
 
 `runtime_hours=0` or omitting `runtime_hours` disables the required-runtime target.
 
-`battery configure` describes the real physical INA219 sensor's calibration — only needed for `sensor ina219` (hardware mode), never for simulation:
+`battery configure` stores both the real INA219 calibration and the battery
+energy profile used by the runtime calculation:
 
 ```text
 battery configure shunt_ohms=0.005 max_sensor_amps=40 ema_alpha=0.2 capacity_ah=100 initial_soc=80 nominal_voltage=12
 ```
 
-Every value here is the specific installation's real hardware — the firmware does not ship with or fall back to a default shunt/capacity/voltage. `shunt_ohms × max_sensor_amps` must not exceed 0.32 (the INA219's ±320 mV shunt-voltage measurement range); an out-of-range pair is rejected.
+Every value here belongs to the intended installation; the firmware does not
+ship with or fall back to a default shunt/capacity/voltage. Simulation does not
+read the shunt calibration, but it does use `capacity_ah` and
+`nominal_voltage` when a required-runtime target is active. Before enabling
+hardware mode, replace any provisional sizing values with the actual battery
+and sensor specifications. `shunt_ohms × max_sensor_amps` must not exceed 0.32
+(the INA219's ±320 mV shunt-voltage measurement range); an out-of-range pair is
+rejected.
 
 The battery interface tracks voltage, current, power, SoC, capacity, nominal voltage, reserve SoC, discharge/main current limits, and required runtime. It does not report charger states such as charging, charged, or full.
 

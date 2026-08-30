@@ -1,6 +1,6 @@
 # Kilowatts Installation Test Report
 
-Board tested: ESP32-D0WDQ6, MAC `A4:CF:12:0E:32:C0` (Central role), reflashed as `smart_esp32` for the console test and back. All results below are from the live physical board, not simulated/predicted — commands run over the real serial console, alerts captured over a real TLS MQTT subscription to the live broker.
+Board tested: ESP32-D0WDQ6, MAC `A4:CF:12:0E:32:C0` (Central role), reflashed as `smart_esp32` for the console test and back. All firmware interactions below ran on the live physical board. Battery values were deliberately supplied through simulation; serial commands and MQTT alerts travelled through the real console, Wi-Fi connection, TLS connection, and broker.
 
 This report is the reference for what the firmware actually does today. Use it at each install site as a checklist: run the same commands, expect the same behavior.
 
@@ -14,7 +14,11 @@ Three real problems were found and fixed:
 
 ## 1. Battery configuration — no hardcoded values
 
-**Claim:** `sensor sim` works immediately, with zero prior `battery configure` call. Only `battery limits` (the reserve/runtime policy — genuinely the installer's decision) needs to be set.
+**Claim:** selecting `sensor sim` no longer requires a new `battery configure`
+call in the same session. This verifies source selection; it does not claim that
+a blank installation has enough battery-profile information for a meaningful
+runtime calculation. The exact QA runtime scenarios use the explicit profile in
+`TEST_REPRODUCTION_GUIDE.md`.
 
 ```
 kilowatts > battery limits min_soc=20 max_discharge_amps=10 max_main_amps=15 runtime_hours=24
@@ -27,7 +31,8 @@ kilowatts > simulation values voltage=12.6 current=1.5 soc=75
 [ OK ] simulated battery values applied
 ```
 
-No `battery configure shunt_ohms=...` call anywhere in this sequence. **PASS.**
+No `battery configure shunt_ohms=...` call was required in this sequence to
+select simulation and provide measurements. **PASS.**
 
 **Hardware mode still correctly requires real values** (this is not a regression — an installer's actual INA219 board has a real shunt resistor that must be entered accurately, or every reading is wrong):
 
@@ -98,7 +103,7 @@ Add, show, in-place update (priority + mode both changed correctly, name/power/t
 
 | # | What | Verified how | Result |
 |---|---|---|---|
-| 1 | No hardcoded battery values; simulation self-sufficient | Live console, zero `battery configure` calls | PASS |
+| 1 | No hardcoded battery values; simulation source can be selected without a new sensor-profile command | Live console, zero `battery configure` calls in this sequence | PASS |
 | 1 | Hardware mode still requires real values | Live console | PASS |
 | 2 | `BATTERY_RESERVE` alert, both directions | Real MQTT subscription to live broker | PASS |
 | 2 | `RUNTIME_TARGET` alert, both directions | Real MQTT subscription to live broker | PASS |

@@ -1,217 +1,192 @@
 # Reproducing the Validation Tests
 
-This is a step-by-step procedure for reproducing every result in
-`QA_REPORT_LOAD_SELECTION_SCENARIOS.md` and `test-evidence/` on the physical
-Central Node. Follow the steps in order — each test builds on the state left
-by the previous one, and the exact commands used are given verbatim so the
-same numbers should come back out.
+This guide reproduces the four measured scenarios in
+`QA_REPORT_LOAD_SELECTION_SCENARIOS.md`. It uses the same eight-load
+configuration and the same simulated battery inputs as the recorded hardware
+session in `test-evidence/logs/`.
 
-The GPIO pins below (2, 4, 18, 25) are one example rig's wiring, not a
-universal spec — any Central build supports up to 16 Loads on any valid
-output-capable GPIO (see `USER_MANUAL.md` §2 and `lib/RelayManager` for
-pin-safety notes); substitute your own board's wiring.
+These are planner and firmware tests on a physical Central board. The battery
+measurements are simulated, and the test does not prove the accuracy of a real
+INA219, simultaneous multi-node ESP-NOW operation, or the behavior of an
+appliance connected after a GPIO. Those boundaries are documented in
+`LIMITATIONS.md`.
 
 ## Prerequisites
 
-- Central Node hardware connected over USB (in this session: `/dev/ttyUSB1`,
-  115200 baud).
-- Four relay channels wired to GPIO 2, 4, 18, 25, each an **active-low**
-  board (energises when the GPIO is driven LOW).
-- Four Loads already configured on those pins (10 W, DC, one per pin). If
-  they are not yet configured, create them first — see "Creating the four
-  test loads" below.
-- A way to send lines to the serial console and read the reply. Any serial
-  terminal works (`pio device monitor`, `screen /dev/ttyUSB1 115200`,
-  PuTTY, etc.) — commands below are just typed at the `kilowatts>` prompt
-  followed by Enter.
+- A Central Node connected over USB at 115200 baud.
+- Current Central firmware flashed on the board.
+- A serial terminal at the `kilowatts >` prompt.
+- Valid wall-clock time from NTP or the configured manual-time path for the
+  schedule-window scenario.
+- Safe GPIO wiring. Physical relays and appliances are not required to inspect
+  the planner results. If relays are connected, confirm their polarity and
+  electrical safety before issuing any command.
 
-**GPIO 2 warning:** GPIO2 is one of the ESP32's boot-strapping pins. If a
-relay is wired to it and its board pulls the pin high while floating,
-flashing new firmware over serial can fail with
-`Failed to communicate with the flash chip`. If you need to reflash before
-running these tests, disconnect the relay wire from pin 2 first, flash,
-then reconnect it — the other three pins (4, 18, 25) do not need to be
-disconnected.
+Replace `<MAC>` below with the Central Node's MAC address. It is shown at boot
+and by `node show`.
 
-## Creating the four test loads (only if not already configured)
+## 1. Create the eight-load QA configuration
 
-Replace `<MAC>` with the Central Node's own MAC address (shown at boot, or
-via `node show` / the address burned into the board — in this session it
-was `A4:CF:12:0E:32:C0`).
+Ensure the Central Node has exactly these Loads. `load add` can be used to add
+or replace an entry; remove conflicting test entries first if necessary.
 
-```
-load add mac=<MAC> pin=4  name=Lamp   power=10 priority=1 type=DC active_high=off mode=FIXED_OFF schedule=none
-load add mac=<MAC> pin=2  name=Load2  power=10 priority=2 type=DC active_high=off mode=AUTO_OFF   schedule=none
-load add mac=<MAC> pin=18 name=Load18 power=10 priority=3 type=DC active_high=off mode=AUTO_OFF   schedule=none
-load add mac=<MAC> pin=25 name=Load25 power=10 priority=1 type=DC active_high=off mode=AUTO_OFF   schedule=none
+```text
+load add mac=<MAC> pin=4  name=Fridge         power=8  priority=1 type=AC active_high=off mode=FIXED_ON  schedule=none
+load add mac=<MAC> pin=26 name=WaterHeater    power=15 priority=1 type=AC active_high=off mode=FIXED_OFF schedule=none
+load add mac=<MAC> pin=5  name=Lights         power=3  priority=8 type=DC active_high=off mode=AUTO_OFF  schedule=none
+load add mac=<MAC> pin=18 name=WaterPump      power=10 priority=5 type=DC active_high=off mode=AUTO_OFF  schedule=none
+load add mac=<MAC> pin=19 name=Fan            power=5  priority=3 type=DC active_high=off mode=AUTO_OFF  schedule=none
+load add mac=<MAC> pin=23 name=Router         power=2  priority=9 type=DC active_high=off mode=AUTO_OFF  schedule=none
+load add mac=<MAC> pin=25 name=SecurityCamera power=4  priority=7 type=DC active_high=off mode=AUTO_OFF  schedule=none
+load add mac=<MAC> pin=27 name=PhoneCharger   power=1  priority=2 type=DC active_high=off mode=AUTO_OFF  schedule=none
+loads
 ```
 
-`active_high=off` is the important part for active-low relay boards — it
-tells the firmware that GPIO LOW means the relay is ON. Getting this wrong
-reproduces the original bug (see `TESTING_AND_VALIDATION.md` §2).
+The recorded board used active-low relay channels, hence `active_high=off`.
+Use the polarity required by the actual hardware if reproducing this on a
+different rig. The polarity does not change Best-First's subset calculation,
+but it changes the electrical GPIO state requested for ON/OFF.
 
-Check what actually got stored at any time with:
+## 2. Configure the battery profile and simulation
 
-```
-load show <PIN>
-```
+The recorded QA values came from a 50 Ah, 12.6 V battery profile with a 20%
+reserve and a 24-hour runtime target. Entering the profile is necessary to
+reproduce the same energy/runtime budget. In simulation, the INA219-specific
+shunt and current values are stored but no physical sensor is read.
 
-which prints, among other fields, `Relay polarity : active-LOW` or
-`active-HIGH` and whether the hardware was actually applied.
-
-## Switching to the simulated battery
-
-The algorithm tests don't need a real INA219 sensor — the simulator feeds
-the exact same code path (`PowerManager::updatePowerBudget()`), it's just
-fed a value you set instead of an I2C reading.
-
-```
+```text
 sensor sim
-simulation start
-simulation values voltage=12.6 current=0 soc=80
-```
-
-`simulation values` can be re-run at any time with new numbers; you don't
-need to repeat `sensor sim` / `simulation start` afterward.
-
-Force an immediate planning cycle (instead of waiting for the automatic
-5-minute interval) with:
-
-```
-optimize run
-```
-
-Check what happened with:
-
-```
-status
-loads
-```
-
-`status` (typed with no argument, or via `dashboard`) prints the full
-power-budget breakdown; `loads` lists every configured Load and its
-current mode.
-
-## Running the six tests
-
-### Test 1 — Baseline
-
-```
-load set <MAC> 4 mode=FIXED_OFF
-simulation values voltage=12.6 current=0 soc=80
-optimize run
-status
-loads
-```
-Expect: all three AUTO loads (2, 18, 25) ON, pin 4 OFF.
-
-### Test 2 — FIXED_ON deducted first + priority tie-break
-
-```
-load set <MAC> 4 mode=FIXED_ON
-optimize run
-status
-loads
-```
-Expect: pin 4 ON, plus the two AUTO loads whose priorities sum highest
-(pins 2 and 18, since 2+3 > 2+1 > 3+1), pin 25 OFF.
-
-### Test 3 — SoC at/below reserve
-
-```
-simulation values voltage=12.0 current=0 soc=15
-optimize run
-status
-loads
-```
-(pin 4 stays FIXED_ON from Test 2). Expect: pin 4 still ON, all three AUTO
-loads OFF, dashboard shows `sustainable 0.00 W | NOT ACHIEVABLE`.
-
-### Test 4 — Discharge-current ceiling
-
-```
-load set <MAC> 4 mode=FIXED_OFF
-battery limits min_soc=20 max_discharge_amps=1 max_main_amps=15 runtime_hours=24
-simulation values voltage=12.6 current=0 soc=80
-optimize run
-optimize run
-status
-loads
-```
-(a second `optimize run` lets the simulated current smooth through the
-sensor's EMA filter before reading `status`). Expect `AUTO available
-power` to read exactly `voltage × 1 A` (12.60 W at 12.6 V), and only the
-single highest-priority AUTO load (pin 18) ON.
-
-### Test 5 — Runtime target unachievable
-
-```
-battery limits min_soc=20 max_discharge_amps=10 max_main_amps=15 runtime_hours=200
-load set <MAC> 4 mode=FIXED_ON
-simulation values voltage=12.6 current=0 soc=80
-optimize run
-optimize run
-status
-loads
-```
-Expect `Required runtime` to show a small `sustainable` figure with
-`NOT ACHIEVABLE`, `Fixed ON power` still reported as the full 10 W
-(never clipped), all AUTO loads OFF, pin 4 ON.
-
-### Test 6 — Schedule vs. priority
-
-```
-battery limits min_soc=20 max_discharge_amps=1 max_main_amps=15 runtime_hours=24
-load set <MAC> 18 schedule=23:59
-simulation values voltage=12.6 current=0 soc=80
-optimize run
-optimize run
-loads
-```
-Expect: pin 2 ON (NOT pin 18, despite pin 18 having the highest priority) —
-a not-yet-due schedule can knock a Load out of the running even though its
-priority would otherwise win.
-
-Then flip it:
-```
-load set <MAC> 18 schedule=00:00
-optimize run
-optimize run
-loads
-```
-Expect: pin 18 ON again — with the schedule "due", priority-driven
-selection returns to normal.
-
-Clean up before continuing:
-```
-load set <MAC> 18 schedule=none
-```
-
-### Restoring normal operation afterward
-
-```
+battery configure shunt_ohms=0.01 max_sensor_amps=20 ema_alpha=0.2 capacity_ah=50 initial_soc=75 nominal_voltage=12.6
 battery limits min_soc=20 max_discharge_amps=10 max_main_amps=15 runtime_hours=24
-load set <MAC> 4 mode=FIXED_OFF
-simulation values voltage=12.6 current=0 soc=80
+simulation start
+simulation values voltage=12.6 current=1.5 soc=75
 optimize run
-status
+```
+
+Selecting simulation first ensures that entering the battery profile does not
+attempt to initialize an unavailable INA219. It does not create default
+profile values; the following two commands still provide the explicit profile
+and policy used by this test.
+
+Use `dashboard`, `loads`, and `load show <PIN>` to inspect each result. The
+available-power value may move slightly between cycles because the simulated
+current and SoC pass through the same filtering and elapsed-time logic used by
+the firmware.
+
+## 3. Scenario 1 — baseline selection
+
+Restore the baseline before measuring:
+
+```text
+load set <MAC> 25 priority=7 schedule=none
+simulation values voltage=12.6 current=1.5 soc=75
+optimize run
+dashboard
 loads
 ```
-Expect: back to the Test 1 result (pins 2, 18, 25 ON, pin 4 OFF).
 
-## Reference: commands used above
+Expected result:
+
+- Fridge remains `FIXED_ON`; WaterHeater remains `FIXED_OFF`.
+- Router, Lights, and PhoneCharger are `AUTO_ON`.
+- WaterPump, Fan, and SecurityCamera are `AUTO_OFF`.
+- The selected AUTO power is 6 W with total configured priority 19.
+- Available AUTO power is approximately 6.4 W under the recorded profile.
+
+## 4. Scenario 2 — active schedule priority boost
+
+Choose a non-empty schedule window that contains the Central Node's current
+local time. For example, if the current local time is 14:30, use
+`14:00-15:00`:
+
+```text
+load set <MAC> 25 schedule=14:00-15:00
+optimize run
+dashboard
+loads
+```
+
+Expected result while the window is active:
+
+- SecurityCamera receives the +5 effective-priority boost.
+- Router and SecurityCamera are selected, using 6 W.
+- Lights and PhoneCharger are displaced.
+
+If the board's time is not inside `14:00-15:00`, replace it with a window that
+does contain the current time. A schedule outside the current time receives no
+boost; it does not make the Load ineligible.
+
+Clean up before the next scenario:
+
+```text
+load set <MAC> 25 schedule=none
+```
+
+## 5. Scenario 3 — equal individual priorities
+
+```text
+load set <MAC> 25 priority=9
+optimize run
+dashboard
+loads
+```
+
+Expected result:
+
+- Router and SecurityCamera now have the same individual priority.
+- Router, Lights, and PhoneCharger still win as a combination because their
+  total priority is 19, versus 18 for Router plus SecurityCamera.
+
+This scenario demonstrates that Best-First compares complete feasible
+combinations, not a pair of individual Loads in isolation.
+
+Restore SecurityCamera before continuing:
+
+```text
+load set <MAC> 25 priority=7
+```
+
+## 6. Scenario 4 — power-budget scaling
+
+```text
+simulation values voltage=12.6 current=1.5 soc=90
+optimize run
+dashboard
+loads
+```
+
+Expected result:
+
+- Available AUTO power rises to approximately 10.78 W.
+- Router, Lights, PhoneCharger, and SecurityCamera are selected.
+- Selected AUTO power is 10 W.
+- WaterPump and Fan remain off because neither fits in the remaining budget.
+
+## 7. Restore the recorded baseline
+
+```text
+load set <MAC> 25 priority=7 schedule=none
+simulation values voltage=12.6 current=1.5 soc=75
+optimize run
+dashboard
+loads
+```
+
+The result should again match Scenario 1.
+
+## Command reference
 
 | Command | Purpose |
 |---|---|
-| `load show PIN` | Show one Load's full status, including relay polarity |
-| `loads` | List every configured Load and its mode |
-| `load set MAC PIN mode=...` | Change a Load's FIXED/AUTO + ON/OFF mode |
-| `sensor sim` | Switch the battery measurement source to the simulator |
-| `simulation start` | Enable the simulator |
-| `simulation values voltage=V current=A soc=PERCENT` | Feed a fake battery reading |
-| `battery limits min_soc=P max_discharge_amps=A max_main_amps=A runtime_hours=H` | Change the configured power-safety limits |
-| `optimize run` | Force one immediate planning/dispatch cycle |
-| `status` | Full power-budget dashboard |
+| `loads` | List every configured Load and its current mode. |
+| `load show PIN` | Show one Central-local Load in detail. |
+| `load set MAC PIN priority=N schedule=HH:MM-HH:MM\|none` | Change an existing Load's priority or schedule window. |
+| `sensor sim` | Select simulated battery measurements. |
+| `simulation start` | Enable the simulator. |
+| `simulation values voltage=V current=A soc=PERCENT` | Supply the simulated measurement. |
+| `optimize run` | Force an immediate planning and dispatch cycle. |
+| `dashboard` | Show the current battery and power-budget calculation. |
 
-Full syntax for any command (including `load add`) is printed by running
-the command with no arguments, e.g. `load`, `battery`, `simulation`.
+For full syntax, enter a command with no arguments or use its help form. See
+`USER_MANUAL.md` for console operation and `TECHNICAL_REFERENCE.md` for the
+formulas and ranking rules.

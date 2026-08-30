@@ -18,20 +18,41 @@ Before configuring anything, learn from the customer:
 
 This is the core of what simulation mode is for. It is not a "fake" or "demo" mode — it's the real pre-installation validation step, using the exact same planning code a live installation uses (`USER_MANUAL.md` §2, §4 "Measurement source and simulation").
 
-1. `sensor sim` then `simulation start` — works immediately, no prior configuration needed.
-2. Configure each Load the customer described (`load add ...`), with realistic wattages, priorities, and FIXED/AUTO modes.
-3. Feed `simulation values voltage=... current=... soc=...` across the range you expect the real battery to operate in.
-4. Watch `dashboard`/`optimize run` and observe which Loads get selected at each simulated level, and whether the customer's stated runtime target is achievable (`Required runtime: ... ACHIEVABLE`/`NOT ACHIEVABLE`).
-5. Adjust priorities, or discuss trade-offs with the customer, until the simulated behavior matches what they actually need.
-6. Once satisfied, set the real `battery limits` (reserve SoC, max discharge/main current, required runtime hours) — these are the values simulation just helped you find, not invented defaults.
+1. Record the intended battery's nominal voltage and capacity. If the INA219
+   board and shunt are already known, record those specifications too.
+2. Run `sensor sim` then `simulation start`. Source selection itself can start
+   without prior configuration and does not invent any profile values.
+3. Enter the proposed profile with `battery configure ...`. Because simulation
+   is already selected, this does not attempt to connect to the sensor; it
+   supplies the battery capacity and nominal voltage needed by the runtime
+   formula. Do not invent these values—use the intended installation
+   specifications.
+4. Set an initial `battery limits` policy (reserve SoC, max discharge/main
+   current, required runtime). These are deliberate sizing assumptions, not
+   firmware defaults.
+5. Configure each Load the customer described (`load add ...`), with realistic
+   wattages, priorities, schedules, and FIXED/AUTO modes.
+6. Feed `simulation values voltage=... current=... soc=...` across the range
+   expected from the real battery.
+7. Watch `dashboard`/`optimize run` and observe which Loads get selected and
+   whether the runtime target is `ACHIEVABLE` or `NOT ACHIEVABLE`.
+8. Adjust priorities and `battery limits`, or discuss trade-offs with the
+   customer, until the simulated behavior matches their requirements.
 
 ## 3. Connect the real INA219 sensor
 
 Only after step 2 is complete:
 
-1. Enter the sensor's real, physical specifications with `battery configure shunt_ohms=... max_sensor_amps=... ema_alpha=... capacity_ah=... initial_soc=... nominal_voltage=...` — every one of these is specific to the actual battery and sensor board installed at this site; none of it is defaulted by the firmware (see `LIMITATIONS.md` and `USER_MANUAL.md` §4).
+1. Verify the proposed profile from step 2 against the actual battery, shunt,
+   and sensor board. Correct it with `battery configure
+   shunt_ohms=... max_sensor_amps=... ema_alpha=... capacity_ah=...
+   initial_soc=... nominal_voltage=...` before selecting hardware mode. None of
+   these values is defaulted by the firmware (see `LIMITATIONS.md` and
+   `USER_MANUAL.md` §4).
 2. `sensor ina219`, then `battery status` — confirm `Measurement source : HARDWARE` with sane readings. If it reports `NONE`/"not currently responding", check wiring before proceeding.
-3. Re-check `dashboard` against the real reading. The `battery limits` policy you set in step 2.6 does not need to change — that's the point of having sized it in simulation first. Only adjust the reserve/runtime numbers if the real battery's behavior genuinely differs from what was simulated.
+3. Re-check `dashboard` against the real reading. The `battery limits` policy
+   set during simulation does not need to change unless the real battery's
+   behavior genuinely differs from the sizing assumptions.
 
 ## 4. Commission Smart Nodes (if any)
 

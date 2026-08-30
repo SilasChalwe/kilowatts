@@ -25,3 +25,12 @@ Today an installer configures each appliance individually (`load add`). A more g
 ## Real-time system considerations
 
 This is a real-time-adjacent system (relay commands need to happen promptly relative to power-budget changes), but nothing in the current architecture enforces hard real-time guarantees — the optimizer runs on a configurable interval (default 5 minutes, `SET_OPTIMIZER_INTERVAL`) plus event-triggered wakeups, not a hard deadline scheduler. Worth a deliberate pass if this is ever deployed somewhere a delayed relay command has safety consequences, rather than just cost/comfort ones.
+
+## Smart Node boot-time state reconciliation
+
+Resolve the known case where an uncommissioned Smart Node has stale persisted
+Load records but its live Node object starts empty. Boot should either reapply
+valid persisted records consistently, or erase them as part of an explicit
+factory/uncommissioned-state policy. Add a reboot test covering both a clean
+uncommissioned board and a reused board with persisted Loads. See
+`LIMITATIONS.md`.

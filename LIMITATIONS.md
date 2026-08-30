@@ -25,3 +25,14 @@ The MQTT connection uses TLS via the standard ESP-IDF CA certificate bundle (`es
 ## No physical downstream confirmation
 
 The firmware writes a GPIO/relay command and reports success once that write completes at the firmware level (per `USER_MANUAL.md` §"Command acknowledgement meaning"). It has no way to confirm what, if anything, is actually connected downstream of that pin or whether it physically switched. This is an architectural boundary, not a bug — adding real feedback (a current-sensing or relay-state-confirmation mechanism) is future work, see `FUTURE_WORK.md`.
+
+## Uncommissioned Smart Node persisted-state edge case
+
+The standalone Smart Node console was verified for add/show/set/list/remove in
+`test-evidence/INSTALLATION_TEST_REPORT.md`. One known edge case remains: if an
+uncommissioned Smart Node contains stale persisted Load records, the store and
+the live in-memory Node can disagree after boot because persisted Loads are
+currently re-applied only after commissioning. This was observed while one
+board was reused between roles and was not resolved in the completed scope.
+Clear stale configuration before commissioning a reused board. A boot-time
+state-reconciliation improvement is listed in `FUTURE_WORK.md`.
