@@ -105,7 +105,6 @@ private:
     static int optimize(int argc, char** argv);
     static int wifi(int argc, char** argv);
     static int mqtt(int argc, char** argv);
-    static int simulation(int argc, char** argv);
     static int system(int argc, char** argv);
     static int clear(int argc, char** argv);
 
