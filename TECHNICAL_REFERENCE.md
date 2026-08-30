@@ -6,38 +6,23 @@ Kilowatts separates **power planning** from **power measurement**.
 - INA219 or simulation supplies voltage and current.
 - `P_measured = voltage × current` reports what is flowing at that moment.
 - Best-First Search receives only `P_auto_available` and selects AUTO Loads that fit inside it.
+- Simulation and INA219 use the same `PowerManager`; only the input source changes.
 
-Simulation and INA219 use the same `PowerManager` logic. The only difference is the source of voltage/current input.
-
-## 1. Core power variables
+## 1. Canonical power variables
 
 ```text
-P_budget
-    configured installation power allocation
-
-P_reserve
-    configured watts deliberately kept unused
-
-P_usable
-    P_budget - P_reserve
-
-P_fixed
-    sum of all FIXED_ON Load power ratings
-
-P_auto_available
-    watts available to Best-First Search
-
-P_auto
-    sum of the AUTO Loads selected by Best-First Search
-
-P_remaining
-    P_budget - (P_fixed + P_auto)
-
-P_measured
-    measured/simulated voltage × current
+P_budget          configured installation allocation
+P_reserve         watts deliberately kept unused
+P_usable          P_budget - P_reserve
+P_fixed           sum of FIXED_ON Load ratings
+P_auto_available  watts passed to Best-First Search
+P_auto            sum of selected AUTO Load ratings
+P_remaining       unallocated part of P_budget
+P_measured        voltage * current from INA219/simulation
+P_runtime         average power allowed by an active runtime target
 ```
 
-The main equations are:
+Main equations:
 
 ```text
 P_usable = max(0, P_budget - P_reserve)
@@ -53,56 +38,43 @@ Without a runtime target:
 planningAllowance = P_usable
 ```
 
-### Example
-
-For:
+Example:
 
 ```text
 P_budget  = 200 W
 P_reserve = 20 W
 P_fixed   = 80 W
+
+P_usable         = 180 W
+P_auto_available = 100 W
 ```
 
-then:
+If Best-First selects `P_auto = 100 W`:
 
 ```text
-P_usable         = 200 - 20 = 180 W
-P_auto_available = 180 - 80 = 100 W
-```
-
-If Best-First selects AUTO Loads totaling 100 W:
-
-```text
-P_auto      = 100 W
 P_remaining = 200 - (80 + 100) = 20 W
 ```
 
-The remaining 20 W is the configured power reserve.
-
-If Best-First selects only 70 W:
+If it selects only 70 W:
 
 ```text
 P_remaining = 200 - (80 + 70) = 50 W
 ```
 
-That 50 W contains the 20 W reserve plus 30 W of allocatable capacity that was not selected.
+That 50 W contains the 20 W reserve plus 30 W that was allocatable but not selected.
 
-## 2. Battery energy and runtime target
+## 2. Runtime and battery energy
 
-Power and energy are kept separate.
-
-Battery energy metadata:
+Power and energy remain separate.
 
 ```text
-ratedEnergyWh = batteryCapacityAh × nominalVoltageVolts
+ratedEnergyWh = capacityAh * nominalVoltage
 
-usableSoCFraction =
-    max(0, stateOfChargePercent - minimumStateOfChargePercent) / 100
-
-usableEnergyWh = ratedEnergyWh × usableSoCFraction
+usableEnergyWh = ratedEnergyWh *
+    max(0, SoC - minimumSoC) / 100
 ```
 
-When the user requests a runtime target:
+With a runtime target:
 
 ```text
 P_runtime = usableEnergyWh / remainingRuntimeHours
@@ -115,67 +87,52 @@ P_auto_available = max(0, planningAllowance - P_fixed)
 Example:
 
 ```text
-Battery capacity       = 200 Ah
-Nominal voltage        = 15 V
-State of Charge        = 70%
-Minimum SoC reserve    = 20%
-Required runtime       = 24 h
-```
+capacity       = 200 Ah
+nominalVoltage = 15 V
+SoC            = 70%
+minimumSoC     = 20%
+runtime        = 24 h
 
-Usable energy above the reserve:
-
-```text
-usableEnergyWh = 200 × 15 × (70 - 20) / 100
-               = 1500 Wh
-```
-
-Runtime power:
-
-```text
-P_runtime = 1500 / 24
-          = 62.5 W
+usableEnergyWh = 200 * 15 * 0.50 = 1500 Wh
+P_runtime      = 1500 / 24 = 62.5 W
 ```
 
 If `P_fixed = 40 W`:
 
 ```text
-P_auto_available = 62.5 - 40
-                 = 22.5 W
+P_auto_available = 62.5 - 40 = 22.5 W
 ```
 
-If `P_fixed = 80 W`, fixed demand already exceeds the 62.5 W runtime allowance. The firmware reports the runtime target as not achievable and gives AUTO Loads 0 W. It does not alter or hide the real fixed demand.
+If fixed demand already exceeds the runtime allowance, AUTO allocation is 0 and the runtime target is reported as not currently achievable. Fixed demand is not hidden or clipped.
 
 ## 3. INA219 and simulation
 
-Both paths produce the same input variables:
+The input selection is conceptually:
 
 ```text
-voltageVolts
-currentAmps
-P_measured = voltageVolts × currentAmps
+if simulationEnabled:
+    voltage/current = simulated input
+else:
+    voltage/current = INA219 input
+
+P_measured = voltage * current
 ```
 
-Hardware mode obtains voltage/current from INA219.
-
-Simulation mode accepts simulated voltage/current values.
-
-After input acquisition, the same measurement and planning objects are used. There is no second simulation planner.
+After that branch, calibration/filtering, telemetry and power-planning state use the same objects and code path.
 
 Example:
 
 ```text
 Voltage = 15 V
 Current = 1.5 A
-
-P_measured = 15 × 1.5
-           = 22.5 W
+P_measured = 22.5 W
 ```
 
-`22.5 W` is instantaneous measured power. It does **not** replace a configured `P_budget = 200 W`.
+`P_measured` is instantaneous consumption. It does not replace `P_budget`.
 
-This distinction prevents the zero-load deadlock problem: when no load is drawing current, INA219 can read approximately 0 W even though the installation can still start loads.
+This also avoids a zero-load deadlock: a sensor may measure about 0 W while no loads are active even though the configured installation can still start loads.
 
-## 4. Measurement vs configured budget
+## 4. Measurement monitoring
 
 The firmware can compare:
 
@@ -183,27 +140,17 @@ The firmware can compare:
 P_measured > P_budget
 ```
 
-If true, it publishes a `MEASURED_POWER_BUDGET` warning through MQTT.
+When this condition changes, Central can publish `MEASURED_POWER_BUDGET`.
 
-This means only that measured instantaneous power is above the configured installation budget. The firmware does not guess the physical cause.
-
-Possible causes include an unaccounted load, a load drawing above its configured rating, inrush, a wiring/fault condition, configuration error, or measurement error.
-
-This is **monitoring**, not hardware electrical protection.
+This means only that measured instantaneous power is above the configured planning budget. The software does not infer the physical cause and does not claim hardware electrical protection.
 
 ## 5. Best-First Search
 
 Source: `lib/BestFirstSearch/BestFirstSearch.cpp`.
 
-The Best-First Search algorithm is unchanged by the clean power-flow migration.
+The algorithm is unchanged by this cleanup.
 
-The Central runtime first accounts for FIXED_ON Loads and then constructs:
-
-```text
-P_auto_available
-```
-
-The existing search is called with:
+Central first calculates `P_fixed`, then `P_auto_available`, then calls the existing search with:
 
 ```text
 BestFirstSearch(
@@ -212,82 +159,45 @@ BestFirstSearch(
     currentTimeProvider)
 ```
 
-A candidate combination is feasible only when:
-
-```text
-total AUTO Load power <= P_auto_available
-```
-
-### Priority and search ranking
-
-For an AUTO Load whose schedule window is active:
-
-```text
-effectivePriority = configuredPriority + ACTIVE_SCHEDULE_PRIORITY_BOOST
-```
-
-For a candidate combination:
-
-```text
-totalEffectivePriority = sum(effectivePriority)
-g = number of selected Loads
-h = average selected Load power
-f = g + h
-```
-
-The existing algorithm ranks combinations using its current priority/tie-breaking rules. This migration changes the **power value passed into the algorithm**, not the algorithm itself.
+A candidate remains feasible only when its AUTO-load power fits within `P_auto_available`. Priority and tie-breaking remain those already implemented by Best-First Search.
 
 ## 6. FIXED and AUTO Loads
-
-FIXED_ON power is accounted first:
 
 ```text
 P_fixed = sum(FIXED_ON powerRatingWatts)
 ```
 
-Then:
+AUTO loads are then considered by Best-First Search using the available value:
 
 ```text
-P_auto_available = planningAllowance - P_fixed
+P_auto_available = max(0, planningAllowance - P_fixed)
 ```
 
-AUTO Loads are the candidates sent to Best-First Search.
-
-If fixed demand is already greater than the planning allowance:
+The final allocation is recorded as:
 
 ```text
-P_auto_available = 0
+P_auto = sum(selected AUTO powerRatingWatts)
+
+P_remaining = max(0, P_budget - (P_fixed + P_auto))
 ```
 
-The software reports the condition rather than pretending to provide physical hardware protection.
+## 7. Planner result codes
 
-## 7. Rejection result
-
-The active planner uses:
+The active runtime uses only:
 
 ```text
 NONE
 POWER_BUDGET_EXCEEDED
 ```
 
-The old battery-current, main-current and branch-current rejection reasons are not part of the clean power-flow model.
+Old battery-current, main-current and branch-current rejection reasons are not part of this model.
 
-## 8. Where the values are visible
+## 8. Console interface
 
-### Console
-
-`dashboard` and `optimize run` show:
+Power values are visible with:
 
 ```text
-P_budget
-P_reserve
-P_usable
-P_fixed
-P_auto_available
-P_auto
-P_remaining
-P_measured
-P_runtime (when runtime is active)
+dashboard
 ```
 
 Power planning is configured with:
@@ -296,33 +206,63 @@ Power planning is configured with:
 battery planning budget=W reserve=W min_soc=PERCENT [runtime_hours=H]
 ```
 
-### MQTT
-
-`state/system` publishes:
+Measurement input is controlled through one command:
 
 ```text
-battery.P_measured
-battery.P_runtime
-powerFlow.P_budget
-powerFlow.P_reserve
-powerFlow.P_usable
-powerFlow.P_fixed
-powerFlow.P_auto_available
-powerFlow.P_auto
-powerFlow.P_remaining
+sensor ina219
+sensor sim
+sensor values voltage=V current=A [soc=PERCENT]
 ```
 
-See `lib/MqttManager/README.md` for schema 4.
+There is no separate simulation planner or separate simulation console subsystem.
 
-## 9. Hardware-protection boundary
+## 9. MQTT interface
+
+The external MQTT API has only five topics:
+
+```text
+status
+state
+command
+ack
+alert
+```
+
+With the default namespace:
+
+```text
+kilowatts/v1/status
+kilowatts/v1/state
+kilowatts/v1/command
+kilowatts/v1/ack
+kilowatts/v1/alert
+```
+
+`state` combines current system, Load and Node state in one retained payload. The system section exposes the canonical power values including `P_budget`, `P_reserve`, `P_usable`, `P_fixed`, `P_auto_available`, `P_auto`, `P_remaining`, `P_measured` and `P_runtime`.
+
+All incoming operations use the single `command` topic with a `type` field:
+
+```text
+load
+system
+config
+simulation
+```
+
+Acknowledgements use `ack`. Monitoring warnings and informational events use `alert`.
+
+See `lib/MqttManager/README.md` for message examples.
+
+## 10. Hardware-protection boundary
 
 Kilowatts firmware performs:
 
 - measurement,
 - battery/energy estimation,
 - configured power allocation,
-- optimization,
+- runtime planning,
+- Best-First optimization,
 - monitoring/warnings,
 - relay/GPIO commands.
 
-Physical electrical protection remains the job of appropriately rated hardware such as fuses, breakers, BMS cut-offs and other protection devices. Software comparison of watts is not described as a replacement for those devices.
+Physical electrical protection remains the job of appropriately rated hardware such as fuses, breakers, BMS cut-offs and other installation-specific protection devices.
