@@ -1,4 +1,4 @@
-name: Patch console and MQTT
+name: Complete clean power budget migration
 on:
   push:
     branches: [clean-power-budget]
@@ -6,45 +6,242 @@ permissions:
   contents: write
 jobs:
   patch:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: clean-power-budget
           fetch-depth: 0
-      - name: Patch files
+      - name: Patch clean power flow
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          def one(text, pattern, replacement, name):
+          def regex_once(path, pattern, replacement, label):
+              p = Path(path)
+              text = p.read_text()
               out, n = re.subn(pattern, replacement, text, count=1, flags=re.S)
               if n != 1:
-                  raise SystemExit(f"{name}: matches={n}")
-              return out
+                  raise SystemExit(f"{label}: expected 1 match, got {n}")
+              p.write_text(out)
 
-          p = Path('lib/CentralConsole/CentralConsole.cpp')
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{label}: expected 1 match, got {n}")
+              p.write_text(text.replace(old, new, 1))
+
+          # -----------------------------------------------------------------
+          # PowerManager: configured installation budget is the planning
+          # source of truth. Measurement source only supplies V/I/P_measured.
+          # -----------------------------------------------------------------
+          replace_once(
+              'lib/BatteryManager/PowerManager.h',
+              '''    struct BatteryConfiguration {\n        float nameplateVoltageVolts;\n        float capacityAmpHours;\n        float minimumStateOfChargePercent;\n    };''',
+              '''    struct BatteryConfiguration {\n        float nameplateVoltageVolts;\n        float capacityAmpHours;\n    };''',
+              'PowerManager BatteryConfiguration')
+
+          replace_once(
+              'lib/BatteryManager/PowerManager.h',
+              '''    bool setPowerBudgetWatts(float P_budget);\n    bool setPowerReserveWatts(float P_reserve);\n    bool setFixedPowerWatts(float P_fixed);''',
+              '''    bool setPowerBudgetWatts(float P_budget);\n    bool setPowerReserveWatts(float P_reserve);\n    bool setMinimumStateOfChargePercent(float minimumStateOfChargePercent);\n    bool setFixedPowerWatts(float P_fixed);''',
+              'PowerManager min SoC setter declaration')
+
+          replace_once(
+              'lib/BatteryManager/PowerManager.h',
+              '''    PowerBudget powerBudget_;\n    float remainingRequiredRuntimeHours_;''',
+              '''    PowerBudget powerBudget_;\n    float minimumStateOfChargePercent_;\n    float remainingRequiredRuntimeHours_;''',
+              'PowerManager min SoC member')
+
+          p = Path('lib/BatteryManager/PowerManager.cpp')
           s = p.read_text()
-          s = one(s, r'void batteryUsage\(\)\n\{.*?\n\}\n\nvoid sensorUsage', '''void batteryUsage()\n{\n    std::printf(\n        "Usage:\\n"\n        "  battery\\n"\n        "  battery status\\n"\n        "  battery configure shunt_ohms=R max_sensor_amps=A ema_alpha=X capacity_ah=AH initial_soc=PERCENT nominal_voltage=V\\n"\n        "  battery planning budget=W reserve=W min_soc=PERCENT [runtime_hours=H]\\n\\n"\n        "P_budget is the configured installation power allocation.\\n"\n        "P_reserve is power intentionally kept unused.\\n"\n        "INA219 and simulation provide voltage/current for P_measured.\\n");\n}\n\nvoid sensorUsage''', 'batteryUsage')
-          s = one(s, r'    if \(argc >= 2 && same\(argv\[1\], "limits"\)\) \{.*?\n    \}\n\n    if \(argc < 2 \|\| !same\(argv\[1\], "configure"\)', '''    if (argc >= 2 && same(argv[1], "planning")) {\n        if (active_->callbacks_.configurePowerPlanning == nullptr) {\n            std::printf("[FAIL] power planning configuration is unavailable\\n");\n            return 1;\n        }\n\n        PowerPlanningCommandRequest request{};\n        if (!parseFloat(option(argc, argv, "budget"), request.P_budget) ||\n            !parseFloat(option(argc, argv, "reserve"), request.P_reserve) ||\n            !parseFloat(option(argc, argv, "min_soc"), request.minimumStateOfChargePercent)) {\n            batteryUsage();\n            return 1;\n        }\n        const char* runtimeText = option(argc, argv, "runtime_hours");\n        request.requiredRuntimeHours = 0.0F;\n        if (runtimeText != nullptr && !parseFloat(runtimeText, request.requiredRuntimeHours)) {\n            batteryUsage();\n            return 1;\n        }\n        if (request.P_budget <= 0.0F || request.P_reserve < 0.0F ||\n            request.P_reserve > request.P_budget ||\n            request.minimumStateOfChargePercent < 0.0F ||\n            request.minimumStateOfChargePercent > 100.0F ||\n            request.requiredRuntimeHours < 0.0F) {\n            std::printf("[FAIL] invalid power planning configuration\\n");\n            return 1;\n        }\n        return showResult(active_->callbacks_.configurePowerPlanning(\n            active_->callbacks_.context, request));\n    }\n\n    if (argc < 2 || !same(argv[1], "configure")''', 'console planning')
+          s = s.replace('batteryConfiguration_{0.0F, 0.0F, 0.0F},', 'batteryConfiguration_{0.0F, 0.0F},', 1)
+          s = s.replace('      powerBudget_{0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, false, 0.0F, true},\n      remainingRequiredRuntimeHours_(0.0F),',
+                        '      powerBudget_{0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, false, 0.0F, true},\n      minimumStateOfChargePercent_(0.0F),\n      remainingRequiredRuntimeHours_(0.0F),', 1)
           p.write_text(s)
 
-          p = Path('lib/MqttManager/MqttManager.cpp')
+          regex_once(
+              'lib/BatteryManager/PowerManager.cpp',
+              r'''bool PowerManager::initialize\(\n    const BusConfiguration& busConfiguration,\n    const SensorConfiguration& sensorConfiguration,\n    const BatteryConfiguration& batteryConfiguration\)\n\{.*?\n\}\n\nbool PowerManager::isInitialized''',
+              '''bool PowerManager::initialize(\n    const BusConfiguration& busConfiguration,\n    const SensorConfiguration& sensorConfiguration,\n    const BatteryConfiguration& batteryConfiguration)\n{\n    if (busConfiguration.clockSpeedHz == 0U) {\n        return false;\n    }\n\n    if (!simulationEnabled_) {\n        if (!isFinitePositive(sensorConfiguration.shuntResistanceOhms) ||\n            !isFinitePositive(sensorConfiguration.maximumExpectedCurrentAmps) ||\n            !std::isfinite(sensorConfiguration.emaAlpha) ||\n            sensorConfiguration.emaAlpha <= 0.0F ||\n            sensorConfiguration.emaAlpha > 1.0F ||\n            !isFinitePositive(batteryConfiguration.nameplateVoltageVolts) ||\n            !isFinitePositive(batteryConfiguration.capacityAmpHours)) {\n            return false;\n        }\n\n        const float maximumExpectedShuntVoltage =\n            sensorConfiguration.shuntResistanceOhms *\n            sensorConfiguration.maximumExpectedCurrentAmps;\n        if (maximumExpectedShuntVoltage > MAXIMUM_SHUNT_VOLTAGE_VOLTS) {\n            return false;\n        }\n    } else {\n        const bool batteryMetadataProvided =\n            batteryConfiguration.nameplateVoltageVolts != 0.0F ||\n            batteryConfiguration.capacityAmpHours != 0.0F;\n        if (batteryMetadataProvided &&\n            (!isFinitePositive(batteryConfiguration.nameplateVoltageVolts) ||\n             !isFinitePositive(batteryConfiguration.capacityAmpHours))) {\n            return false;\n        }\n    }\n\n    busConfiguration_ = busConfiguration;\n    sensorConfiguration_ = sensorConfiguration;\n    batteryConfiguration_ = batteryConfiguration;\n    measurements_ = {0.0F, 0.0F, 0.0F};\n    filteredMeasurements_ = {0.0F, 0.0F, 0.0F};\n    hasFilteredMeasurement_ = false;\n    measurementSource_ = MeasurementSource::NONE;\n\n    if (simulationEnabled_) {\n        initialized_ = true;\n        return true;\n    }\n\n    if (!initializeBus() || !initializeSensor()) {\n        return false;\n    }\n\n    initialized_ = true;\n    return true;\n}\n\nbool PowerManager::isInitialized''',
+              'PowerManager initialize')
+
+          replace_once(
+              'lib/BatteryManager/PowerManager.cpp',
+              '''bool PowerManager::setPowerReserveWatts(float P_reserve)\n{\n    if (!isFiniteNonNegative(P_reserve)) return false;\n    powerBudget_.P_reserve = P_reserve;\n    return true;\n}\n\nbool PowerManager::setFixedPowerWatts''',
+              '''bool PowerManager::setPowerReserveWatts(float P_reserve)\n{\n    if (!isFiniteNonNegative(P_reserve)) return false;\n    powerBudget_.P_reserve = P_reserve;\n    return true;\n}\n\nbool PowerManager::setMinimumStateOfChargePercent(float minimumStateOfChargePercent)\n{\n    if (!isValidPercent(minimumStateOfChargePercent)) return false;\n    minimumStateOfChargePercent_ = minimumStateOfChargePercent;\n    return true;\n}\n\nbool PowerManager::setFixedPowerWatts''',
+              'PowerManager min SoC setter')
+
+          regex_once(
+              'lib/BatteryManager/PowerManager.cpp',
+              r'''bool PowerManager::updatePowerBudget\(\)\n\{.*?\n\}\n\nPowerBudget PowerManager::getPowerBudget''',
+              '''bool PowerManager::updatePowerBudget()\n{\n    const float P_budget = powerBudget_.P_budget;\n    const float P_reserve = powerBudget_.P_reserve;\n    const float P_fixed = powerBudget_.P_fixed;\n    const float P_auto = powerBudget_.P_auto;\n\n    if (!isFinitePositive(P_budget) ||\n        !isFiniteNonNegative(P_reserve) ||\n        !isFiniteNonNegative(P_fixed) ||\n        !isFiniteNonNegative(P_auto) ||\n        P_reserve > P_budget ||\n        !isValidPercent(minimumStateOfChargePercent_)) {\n        return false;\n    }\n\n    const bool stateOfChargeRequired =\n        minimumStateOfChargePercent_ > 0.0F ||\n        remainingRequiredRuntimeHours_ > 0.0F;\n\n    if (stateOfChargeRequired && !isStateOfChargeValid()) {\n        return false;\n    }\n\n    const float P_usable = std::max(0.0F, P_budget - P_reserve);\n    float planningAllowance = P_usable;\n\n    const bool runtimeBudgetActive = remainingRequiredRuntimeHours_ > 0.0F;\n    float P_runtime = 0.0F;\n    bool requiredRuntimeAchievable = true;\n\n    if (runtimeBudgetActive) {\n        if (!isFinitePositive(batteryConfiguration_.capacityAmpHours) ||\n            !isFinitePositive(batteryConfiguration_.nameplateVoltageVolts)) {\n            return false;\n        }\n\n        const float usableSocFraction = std::max(\n            0.0F,\n            (stateOfChargePercent_ - minimumStateOfChargePercent_) / 100.0F);\n        const float usableEnergyWh =\n            batteryConfiguration_.capacityAmpHours *\n            batteryConfiguration_.nameplateVoltageVolts *\n            usableSocFraction;\n\n        P_runtime = usableEnergyWh / remainingRequiredRuntimeHours_;\n        if (!std::isfinite(P_runtime)) {\n            return false;\n        }\n\n        planningAllowance = std::min(P_usable, P_runtime);\n        requiredRuntimeAchievable = P_fixed <= planningAllowance;\n    }\n\n    if (isStateOfChargeValid() &&\n        stateOfChargePercent_ <= minimumStateOfChargePercent_) {\n        planningAllowance = 0.0F;\n        if (runtimeBudgetActive && P_fixed > 0.0F) {\n            requiredRuntimeAchievable = false;\n        }\n    }\n\n    powerBudget_.P_usable = P_usable;\n    powerBudget_.P_auto_available =\n        std::max(0.0F, planningAllowance - P_fixed);\n    powerBudget_.P_remaining =\n        std::max(0.0F, P_budget - (P_fixed + P_auto));\n    powerBudget_.runtimeBudgetActive = runtimeBudgetActive;\n    powerBudget_.P_runtime = P_runtime;\n    powerBudget_.requiredRuntimeAchievable = requiredRuntimeAchievable;\n    powerBudget_.batteryVoltageVolts = measurements_.voltageVolts;\n    powerBudget_.batteryCurrentAmps = measurements_.currentAmps;\n    powerBudget_.P_measured = measurements_.powerWatts;\n    return true;\n}\n\nPowerBudget PowerManager::getPowerBudget''',
+              'PowerManager updatePowerBudget')
+
+          # -----------------------------------------------------------------
+          # Console: one clean power-planning command, no legacy limits API.
+          # -----------------------------------------------------------------
+          regex_once(
+              'lib/CentralConsole/CentralConsole.cpp',
+              r'''void batteryUsage\(\)\n\{.*?\n\}\n\nvoid sensorUsage''',
+              '''void batteryUsage()\n{\n    std::printf(\n        "Usage:\\n"\n        "  battery\\n"\n        "  battery status\\n"\n        "  battery configure shunt_ohms=R max_sensor_amps=A ema_alpha=X "\n        "capacity_ah=AH initial_soc=PERCENT nominal_voltage=V\\n"\n        "  battery planning budget=W reserve=W min_soc=PERCENT [runtime_hours=H]\\n\\n"\n        "P_budget is the configured installation power allocation.\\n"\n        "P_reserve is power intentionally kept unused.\\n"\n        "INA219 and simulation supply voltage/current for P_measured.\\n"\n        "runtime_hours uses battery energy above min_soc to constrain AUTO allocation.\\n");\n}\n\nvoid sensorUsage''',
+              'console battery usage')
+
+          regex_once(
+              'lib/CentralConsole/CentralConsole.cpp',
+              r'''    if \(argc >= 2 && same\(argv\[1\], "limits"\)\) \{.*?\n    \}\n\n    if \(argc < 2 \|\| !same\(argv\[1\], "configure"\)''',
+              '''    if (argc >= 2 && same(argv[1], "planning")) {\n        if (active_->callbacks_.configurePowerPlanning == nullptr) {\n            std::printf("[FAIL] power planning configuration is unavailable\\n");\n            return 1;\n        }\n\n        PowerPlanningCommandRequest request{};\n        if (!parseFloat(option(argc, argv, "budget"), request.P_budget) ||\n            !parseFloat(option(argc, argv, "reserve"), request.P_reserve) ||\n            !parseFloat(option(argc, argv, "min_soc"), request.minimumStateOfChargePercent)) {\n            batteryUsage();\n            return 1;\n        }\n\n        const char* runtimeText = option(argc, argv, "runtime_hours");\n        request.requiredRuntimeHours = 0.0F;\n        if (runtimeText != nullptr &&\n            !parseFloat(runtimeText, request.requiredRuntimeHours)) {\n            batteryUsage();\n            return 1;\n        }\n\n        if (request.P_budget <= 0.0F ||\n            request.P_reserve < 0.0F ||\n            request.P_reserve > request.P_budget ||\n            request.minimumStateOfChargePercent < 0.0F ||\n            request.minimumStateOfChargePercent > 100.0F ||\n            request.requiredRuntimeHours < 0.0F) {\n            std::printf("[FAIL] invalid power planning configuration\\n");\n            return 1;\n        }\n\n        return showResult(active_->callbacks_.configurePowerPlanning(\n            active_->callbacks_.context, request));\n    }\n\n    if (argc < 2 || !same(argv[1], "configure")''',
+              'console planning command')
+
+          # -----------------------------------------------------------------
+          # MQTT command parser: schema v4 powerPlanning only.
+          # -----------------------------------------------------------------
+          replace_once(
+              'lib/MqttManager/MqttManager.cpp',
+              '''    if (std::strcmp(text, "CONFIGURE_POWER_LIMITS") == 0) {\n        action = ConfigCommandAction::CONFIGURE_POWER_LIMITS; return true;\n    }''',
+              '''    if (std::strcmp(text, "CONFIGURE_POWER_PLANNING") == 0) {\n        action = ConfigCommandAction::CONFIGURE_POWER_PLANNING; return true;\n    }''',
+              'MQTT config action')
+
+          regex_once(
+              'lib/MqttManager/MqttManager.cpp',
+              r'''    if \(request\.action == ConfigCommandAction::CONFIGURE_POWER_LIMITS\) \{.*?        request\.hasPowerLimitsConfiguration = true;\n    \}''',
+              '''    if (request.action == ConfigCommandAction::CONFIGURE_POWER_PLANNING) {\n        const cJSON* planning =\n            cJSON_GetObjectItemCaseSensitive(root, "powerPlanning");\n\n        if (!cJSON_IsObject(planning) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "P_budget"), request.P_budget) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "P_reserve"), request.P_reserve) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "minimumStateOfChargePercent"), request.minimumStateOfChargePercent) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "requiredRuntimeHours"), request.requiredRuntimeHours) ||\n            request.P_budget <= 0.0F ||\n            request.P_reserve < 0.0F ||\n            request.P_reserve > request.P_budget ||\n            request.minimumStateOfChargePercent < 0.0F ||\n            request.minimumStateOfChargePercent > 100.0F ||\n            request.requiredRuntimeHours < 0.0F) {\n            cJSON_Delete(root);\n            publishAcknowledgement(\n                request.commandId, commandType, AckStatus::REJECTED,\n                "invalid powerPlanning", target);\n            return;\n        }\n\n        request.hasPowerPlanningConfiguration = true;\n    }''',
+              'MQTT power planning object')
+
+          # -----------------------------------------------------------------
+          # Central runtime: exact P_* names and one planning path.
+          # -----------------------------------------------------------------
+          regex_once(
+              'src/central/namespace.h',
+              r'''struct PlanningSnapshot \{.*?\n\};\n\nPlanningSnapshot latestPlanningSnapshot''',
+              '''struct PlanningSnapshot {\n    bool budgetValid = false;\n    PowerBudget budget{};\n    float P_fixed = 0.0F;\n    float P_auto_available = 0.0F;\n    float P_auto = 0.0F;\n    float P_remaining = 0.0F;\n    std::size_t fixedOnCount = 0U;\n    std::size_t fixedOffCount = 0U;\n    std::size_t automaticCandidateCount = 0U;\n    std::size_t automaticSelectedCount = 0U;\n};\n\nPlanningSnapshot latestPlanningSnapshot''',
+              'PlanningSnapshot')
+
+          replace_once(
+              'src/central/namespace.h',
+              '''bool previousBatteryReserveReached = false;\nbool previousRequiredRuntimeAchievable = true;\nbool previousHardwareBatteryReadingValid = true;''',
+              '''bool previousBatteryReserveReached = false;\nbool previousRequiredRuntimeAchievable = true;\nbool previousMeasuredPowerExceedsBudget = false;\nbool previousHardwareBatteryReadingValid = true;''',
+              'power budget alert state')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''constexpr std::uint8_t BEST_FIRST_NONE = 0U;\nconstexpr std::uint8_t BEST_FIRST_LOW_BATTERY = 1U;\nconstexpr std::uint8_t BEST_FIRST_POWER_BUDGET_EXCEEDED = 2U;\nconstexpr std::uint8_t BEST_FIRST_BATTERY_CURRENT_LIMIT = 3U;\nconstexpr std::uint8_t BEST_FIRST_MAIN_LIMIT_EXCEEDED = 4U;\nconstexpr std::uint8_t BEST_FIRST_BRANCH_LIMIT_EXCEEDED = 5U;''',
+              '''constexpr std::uint8_t BEST_FIRST_NONE = 0U;\nconstexpr std::uint8_t BEST_FIRST_POWER_BUDGET_EXCEEDED = 2U;''',
+              'rejection constants')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''const char\* bestFirstRejectionText\(std::uint8_t reason\)\n\{.*?\n\}''',
+              '''const char* bestFirstRejectionText(std::uint8_t reason)\n{\n    switch (reason) {\n        case BEST_FIRST_NONE: return "NONE";\n        case BEST_FIRST_POWER_BUDGET_EXCEEDED: return "POWER_BUDGET_EXCEEDED";\n        default: return "UNKNOWN";\n    }\n}''',
+              'rejection text')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''bool applyBatteryConfiguration\(\n    const CentralConfigurationStore::BatterySensorConfiguration& configuration,\n    bool restorePersistedStateOfCharge\)\n\{.*?\n\}\n\nbool applyPersistedBatterySensorConfiguration''',
+              '''bool applyBatteryConfiguration(\n    const CentralConfigurationStore::BatterySensorConfiguration& configuration,\n    bool restorePersistedStateOfCharge)\n{\n    const bool simulating = batteryMonitor.isSimulationEnabled();\n\n    if (!simulating &&\n        (!configuration.configured ||\n         !CentralConfigurationStore::isValidBatterySensor(configuration))) {\n        return false;\n    }\n\n    const PowerManager::BusConfiguration busConfiguration{\n        CentralNodeConfig::I2C_SERIAL_DATA_PIN,\n        CentralNodeConfig::I2C_SERIAL_CLOCK_PIN,\n        CentralNodeConfig::I2C_PORT_NUMBER,\n        CentralNodeConfig::I2C_CLOCK_SPEED_HZ};\n\n    const PowerManager::SensorConfiguration sensorConfiguration{\n        configuration.configured ? configuration.shuntResistanceOhms : 0.0F,\n        configuration.configured ? configuration.maximumExpectedCurrentAmps : 0.0F,\n        configuration.configured ? configuration.emaAlpha : 1.0F};\n\n    const PowerManager::BatteryConfiguration batteryConfiguration{\n        configuration.configured ? configuration.nominalVoltageVolts : 0.0F,\n        configuration.configured ? configuration.batteryCapacityAmpHours : 0.0F};\n\n    if (!batteryMonitor.initialize(\n            busConfiguration,\n            sensorConfiguration,\n            batteryConfiguration)) {\n        return false;\n    }\n\n    if (!configuration.configured) {\n        return simulating;\n    }\n\n    return batteryMonitor.initializeStateOfCharge(\n        configuration.initialStateOfChargePercent,\n        restorePersistedStateOfCharge);\n}\n\nbool applyPersistedBatterySensorConfiguration''',
+              'battery configuration')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''SystemStateInputs makeSystemStateInputs\(\)\n\{.*?\n\}\n\nvoid publishCurrentState''',
+              '''SystemStateInputs makeSystemStateInputs()\n{\n    SystemStateInputs inputs{};\n    const auto& configuration = centralConfigurationStore.getConfiguration();\n    const auto& planning = configuration.powerPlanning;\n\n    inputs.batterySensorConfigured = configuration.batterySensor.configured;\n    inputs.batteryNominalVoltageVolts =\n        configuration.batterySensor.nominalVoltageVolts;\n    inputs.batteryCapacityAmpHours =\n        configuration.batterySensor.batteryCapacityAmpHours;\n\n    inputs.stateOfChargePercent = batteryMonitor.getStateOfChargePercent();\n    inputs.stateOfChargeValid = batteryMonitor.isStateOfChargeValid();\n    inputs.stateOfChargeSourceText =\n        stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource());\n\n    const float batteryFullEnergyWattHours =\n        configuration.batterySensor.batteryCapacityAmpHours *\n        configuration.batterySensor.nominalVoltageVolts;\n\n    inputs.batteryRatedEnergyWattHours = batteryFullEnergyWattHours;\n    inputs.batteryStoredEnergyWattHours =\n        inputs.stateOfChargeValid\n            ? batteryFullEnergyWattHours *\n                  (inputs.stateOfChargePercent / 100.0F)\n            : 0.0F;\n\n    const bool energyReserveKnown =\n        inputs.stateOfChargeValid && planning.configured;\n\n    inputs.batteryUsableEnergyWattHours =\n        energyReserveKnown\n            ? batteryFullEnergyWattHours *\n                  (std::max(\n                       0.0F,\n                       inputs.stateOfChargePercent -\n                           planning.minimumStateOfChargePercent) /\n                   100.0F)\n            : 0.0F;\n\n    inputs.batteryVoltageVolts =\n        batteryReadingValid ? latestBatteryMeasurements.voltageVolts : 0.0F;\n    inputs.batteryCurrentAmps =\n        batteryReadingValid ? latestBatteryMeasurements.currentAmps : 0.0F;\n    inputs.P_measured =\n        batteryReadingValid ? latestBatteryMeasurements.powerWatts : 0.0F;\n    inputs.batteryMeasurementSourceText =\n        measurementSourceText(batteryMonitor.getMeasurementSource());\n\n    inputs.batteryReserveReached =\n        energyReserveKnown &&\n        inputs.stateOfChargePercent <= planning.minimumStateOfChargePercent;\n\n    inputs.requiredRuntimeConfigured =\n        planning.configured && planning.requiredRuntimeHours > 0.0F;\n    inputs.requiredRuntimeHours =\n        planning.configured ? planning.requiredRuntimeHours : 0.0F;\n    inputs.remainingRuntimeHours =\n        batteryMonitor.getRemainingRequiredRuntimeHours();\n\n    inputs.runtimeEstimateValid =\n        energyReserveKnown && inputs.P_measured > 0.0F;\n    inputs.estimatedRuntimeHours =\n        inputs.runtimeEstimateValid\n            ? inputs.batteryUsableEnergyWattHours / inputs.P_measured\n            : 0.0F;\n\n    inputs.P_runtime =\n        latestPlanningSnapshot.budgetValid &&\n                latestPlanningSnapshot.budget.runtimeBudgetActive\n            ? latestPlanningSnapshot.budget.P_runtime\n            : 0.0F;\n    inputs.requiredRuntimeAchievable =\n        !latestPlanningSnapshot.budgetValid ||\n        latestPlanningSnapshot.budget.requiredRuntimeAchievable;\n\n    inputs.P_budget =\n        latestPlanningSnapshot.budgetValid\n            ? latestPlanningSnapshot.budget.P_budget\n            : (planning.configured ? planning.P_budget : 0.0F);\n    inputs.P_reserve =\n        latestPlanningSnapshot.budgetValid\n            ? latestPlanningSnapshot.budget.P_reserve\n            : (planning.configured ? planning.P_reserve : 0.0F);\n    inputs.P_usable =\n        latestPlanningSnapshot.budgetValid\n            ? latestPlanningSnapshot.budget.P_usable\n            : 0.0F;\n    inputs.P_fixed = latestPlanningSnapshot.P_fixed;\n    inputs.P_auto_available = latestPlanningSnapshot.P_auto_available;\n    inputs.P_auto = latestPlanningSnapshot.P_auto;\n    inputs.P_remaining = latestPlanningSnapshot.P_remaining;\n\n    inputs.wifiConnected = wifiManager.isConnected();\n    inputs.wifiStateText = wifiStateText(wifiManager.getState());\n    inputs.mqttConnected = mqttManager.isConnected();\n    inputs.currentTimeValid = currentTimeProvider.isCurrentTimeValid();\n    inputs.currentTimeSourceText =\n        timeSourceText(currentTimeProvider.getCurrentTimeSource());\n    inputs.lastOptimizationEpochSeconds = lastOptimizationEpochSeconds;\n    inputs.pinCommandErrorCount = relayCommandErrorCount;\n\n    return inputs;\n}\n\nvoid publishCurrentState''',
+              'system state inputs')
+
+          # Insert a real measurement-vs-configured-budget warning. It is
+          # monitoring only; no claim of hardware protection and no relay cut.
+          marker = '''    for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {'''
+          p = Path('src/central/namespace.h')
           s = p.read_text()
-          old = 'if (std::strcmp(text, "CONFIGURE_POWER_LIMITS") == 0) {\n        action = ConfigCommandAction::CONFIGURE_POWER_LIMITS; return true;\n    }'
-          new = 'if (std::strcmp(text, "CONFIGURE_POWER_PLANNING") == 0) {\n        action = ConfigCommandAction::CONFIGURE_POWER_PLANNING; return true;\n    }'
-          if s.count(old) != 1: raise SystemExit('mqtt action')
-          s = s.replace(old, new)
-          s = one(s, r'    if \(request\.action == ConfigCommandAction::CONFIGURE_POWER_LIMITS\) \{.*?        request\.hasPowerLimitsConfiguration = true;\n    \}', '''    if (request.action == ConfigCommandAction::CONFIGURE_POWER_PLANNING) {\n        const cJSON* planning = cJSON_GetObjectItemCaseSensitive(root, "powerPlanning");\n        if (!cJSON_IsObject(planning) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "P_budget"), request.P_budget) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "P_reserve"), request.P_reserve) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "minimumStateOfChargePercent"), request.minimumStateOfChargePercent) ||\n            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "requiredRuntimeHours"), request.requiredRuntimeHours) ||\n            request.P_budget <= 0.0F || request.P_reserve < 0.0F ||\n            request.P_reserve > request.P_budget ||\n            request.minimumStateOfChargePercent < 0.0F ||\n            request.minimumStateOfChargePercent > 100.0F ||\n            request.requiredRuntimeHours < 0.0F) {\n            cJSON_Delete(root);\n            publishAcknowledgement(request.commandId, commandType, AckStatus::REJECTED, "invalid powerPlanning", target);\n            return;\n        }\n        request.hasPowerPlanningConfiguration = true;\n    }''', 'mqtt planning')
+          if s.count(marker) < 1:
+              raise SystemExit('publish alert insertion marker missing')
+          insert = '''    const bool measuredPowerExceedsBudget =\n        systemInputs.P_budget > 0.0F &&\n        systemInputs.P_measured > systemInputs.P_budget;\n\n    if (measuredPowerExceedsBudget != previousMeasuredPowerExceedsBudget) {\n        mqttManager.publishAlert(\n            "MEASURED_POWER_BUDGET",\n            measuredPowerExceedsBudget ? "warning" : "info",\n            measuredPowerExceedsBudget\n                ? "measured power exceeds the configured installation budget"\n                : "measured power returned within the configured installation budget");\n        previousMeasuredPowerExceedsBudget = measuredPowerExceedsBudget;\n    }\n\n'''
+          # The first occurrence of this loop is inside publishCurrentState after
+          # the existing runtime alert block in the current file.
+          s = s.replace(marker, insert + marker, 1)
           p.write_text(s)
 
-          Path('.github/workflows/patch-console-mqtt.yml').unlink()
+          regex_once(
+              'src/central/namespace.h',
+              r'''void runOptimizationCycle\(bool printDashboard\)\n\{.*?\n\}\n\n\n/\* ------------------------------------------------------------------------- \*/\n/\* MQTT / infrastructure tasks''',
+              '''void runOptimizationCycle(bool printDashboard)\n{\n    std::vector<RelayCommandDispatcher::RelayTarget> dispatchOrder;\n    std::vector<const Load*> selectedAutoLoads;\n\n    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(1000U)) != pdTRUE) {\n        return;\n    }\n\n    applyStoredLoadSettings();\n\n    const std::uint32_t now =\n        static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));\n\n    LoadFilter filter;\n    buildLoadFilter(filter, now);\n    resetFixedRejectionReasons(filter);\n\n    PlanningSnapshot snapshot{};\n    snapshot.fixedOnCount = filter.getNumberOfFixedOnLoads();\n    snapshot.fixedOffCount = filter.getNumberOfFixedOffLoads();\n    snapshot.automaticCandidateCount =\n        filter.getNumberOfAutoCandidateLoads();\n    snapshot.P_fixed = sumFixedOnPowerWatts(filter);\n\n    const auto& configuration = centralConfigurationStore.getConfiguration();\n    const auto& planning = configuration.powerPlanning;\n\n    const float remainingRequiredRuntimeHours =\n        planning.configured\n            ? computeRemainingRequiredRuntimeHours(\n                  planning.requiredRuntimeHours,\n                  currentTimeProvider.isCurrentTimeValid(),\n                  static_cast<std::int64_t>(std::time(nullptr)))\n            : 0.0F;\n\n    const bool stateOfChargeRequired =\n        planning.configured &&\n        (planning.minimumStateOfChargePercent > 0.0F ||\n         planning.requiredRuntimeHours > 0.0F);\n\n    const bool planningInputsReady =\n        planning.configured &&\n        CentralConfigurationStore::isValidPowerPlanning(planning) &&\n        (!stateOfChargeRequired || batteryMonitor.isStateOfChargeValid()) &&\n        (planning.requiredRuntimeHours <= 0.0F ||\n         configuration.batterySensor.configured);\n\n    if (planningInputsReady &&\n        batteryMonitor.setPowerBudgetWatts(planning.P_budget) &&\n        batteryMonitor.setPowerReserveWatts(planning.P_reserve) &&\n        batteryMonitor.setMinimumStateOfChargePercent(\n            planning.minimumStateOfChargePercent) &&\n        batteryMonitor.setFixedPowerWatts(snapshot.P_fixed) &&\n        batteryMonitor.setAutoPowerWatts(0.0F) &&\n        batteryMonitor.setRemainingRequiredRuntimeHours(\n            remainingRequiredRuntimeHours) &&\n        batteryMonitor.updatePowerBudget()) {\n\n        snapshot.budgetValid = true;\n        snapshot.budget = batteryMonitor.getPowerBudget();\n        snapshot.P_auto_available = snapshot.budget.P_auto_available;\n\n        const std::vector<const Load*> autoLoads = automaticCandidates(filter);\n\n        BestFirstSearch search(\n            snapshot.P_auto_available,\n            autoLoads,\n            currentTimeProvider);\n\n        selectedAutoLoads = search.getBestCombination();\n\n        for (const Load* load : selectedAutoLoads) {\n            if (load != nullptr) {\n                snapshot.P_auto += load->getPowerRatingWatts();\n                ++snapshot.automaticSelectedCount;\n            }\n        }\n\n        const bool finalBudgetValid =\n            batteryMonitor.setAutoPowerWatts(snapshot.P_auto) &&\n            batteryMonitor.updatePowerBudget();\n\n        if (finalBudgetValid) {\n            snapshot.budget = batteryMonitor.getPowerBudget();\n            snapshot.P_remaining = snapshot.budget.P_remaining;\n\n            bool autoRuntimeStateChanged = false;\n            for (const Load* load : autoLoads) {\n                if (load == nullptr) continue;\n\n                Load* mutableLoad = registry.findMutableLoad(\n                    load->getMacAddress(),\n                    load->getRelayPin());\n                if (mutableLoad == nullptr) continue;\n\n                const bool selected =\n                    containsLoadPointer(selectedAutoLoads, load);\n                mutableLoad->setLastBestFirstRejectionReason(\n                    selected\n                        ? BEST_FIRST_NONE\n                        : BEST_FIRST_POWER_BUDGET_EXCEEDED);\n\n                autoRuntimeStateChanged =\n                    updateAutoRuntimeState(*mutableLoad, selected) ||\n                    autoRuntimeStateChanged;\n            }\n\n            if (autoRuntimeStateChanged) {\n                (void)centralLoadConfigurationStore.persist();\n            }\n        } else {\n            snapshot = PlanningSnapshot{};\n            snapshot.fixedOnCount = filter.getNumberOfFixedOnLoads();\n            snapshot.fixedOffCount = filter.getNumberOfFixedOffLoads();\n            snapshot.automaticCandidateCount =\n                filter.getNumberOfAutoCandidateLoads();\n            snapshot.P_fixed = sumFixedOnPowerWatts(filter);\n            selectedAutoLoads.clear();\n            recordAutoRejectionReason(\n                filter, BEST_FIRST_POWER_BUDGET_EXCEEDED);\n        }\n    } else {\n        recordAutoRejectionReason(filter, BEST_FIRST_POWER_BUDGET_EXCEEDED);\n\n        bool autoRuntimeStateChanged = false;\n        for (std::size_t i = 0U;\n             i < filter.getNumberOfAutoCandidateLoads();\n             ++i) {\n            const Load* load = filter.getAutoCandidateLoad(i);\n            if (load == nullptr) continue;\n\n            Load* mutableLoad = registry.findMutableLoad(\n                load->getMacAddress(),\n                load->getRelayPin());\n            if (mutableLoad == nullptr) continue;\n\n            autoRuntimeStateChanged =\n                updateAutoRuntimeState(*mutableLoad, false) ||\n                autoRuntimeStateChanged;\n        }\n\n        if (autoRuntimeStateChanged) {\n            (void)centralLoadConfigurationStore.persist();\n        }\n    }\n\n    latestPlanningSnapshot = snapshot;\n\n    if (currentTimeProvider.isCurrentTimeValid()) {\n        lastOptimizationEpochSeconds =\n            static_cast<std::int64_t>(std::time(nullptr));\n    }\n\n    dispatchOrder = buildRelayTargets(filter, selectedAutoLoads);\n    xSemaphoreGive(stateMutex);\n\n    dispatchRelayOrderWithOnStagger(dispatchOrder);\n\n    if (printDashboard) {\n        std::printf("\\n============================================================\\n");\n        std::printf("                    KILOWATTS DASHBOARD\\n");\n        std::printf("============================================================\\n");\n        std::printf("Measurement source   : %s\\n",\n                    measurementSourceText(batteryMonitor.getMeasurementSource()));\n        if (batteryReadingValid) {\n            std::printf("Voltage              : %.2f V\\n",\n                        static_cast<double>(latestBatteryMeasurements.voltageVolts));\n            std::printf("Current              : %.2f A\\n",\n                        static_cast<double>(latestBatteryMeasurements.currentAmps));\n            std::printf("P_measured           : %.2f W\\n",\n                        static_cast<double>(latestBatteryMeasurements.powerWatts));\n        } else {\n            std::printf("Measurement          : NOT AVAILABLE\\n");\n        }\n\n        if (batteryMonitor.isStateOfChargeValid()) {\n            std::printf("Battery SoC          : %.1f %%\\n",\n                        static_cast<double>(batteryMonitor.getStateOfChargePercent()));\n        } else {\n            std::printf("Battery SoC          : NOT AVAILABLE\\n");\n        }\n\n        std::printf("------------------------------------------------------------\\n");\n        if (latestPlanningSnapshot.budgetValid) {\n            std::printf("P_budget             : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.budget.P_budget));\n            std::printf("P_reserve            : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.budget.P_reserve));\n            std::printf("P_usable             : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.budget.P_usable));\n            std::printf("P_fixed              : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.P_fixed));\n            std::printf("P_auto_available     : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.P_auto_available));\n            std::printf("P_auto               : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.P_auto));\n            std::printf("P_remaining          : %.2f W\\n",\n                        static_cast<double>(latestPlanningSnapshot.P_remaining));\n\n            if (latestPlanningSnapshot.budget.runtimeBudgetActive) {\n                std::printf(\n                    "Runtime target        : %.2f h remaining | P_runtime %.2f W | %s\\n",\n                    static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()),\n                    static_cast<double>(latestPlanningSnapshot.budget.P_runtime),\n                    latestPlanningSnapshot.budget.requiredRuntimeAchievable\n                        ? "ACHIEVABLE"\n                        : "NOT ACHIEVABLE");\n            } else {\n                std::printf("Runtime target        : NOT CONFIGURED\\n");\n            }\n        } else {\n            std::printf("Power planning       : NOT AVAILABLE\\n");\n        }\n\n        std::printf("Fixed ON / OFF       : %u / %u\\n",\n                    static_cast<unsigned int>(latestPlanningSnapshot.fixedOnCount),\n                    static_cast<unsigned int>(latestPlanningSnapshot.fixedOffCount));\n        std::printf("Automatic loads      : %u / %u\\n",\n                    static_cast<unsigned int>(latestPlanningSnapshot.automaticSelectedCount),\n                    static_cast<unsigned int>(latestPlanningSnapshot.automaticCandidateCount));\n        std::printf("============================================================\\n\\n");\n    }\n\n    publishCurrentState();\n}\n\n\n/* ------------------------------------------------------------------------- */\n/* MQTT / infrastructure tasks''',
+              'optimization cycle')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''    if \(request\.action == ConfigCommandAction::CONFIGURE_POWER_LIMITS\) \{.*?\n    \}\n\n    if \(request\.action == ConfigCommandAction::REMOVE_LOAD\)''',
+              '''    if (request.action == ConfigCommandAction::CONFIGURE_POWER_PLANNING) {\n        if (!request.hasPowerPlanningConfiguration ||\n            request.nodeMacAddress != localMac) {\n            return commandResult(\n                false, false,\n                "power planning configuration targets Central only");\n        }\n\n        const CentralConfigurationStore::PowerPlanningConfiguration configuration{\n            true,\n            request.P_budget,\n            request.P_reserve,\n            request.minimumStateOfChargePercent,\n            request.requiredRuntimeHours};\n\n        if (!CentralConfigurationStore::isValidPowerPlanning(configuration)) {\n            return commandResult(\n                false, false,\n                "invalid power planning configuration");\n        }\n\n        if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {\n            return commandResult(false, false, "state is busy");\n        }\n\n        const bool stored =\n            centralConfigurationStore.setPowerPlanning(configuration) &&\n            centralConfigurationStore.persist();\n\n        xSemaphoreGive(stateMutex);\n\n        if (!stored) {\n            return commandResult(\n                false, false,\n                "could not persist power planning configuration");\n        }\n\n        xSemaphoreGive(optimizationTriggerSemaphore);\n        return commandResult(true, true, "power planning configured");\n    }\n\n    if (request.action == ConfigCommandAction::REMOVE_LOAD)''',
+              'power planning config handler')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''CommandResult consoleConfigurePowerLimits\(\n    void\*,\n    const PowerLimitsCommandRequest& request\)\n\{.*?\n\}\n\nCommandResult consoleNodeCommand''',
+              '''CommandResult consoleConfigurePowerPlanning(\n    void*,\n    const PowerPlanningCommandRequest& request)\n{\n    ConfigCommandRequest command{};\n    command.commandId = allocateConsoleCommandId();\n    command.action = ConfigCommandAction::CONFIGURE_POWER_PLANNING;\n    command.nodeMacAddress = communication.getLocalMacAddress();\n    command.hasPowerPlanningConfiguration = true;\n    command.P_budget = request.P_budget;\n    command.P_reserve = request.P_reserve;\n    command.minimumStateOfChargePercent =\n        request.minimumStateOfChargePercent;\n    command.requiredRuntimeHours = request.requiredRuntimeHours;\n\n    const CommandResult result = handleConfigCommand(nullptr, command);\n    return commandResult(result.accepted, result.completed, result.reason);\n}\n\nCommandResult consoleNodeCommand''',
+              'console power planning adapter')
+
+          regex_once(
+              'src/central/namespace.h',
+              r'''void consoleBatteryStatus\(void\*\)\n\{.*?\n\}\n\nvoid consoleNodes''',
+              '''void consoleBatteryStatus(void*)\n{\n    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {\n        std::printf("BATTERY: BUSY\\n");\n        return;\n    }\n\n    const auto& configuration = centralConfigurationStore.getConfiguration();\n    const auto& battery = configuration.batterySensor;\n    const auto& planning = configuration.powerPlanning;\n\n    std::printf("BATTERY / POWER STATUS\\n");\n    std::printf("Battery configuration : %s\\n",\n                battery.configured ? "CONFIGURED" : "NOT CONFIGURED");\n    std::printf("Measurement source    : %s\\n",\n                measurementSourceText(batteryMonitor.getMeasurementSource()));\n\n    if (batteryReadingValid) {\n        std::printf("Voltage               : %.3f V\\n",\n                    static_cast<double>(latestBatteryMeasurements.voltageVolts));\n        std::printf("Current               : %.3f A\\n",\n                    static_cast<double>(latestBatteryMeasurements.currentAmps));\n        std::printf("P_measured            : %.3f W\\n",\n                    static_cast<double>(latestBatteryMeasurements.powerWatts));\n    } else {\n        std::printf("Voltage               : --\\n");\n        std::printf("Current               : --\\n");\n        std::printf("P_measured            : --\\n");\n    }\n\n    if (batteryMonitor.isStateOfChargeValid()) {\n        std::printf("State of Charge       : %.2f %%\\n",\n                    static_cast<double>(batteryMonitor.getStateOfChargePercent()));\n        std::printf("SoC source            : %s\\n",\n                    stateOfChargeSourceText(\n                        batteryMonitor.getStateOfChargeSource()));\n    } else {\n        std::printf("State of Charge       : --\\n");\n        std::printf("SoC source            : UNKNOWN\\n");\n    }\n\n    std::printf("Power planning        : %s\\n",\n                planning.configured ? "CONFIGURED" : "NOT CONFIGURED");\n    if (planning.configured) {\n        std::printf("P_budget              : %.2f W\\n",\n                    static_cast<double>(planning.P_budget));\n        std::printf("P_reserve             : %.2f W\\n",\n                    static_cast<double>(planning.P_reserve));\n        std::printf("Minimum SoC reserve   : %.1f %%\\n",\n                    static_cast<double>(planning.minimumStateOfChargePercent));\n        if (planning.requiredRuntimeHours > 0.0F) {\n            std::printf("Required runtime      : %.2f h\\n",\n                        static_cast<double>(planning.requiredRuntimeHours));\n        } else {\n            std::printf("Required runtime      : NOT CONFIGURED\\n");\n        }\n    }\n\n    xSemaphoreGive(stateMutex);\n}\n\nvoid consoleNodes''',
+              'console battery status')
+
+          p = Path('src/central/namespace.h')
+          s = p.read_text()
+          s = s.replace('Available power passed to Best-First: %s', 'Power planning available: %s')
+          s = s.replace('run battery configure/battery limits with this installation\'s real values first',
+                        'run battery configure with this installation\'s real values first')
+          p.write_text(s)
+
+          # No legacy power-protection/planning API is allowed to remain in
+          # the executable code after this migration.
+          forbidden = [
+              'CONFIGURE_POWER_LIMITS',
+              'PowerLimitsCommandRequest',
+              'configurePowerLimits',
+              '.powerLimits',
+              'maximumBatteryDischargeCurrentAmps',
+              'maximumMainCurrentAmps',
+              'batteryMaximumPowerWatts',
+              'mainMaximumPowerWatts',
+              'sustainableTotalPowerWatts',
+              'availablePowerWatts',
+              'setCommittedPowerWatts',
+              'BEST_FIRST_LOW_BATTERY',
+              'BEST_FIRST_BATTERY_CURRENT_LIMIT',
+              'BEST_FIRST_MAIN_LIMIT_EXCEEDED',
+              'BEST_FIRST_BRANCH_LIMIT_EXCEEDED',
+          ]
+          code_paths = [
+              Path('src/central/namespace.h'),
+              Path('lib/MqttManager/MqttManager.cpp'),
+              Path('lib/CentralConsole/CentralConsole.cpp'),
+              Path('lib/BatteryManager/PowerManager.h'),
+              Path('lib/BatteryManager/PowerManager.cpp'),
+          ]
+          for path in code_paths:
+              text = path.read_text()
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"legacy token {token!r} remains in {path}")
           PY
-      - name: Commit
+
+          git diff --check
+
+      - name: Commit migrated code
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Update console and MQTT power planning interface"
+          git add lib/BatteryManager/PowerManager.h \
+                  lib/BatteryManager/PowerManager.cpp \
+                  lib/CentralConsole/CentralConsole.cpp \
+                  lib/MqttManager/MqttManager.cpp \
+                  src/central/namespace.h
+          if git diff --cached --quiet; then
+            echo "No migration changes required"
+            exit 0
+          fi
+          git commit -m "Complete clean power budget runtime migration"
           git push origin clean-power-budget
