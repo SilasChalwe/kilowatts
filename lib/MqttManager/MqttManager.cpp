@@ -76,9 +76,7 @@ bool readU32(const cJSON* item, std::uint32_t& value)
 
 bool readFloat(const cJSON* item, float& value)
 {
-    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble)) {
-        return false;
-    }
+    if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble)) return false;
     value = static_cast<float>(item->valuedouble);
     return std::isfinite(value);
 }
@@ -86,36 +84,18 @@ bool readFloat(const cJSON* item, float& value)
 bool parseMode(const char* text, LoadMode::Value& mode)
 {
     if (text == nullptr) return false;
-    if (std::strcmp(text, "FIXED_OFF") == 0) {
-        mode = LoadMode::Fixed::OFF;
-        return true;
-    }
-    if (std::strcmp(text, "FIXED_ON") == 0) {
-        mode = LoadMode::Fixed::ON;
-        return true;
-    }
-    if (std::strcmp(text, "AUTO_OFF") == 0) {
-        mode = LoadMode::Auto::OFF;
-        return true;
-    }
-    if (std::strcmp(text, "AUTO_ON") == 0) {
-        mode = LoadMode::Auto::ON;
-        return true;
-    }
+    if (std::strcmp(text, "FIXED_OFF") == 0) { mode = LoadMode::Fixed::OFF; return true; }
+    if (std::strcmp(text, "FIXED_ON") == 0) { mode = LoadMode::Fixed::ON; return true; }
+    if (std::strcmp(text, "AUTO_OFF") == 0) { mode = LoadMode::Auto::OFF; return true; }
+    if (std::strcmp(text, "AUTO_ON") == 0) { mode = LoadMode::Auto::ON; return true; }
     return false;
 }
 
 bool parsePowerType(const char* text, LoadPowerType& powerType)
 {
     if (text == nullptr) return false;
-    if (std::strcmp(text, "AC") == 0) {
-        powerType = LoadPowerType::AC;
-        return true;
-    }
-    if (std::strcmp(text, "DC") == 0) {
-        powerType = LoadPowerType::DC;
-        return true;
-    }
+    if (std::strcmp(text, "AC") == 0) { powerType = LoadPowerType::AC; return true; }
+    if (std::strcmp(text, "DC") == 0) { powerType = LoadPowerType::DC; return true; }
     return false;
 }
 
@@ -123,28 +103,22 @@ bool parseSystemAction(const char* text, SystemCommandAction& action)
 {
     if (text == nullptr) return false;
     if (std::strcmp(text, "REQUEST_OPTIMIZATION_CYCLE") == 0) {
-        action = SystemCommandAction::REQUEST_OPTIMIZATION_CYCLE;
-        return true;
+        action = SystemCommandAction::REQUEST_OPTIMIZATION_CYCLE; return true;
     }
     if (std::strcmp(text, "FACTORY_RESET_CENTRAL") == 0) {
-        action = SystemCommandAction::FACTORY_RESET_CENTRAL;
-        return true;
+        action = SystemCommandAction::FACTORY_RESET_CENTRAL; return true;
     }
     if (std::strcmp(text, "FACTORY_RESET_NODE") == 0) {
-        action = SystemCommandAction::FACTORY_RESET_NODE;
-        return true;
+        action = SystemCommandAction::FACTORY_RESET_NODE; return true;
     }
     if (std::strcmp(text, "SET_OPTIMIZER_INTERVAL") == 0) {
-        action = SystemCommandAction::SET_OPTIMIZER_INTERVAL;
-        return true;
+        action = SystemCommandAction::SET_OPTIMIZER_INTERVAL; return true;
     }
     if (std::strcmp(text, "REPORT_OPTIMIZER_INTERVAL") == 0) {
-        action = SystemCommandAction::REPORT_OPTIMIZER_INTERVAL;
-        return true;
+        action = SystemCommandAction::REPORT_OPTIMIZER_INTERVAL; return true;
     }
     if (std::strcmp(text, "REBOOT_CENTRAL") == 0) {
-        action = SystemCommandAction::REBOOT_CENTRAL;
-        return true;
+        action = SystemCommandAction::REBOOT_CENTRAL; return true;
     }
     return false;
 }
@@ -153,53 +127,35 @@ bool parseConfigAction(const char* text, ConfigCommandAction& action)
 {
     if (text == nullptr) return false;
     if (std::strcmp(text, "COMMISSION_NODE") == 0) {
-        action = ConfigCommandAction::COMMISSION_NODE;
-        return true;
+        action = ConfigCommandAction::COMMISSION_NODE; return true;
     }
     if (std::strcmp(text, "RENAME_NODE") == 0) {
-        action = ConfigCommandAction::RENAME_NODE;
-        return true;
+        action = ConfigCommandAction::RENAME_NODE; return true;
     }
     if (std::strcmp(text, "DECOMMISSION_NODE") == 0) {
-        action = ConfigCommandAction::DECOMMISSION_NODE;
-        return true;
+        action = ConfigCommandAction::DECOMMISSION_NODE; return true;
     }
     if (std::strcmp(text, "CONFIGURE_LOAD") == 0) {
-        action = ConfigCommandAction::CONFIGURE_LOAD;
-        return true;
+        action = ConfigCommandAction::CONFIGURE_LOAD; return true;
     }
     if (std::strcmp(text, "REMOVE_LOAD") == 0) {
-        action = ConfigCommandAction::REMOVE_LOAD;
-        return true;
+        action = ConfigCommandAction::REMOVE_LOAD; return true;
     }
     if (std::strcmp(text, "CONFIGURE_BATTERY_SENSOR") == 0) {
-        action = ConfigCommandAction::CONFIGURE_BATTERY_SENSOR;
-        return true;
+        action = ConfigCommandAction::CONFIGURE_BATTERY_SENSOR; return true;
     }
     if (std::strcmp(text, "CONFIGURE_POWER_PLANNING") == 0) {
-        action = ConfigCommandAction::CONFIGURE_POWER_PLANNING;
-        return true;
+        action = ConfigCommandAction::CONFIGURE_POWER_PLANNING; return true;
     }
     return false;
 }
 
-bool parseSimulationAction(
-    const char* text,
-    SimulationCommandAction& action)
+bool parseSimulationAction(const char* text, SimulationCommandAction& action)
 {
     if (text == nullptr) return false;
-    if (std::strcmp(text, "ENABLE") == 0) {
-        action = SimulationCommandAction::ENABLE;
-        return true;
-    }
-    if (std::strcmp(text, "DISABLE") == 0) {
-        action = SimulationCommandAction::DISABLE;
-        return true;
-    }
-    if (std::strcmp(text, "SET_VALUES") == 0) {
-        action = SimulationCommandAction::SET_VALUES;
-        return true;
-    }
+    if (std::strcmp(text, "ENABLE") == 0) { action = SimulationCommandAction::ENABLE; return true; }
+    if (std::strcmp(text, "DISABLE") == 0) { action = SimulationCommandAction::DISABLE; return true; }
+    if (std::strcmp(text, "SET_VALUES") == 0) { action = SimulationCommandAction::SET_VALUES; return true; }
     return false;
 }
 
@@ -207,10 +163,8 @@ bool parseSchedule(const cJSON* object, AutoSchedule& schedule)
 {
     if (!cJSON_IsObject(object)) return false;
 
-    const cJSON* enabled =
-        cJSON_GetObjectItemCaseSensitive(object, "enabled");
+    const cJSON* enabled = cJSON_GetObjectItemCaseSensitive(object, "enabled");
     if (!cJSON_IsBool(enabled)) return false;
-
     if (!cJSON_IsTrue(enabled)) {
         schedule = AutoSchedule{};
         return true;
@@ -230,19 +184,11 @@ bool parseSchedule(const cJSON* object, AutoSchedule& schedule)
         return false;
     }
 
-    const std::uint16_t startTotalMinutes =
-        static_cast<std::uint16_t>(startHour) * 60U + startMinute;
-    const std::uint16_t endTotalMinutes =
-        static_cast<std::uint16_t>(endHour) * 60U + endMinute;
+    const std::uint16_t start = static_cast<std::uint16_t>(startHour) * 60U + startMinute;
+    const std::uint16_t end = static_cast<std::uint16_t>(endHour) * 60U + endMinute;
+    if (start == end) return false;
 
-    if (startTotalMinutes == endTotalMinutes) return false;
-
-    schedule = AutoSchedule{
-        true,
-        startHour,
-        startMinute,
-        endHour,
-        endMinute};
+    schedule = AutoSchedule{true, startHour, startMinute, endHour, endMinute};
     return true;
 }
 
@@ -272,6 +218,12 @@ const char* ackText(AckStatus status)
     return "UNKNOWN";
 }
 
+AckStatus resultStatus(const CommandResult& result)
+{
+    if (!result.accepted) return AckStatus::REJECTED;
+    return result.completed ? AckStatus::APPLIED : AckStatus::ACCEPTED;
+}
+
 } // namespace
 
 MqttManager::MqttManager(
@@ -282,6 +234,9 @@ MqttManager::MqttManager(
       deviceId_(deviceId != nullptr ? deviceId : ""),
       statusTopic_(),
       schemaVersion_(schemaVersion),
+      stateSystemJson_(),
+      stateLoadsJson_(),
+      stateNodesJson_(),
       client_(nullptr),
       state_(MqttConnectionState::DISCONNECTED),
       loadCommandHandler_(nullptr),
@@ -304,33 +259,25 @@ MqttManager::~MqttManager()
     }
 }
 
-void MqttManager::setLoadCommandHandler(
-    LoadCommandHandler handler,
-    void* context)
+void MqttManager::setLoadCommandHandler(LoadCommandHandler handler, void* context)
 {
     loadCommandHandler_ = handler;
     loadCommandHandlerContext_ = context;
 }
 
-void MqttManager::setSystemCommandHandler(
-    SystemCommandHandler handler,
-    void* context)
+void MqttManager::setSystemCommandHandler(SystemCommandHandler handler, void* context)
 {
     systemCommandHandler_ = handler;
     systemCommandHandlerContext_ = context;
 }
 
-void MqttManager::setConfigCommandHandler(
-    ConfigCommandHandler handler,
-    void* context)
+void MqttManager::setConfigCommandHandler(ConfigCommandHandler handler, void* context)
 {
     configCommandHandler_ = handler;
     configCommandHandlerContext_ = context;
 }
 
-void MqttManager::setSimulationCommandHandler(
-    SimulationCommandHandler handler,
-    void* context)
+void MqttManager::setSimulationCommandHandler(SimulationCommandHandler handler, void* context)
 {
     simulationCommandHandler_ = handler;
     simulationCommandHandlerContext_ = context;
@@ -343,10 +290,7 @@ std::string MqttManager::fullTopic(const char* suffix) const
 
 bool MqttManager::begin(const Credentials& credentials)
 {
-    if (credentials.brokerHost == nullptr ||
-        credentials.brokerHost[0] == '\0') {
-        return false;
-    }
+    if (credentials.brokerHost == nullptr || credentials.brokerHost[0] == '\0') return false;
 
     if (client_ != nullptr) {
         esp_mqtt_client_stop(client_);
@@ -368,8 +312,7 @@ bool MqttManager::begin(const Credentials& credentials)
     statusTopic_ = fullTopic(TOPIC_STATUS);
     config.session.last_will.topic = statusTopic_.c_str();
     config.session.last_will.msg = MQTT_STATUS_OFFLINE;
-    config.session.last_will.msg_len =
-        static_cast<int>(std::strlen(MQTT_STATUS_OFFLINE));
+    config.session.last_will.msg_len = static_cast<int>(std::strlen(MQTT_STATUS_OFFLINE));
     config.session.last_will.qos = 1;
     config.session.last_will.retain = true;
 
@@ -377,10 +320,7 @@ bool MqttManager::begin(const Credentials& credentials)
     if (client_ == nullptr) return false;
 
     if (esp_mqtt_client_register_event(
-            client_,
-            MQTT_EVENT_ANY,
-            &MqttManager::handleMqttEvent,
-            this) != ESP_OK) {
+            client_, MQTT_EVENT_ANY, &MqttManager::handleMqttEvent, this) != ESP_OK) {
         esp_mqtt_client_destroy(client_);
         client_ = nullptr;
         return false;
@@ -393,7 +333,6 @@ bool MqttManager::begin(const Credentials& credentials)
         client_ = nullptr;
         return false;
     }
-
     return true;
 }
 
@@ -407,27 +346,63 @@ MqttConnectionState MqttManager::getState() const
     return state_.load();
 }
 
+bool MqttManager::publishRaw(
+    const char* topicSuffix,
+    const std::string& payload,
+    int qos,
+    bool retain)
+{
+    if (!isConnected() || client_ == nullptr || topicSuffix == nullptr) return false;
+
+    const std::string topic = fullTopic(topicSuffix);
+    return esp_mqtt_client_publish(
+               client_, topic.c_str(), payload.c_str(),
+               static_cast<int>(payload.size()), qos, retain ? 1 : 0) >= 0;
+}
+
+bool MqttManager::publishCombinedState()
+{
+    std::string json = "{\"system\":";
+    json += stateSystemJson_.empty() ? "null" : stateSystemJson_;
+    json += ",\"loads\":";
+    json += stateLoadsJson_.empty() ? "null" : stateLoadsJson_;
+    json += ",\"nodes\":";
+    json += stateNodesJson_.empty() ? "null" : stateNodesJson_;
+    json += "}";
+    return publishRaw(TOPIC_STATE, json, 0, true);
+}
+
 bool MqttManager::publish(
     const char* topicSuffix,
     const std::string& payload,
     int qos,
     bool retain)
 {
-    if (!isConnected() || client_ == nullptr) return false;
+    if (topicSuffix == nullptr) return false;
 
-    const std::string topic = fullTopic(topicSuffix);
-    return esp_mqtt_client_publish(
-               client_,
-               topic.c_str(),
-               payload.c_str(),
-               static_cast<int>(payload.size()),
-               qos,
-               retain ? 1 : 0) >= 0;
+    if (std::strcmp(topicSuffix, TOPIC_STATE_SYSTEM) == 0) {
+        stateSystemJson_ = payload;
+        return true;
+    }
+    if (std::strcmp(topicSuffix, TOPIC_STATE_LOADS) == 0) {
+        stateLoadsJson_ = payload;
+        return true;
+    }
+    if (std::strcmp(topicSuffix, TOPIC_STATE_NODES) == 0) {
+        stateNodesJson_ = payload;
+        return publishCombinedState();
+    }
+    if (std::strcmp(topicSuffix, TOPIC_STATE_TREE) == 0 ||
+        std::strcmp(topicSuffix, TOPIC_CONFIG_NODES) == 0) {
+        return true;
+    }
+
+    return publishRaw(topicSuffix, payload, qos, retain);
 }
 
 bool MqttManager::publishStatus()
 {
-    return publish(TOPIC_STATUS, MQTT_STATUS_ONLINE, 1, true);
+    return publishRaw(TOPIC_STATUS, MQTT_STATUS_ONLINE, 1, true);
 }
 
 void MqttManager::publishAcknowledgement(
@@ -449,7 +424,7 @@ void MqttManager::publishAcknowledgement(
     json += ",\"target\":";
     appendJsonString(json, target);
     json += "}";
-    (void)publish(TOPIC_ACKS, json, 1, false);
+    (void)publishRaw(TOPIC_ACK, json, 1, false);
 }
 
 void MqttManager::publishEvent(
@@ -457,16 +432,13 @@ void MqttManager::publishEvent(
     const char* target,
     const char* detail)
 {
-    std::string json =
-        "{\"schemaVersion\":" + std::to_string(schemaVersion_) +
-        ",\"eventType\":";
-    appendJsonString(json, eventType);
-    json += ",\"target\":";
-    appendJsonString(json, target);
-    json += ",\"detail\":";
-    appendJsonString(json, detail);
-    json += "}";
-    (void)publish(TOPIC_EVENTS, json, 1, false);
+    std::string text;
+    if (target != nullptr && target[0] != '\0') text += target;
+    if (detail != nullptr && detail[0] != '\0') {
+        if (!text.empty()) text += ": ";
+        text += detail;
+    }
+    publishAlert(eventType, "info", text.empty() ? nullptr : text.c_str());
 }
 
 void MqttManager::publishAlert(
@@ -483,30 +455,21 @@ void MqttManager::publishAlert(
     json += ",\"detail\":";
     appendJsonString(json, detail);
     json += "}";
-    (void)publish(TOPIC_ALERTS, json, 1, false);
+    (void)publishRaw(TOPIC_ALERT, json, 1, false);
 }
 
 void MqttManager::onConnected()
 {
     state_.store(MqttConnectionState::CONNECTED);
     (void)publishStatus();
-
-    esp_mqtt_client_subscribe(
-        client_, fullTopic(TOPIC_COMMANDS_LOAD).c_str(), 1);
-    esp_mqtt_client_subscribe(
-        client_, fullTopic(TOPIC_COMMANDS_SYSTEM).c_str(), 1);
-    esp_mqtt_client_subscribe(
-        client_, fullTopic(TOPIC_COMMANDS_CONFIG).c_str(), 1);
-    esp_mqtt_client_subscribe(
-        client_, fullTopic(TOPIC_COMMANDS_SIMULATION).c_str(), 1);
-
-    ESP_LOGI(TAG, "mqtt: connected; command topics subscribed");
+    esp_mqtt_client_subscribe(client_, fullTopic(TOPIC_COMMAND).c_str(), 1);
+    ESP_LOGI(TAG, "mqtt connected; subscribed to one command topic");
 }
 
 void MqttManager::onDisconnected()
 {
     state_.store(MqttConnectionState::DISCONNECTED);
-    ESP_LOGW(TAG, "mqtt: disconnected; local control remains active");
+    ESP_LOGW(TAG, "mqtt disconnected; local control remains active");
 }
 
 void MqttManager::onDataReceived(
@@ -515,16 +478,30 @@ void MqttManager::onDataReceived(
     const char* data,
     std::size_t dataLength)
 {
-    const std::string received(topic, topicLength);
+    if (std::string(topic, topicLength) != fullTopic(TOPIC_COMMAND)) return;
 
-    if (received == fullTopic(TOPIC_COMMANDS_LOAD)) {
+    cJSON* root = cJSON_ParseWithLength(data, dataLength);
+    if (root == nullptr) {
+        publishAcknowledgement(0U, "COMMAND", AckStatus::REJECTED, "malformed JSON", nullptr);
+        return;
+    }
+
+    const cJSON* type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const char* value = cJSON_IsString(type) ? type->valuestring : nullptr;
+    std::string commandType = value != nullptr ? value : "";
+    cJSON_Delete(root);
+
+    if (commandType == "load") {
         handleLoadCommandMessage(data, dataLength);
-    } else if (received == fullTopic(TOPIC_COMMANDS_SYSTEM)) {
+    } else if (commandType == "system") {
         handleSystemCommandMessage(data, dataLength);
-    } else if (received == fullTopic(TOPIC_COMMANDS_CONFIG)) {
+    } else if (commandType == "config") {
         handleConfigCommandMessage(data, dataLength);
-    } else if (received == fullTopic(TOPIC_COMMANDS_SIMULATION)) {
+    } else if (commandType == "simulation") {
         handleSimulationCommandMessage(data, dataLength);
+    } else {
+        publishAcknowledgement(0U, "COMMAND", AckStatus::REJECTED,
+            "type must be load, system, config or simulation", nullptr);
     }
 }
 
@@ -534,83 +511,54 @@ void MqttManager::handleLoadCommandMessage(
 {
     cJSON* root = cJSON_ParseWithLength(data, dataLength);
     if (root == nullptr) {
-        publishAcknowledgement(
-            0U, "LOAD", AckStatus::REJECTED, "malformed JSON", nullptr);
+        publishAcknowledgement(0U, "LOAD", AckStatus::REJECTED, "malformed JSON", nullptr);
         return;
     }
 
     LoadCommandRequest request{};
-    const cJSON* nodeMac =
-        cJSON_GetObjectItemCaseSensitive(root, "nodeMac");
+    const cJSON* nodeMac = cJSON_GetObjectItemCaseSensitive(root, "nodeMac");
 
-    if (!readU32(
-            cJSON_GetObjectItemCaseSensitive(root, "commandId"),
-            request.commandId) ||
+    if (!readU32(cJSON_GetObjectItemCaseSensitive(root, "commandId"), request.commandId) ||
         !cJSON_IsString(nodeMac) ||
         !parseMac(nodeMac->valuestring, request.nodeMacAddress) ||
-        !readU8(
-            cJSON_GetObjectItemCaseSensitive(root, "relayPin"),
-            request.relayPin)) {
+        !readU8(cJSON_GetObjectItemCaseSensitive(root, "relayPin"), request.relayPin)) {
         cJSON_Delete(root);
-        publishAcknowledgement(
-            0U,
-            "LOAD",
-            AckStatus::REJECTED,
-            "invalid commandId/nodeMac/relayPin",
-            nullptr);
+        publishAcknowledgement(0U, "LOAD", AckStatus::REJECTED,
+            "invalid commandId/nodeMac/relayPin", nullptr);
         return;
     }
 
     char target[18]{};
-    formatMacAddressText(
-        target,
-        sizeof(target),
-        request.nodeMacAddress);
+    formatMacAddressText(target, sizeof(target), request.nodeMacAddress);
 
-    const cJSON* priority =
-        cJSON_GetObjectItemCaseSensitive(root, "priority");
+    const cJSON* priority = cJSON_GetObjectItemCaseSensitive(root, "priority");
     if (priority != nullptr) {
         if (!readU16(priority, request.priority)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                "LOAD",
-                AckStatus::REJECTED,
-                "invalid priority",
-                target);
+            publishAcknowledgement(request.commandId, "LOAD", AckStatus::REJECTED,
+                "invalid priority", target);
             return;
         }
         request.hasPriority = true;
     }
 
-    const cJSON* mode =
-        cJSON_GetObjectItemCaseSensitive(root, "mode");
+    const cJSON* mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     if (mode != nullptr) {
-        if (!cJSON_IsString(mode) ||
-            !parseMode(mode->valuestring, request.mode)) {
+        if (!cJSON_IsString(mode) || !parseMode(mode->valuestring, request.mode)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                "LOAD",
-                AckStatus::REJECTED,
-                "invalid mode",
-                target);
+            publishAcknowledgement(request.commandId, "LOAD", AckStatus::REJECTED,
+                "invalid mode", target);
             return;
         }
         request.hasMode = true;
     }
 
-    const cJSON* schedule =
-        cJSON_GetObjectItemCaseSensitive(root, "schedule");
+    const cJSON* schedule = cJSON_GetObjectItemCaseSensitive(root, "schedule");
     if (schedule != nullptr) {
         if (!parseSchedule(schedule, request.schedule)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                "LOAD",
-                AckStatus::REJECTED,
-                "invalid schedule",
-                target);
+            publishAcknowledgement(request.commandId, "LOAD", AckStatus::REJECTED,
+                "invalid schedule", target);
             return;
         }
         request.hasSchedule = true;
@@ -619,24 +567,13 @@ void MqttManager::handleLoadCommandMessage(
     cJSON_Delete(root);
 
     if (loadCommandHandler_ == nullptr) {
-        publishAcknowledgement(
-            request.commandId,
-            "LOAD",
-            AckStatus::REJECTED,
-            "no handler",
-            target);
+        publishAcknowledgement(request.commandId, "LOAD", AckStatus::REJECTED,
+            "no handler", target);
         return;
     }
 
-    const CommandResult result =
-        loadCommandHandler_(loadCommandHandlerContext_, request);
-
-    publishAcknowledgement(
-        request.commandId,
-        "LOAD",
-        result.accepted ? AckStatus::APPLIED : AckStatus::REJECTED,
-        result.reason,
-        target);
+    const CommandResult result = loadCommandHandler_(loadCommandHandlerContext_, request);
+    publishAcknowledgement(request.commandId, "LOAD", resultStatus(result), result.reason, target);
 }
 
 void MqttManager::handleSystemCommandMessage(
@@ -645,54 +582,38 @@ void MqttManager::handleSystemCommandMessage(
 {
     cJSON* root = cJSON_ParseWithLength(data, dataLength);
     if (root == nullptr) {
-        publishAcknowledgement(
-            0U, "SYSTEM", AckStatus::REJECTED, "malformed JSON", nullptr);
+        publishAcknowledgement(0U, "SYSTEM", AckStatus::REJECTED, "malformed JSON", nullptr);
         return;
     }
 
     SystemCommandRequest request{};
-    const cJSON* action =
-        cJSON_GetObjectItemCaseSensitive(root, "action");
+    const cJSON* action = cJSON_GetObjectItemCaseSensitive(root, "action");
 
-    if (!readU32(
-            cJSON_GetObjectItemCaseSensitive(root, "commandId"),
-            request.commandId) ||
+    if (!readU32(cJSON_GetObjectItemCaseSensitive(root, "commandId"), request.commandId) ||
         !cJSON_IsString(action) ||
         !parseSystemAction(action->valuestring, request.action)) {
         cJSON_Delete(root);
-        publishAcknowledgement(
-            0U, "SYSTEM", AckStatus::REJECTED, "invalid command", nullptr);
+        publishAcknowledgement(0U, "SYSTEM", AckStatus::REJECTED, "invalid command", nullptr);
         return;
     }
 
-    const cJSON* confirm =
-        cJSON_GetObjectItemCaseSensitive(root, "confirm");
+    const cJSON* confirm = cJSON_GetObjectItemCaseSensitive(root, "confirm");
     if (cJSON_IsString(confirm)) {
-        std::snprintf(
-            request.confirmText,
-            sizeof(request.confirmText),
-            "%s",
-            confirm->valuestring);
+        std::snprintf(request.confirmText, sizeof(request.confirmText), "%s", confirm->valuestring);
     }
 
-    const cJSON* target =
-        cJSON_GetObjectItemCaseSensitive(root, "targetNodeMac");
-    if (cJSON_IsString(target) &&
-        parseMac(target->valuestring, request.targetNodeMacAddress)) {
+    const cJSON* targetNode = cJSON_GetObjectItemCaseSensitive(root, "targetNodeMac");
+    if (cJSON_IsString(targetNode) &&
+        parseMac(targetNode->valuestring, request.targetNodeMacAddress)) {
         request.hasTargetNodeMacAddress = true;
     }
 
-    const cJSON* intervalSeconds =
-        cJSON_GetObjectItemCaseSensitive(root, "optimizerIntervalSeconds");
-    if (intervalSeconds != nullptr) {
-        if (!readU32(intervalSeconds, request.optimizerIntervalSeconds)) {
+    const cJSON* interval = cJSON_GetObjectItemCaseSensitive(root, "optimizerIntervalSeconds");
+    if (interval != nullptr) {
+        if (!readU32(interval, request.optimizerIntervalSeconds)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                "SYSTEM",
-                AckStatus::REJECTED,
-                "invalid optimizerIntervalSeconds",
-                nullptr);
+            publishAcknowledgement(request.commandId, "SYSTEM", AckStatus::REJECTED,
+                "invalid optimizerIntervalSeconds", nullptr);
             return;
         }
         request.hasOptimizerIntervalSeconds = true;
@@ -700,25 +621,21 @@ void MqttManager::handleSystemCommandMessage(
 
     cJSON_Delete(root);
 
+    char target[18]{};
+    const char* targetText = nullptr;
+    if (request.hasTargetNodeMacAddress) {
+        formatMacAddressText(target, sizeof(target), request.targetNodeMacAddress);
+        targetText = target;
+    }
+
     if (systemCommandHandler_ == nullptr) {
-        publishAcknowledgement(
-            request.commandId,
-            "SYSTEM",
-            AckStatus::REJECTED,
-            "no handler",
-            nullptr);
+        publishAcknowledgement(request.commandId, "SYSTEM", AckStatus::REJECTED,
+            "no handler", targetText);
         return;
     }
 
-    const CommandResult result =
-        systemCommandHandler_(systemCommandHandlerContext_, request);
-
-    publishAcknowledgement(
-        request.commandId,
-        "SYSTEM",
-        result.accepted ? AckStatus::APPLIED : AckStatus::REJECTED,
-        result.reason,
-        nullptr);
+    const CommandResult result = systemCommandHandler_(systemCommandHandlerContext_, request);
+    publishAcknowledgement(request.commandId, "SYSTEM", resultStatus(result), result.reason, targetText);
 }
 
 void MqttManager::handleConfigCommandMessage(
@@ -727,251 +644,144 @@ void MqttManager::handleConfigCommandMessage(
 {
     cJSON* root = cJSON_ParseWithLength(data, dataLength);
     if (root == nullptr) {
-        publishAcknowledgement(
-            0U, "CONFIG", AckStatus::REJECTED, "malformed JSON", nullptr);
+        publishAcknowledgement(0U, "CONFIG", AckStatus::REJECTED, "malformed JSON", nullptr);
         return;
     }
 
     ConfigCommandRequest request{};
-    const cJSON* action =
-        cJSON_GetObjectItemCaseSensitive(root, "action");
-    const cJSON* nodeMac =
-        cJSON_GetObjectItemCaseSensitive(root, "nodeMac");
+    const cJSON* action = cJSON_GetObjectItemCaseSensitive(root, "action");
+    const cJSON* nodeMac = cJSON_GetObjectItemCaseSensitive(root, "nodeMac");
 
-    if (!readU32(
-            cJSON_GetObjectItemCaseSensitive(root, "commandId"),
-            request.commandId) ||
+    if (!readU32(cJSON_GetObjectItemCaseSensitive(root, "commandId"), request.commandId) ||
         !cJSON_IsString(action) ||
         !parseConfigAction(action->valuestring, request.action) ||
         !cJSON_IsString(nodeMac) ||
         !parseMac(nodeMac->valuestring, request.nodeMacAddress)) {
         cJSON_Delete(root);
-        publishAcknowledgement(
-            0U,
-            "CONFIG",
-            AckStatus::REJECTED,
-            "invalid commandId/action/nodeMac",
-            nullptr);
+        publishAcknowledgement(0U, "CONFIG", AckStatus::REJECTED,
+            "invalid commandId/action/nodeMac", nullptr);
         return;
     }
 
     char target[18]{};
-    formatMacAddressText(
-        target,
-        sizeof(target),
-        request.nodeMacAddress);
-
-    char commandType[32]{};
-    std::snprintf(
-        commandType,
-        sizeof(commandType),
-        "%s",
-        action->valuestring);
+    formatMacAddressText(target, sizeof(target), request.nodeMacAddress);
+    const char* commandType = action->valuestring;
 
     if (request.action == ConfigCommandAction::COMMISSION_NODE ||
         request.action == ConfigCommandAction::RENAME_NODE) {
-        const cJSON* name =
-            cJSON_GetObjectItemCaseSensitive(root, "friendlyName");
-
-        if (!cJSON_IsString(name) ||
-            name->valuestring[0] == '\0' ||
+        const cJSON* name = cJSON_GetObjectItemCaseSensitive(root, "friendlyName");
+        if (!cJSON_IsString(name) || name->valuestring[0] == '\0' ||
             std::strlen(name->valuestring) >= sizeof(request.friendlyName)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "invalid friendlyName",
-                target);
+            publishAcknowledgement(request.commandId, commandType, AckStatus::REJECTED,
+                "invalid friendlyName", target);
             return;
         }
-
         request.hasFriendlyName = true;
-        std::snprintf(
-            request.friendlyName,
-            sizeof(request.friendlyName),
-            "%s",
-            name->valuestring);
+        std::snprintf(request.friendlyName, sizeof(request.friendlyName), "%s", name->valuestring);
     }
 
     if (request.action == ConfigCommandAction::CONFIGURE_LOAD) {
-        const cJSON* load =
-            cJSON_GetObjectItemCaseSensitive(root, "load");
+        const cJSON* load = cJSON_GetObjectItemCaseSensitive(root, "load");
         const cJSON* name = cJSON_IsObject(load)
-            ? cJSON_GetObjectItemCaseSensitive(load, "name")
-            : nullptr;
+            ? cJSON_GetObjectItemCaseSensitive(load, "name") : nullptr;
         const cJSON* mode = cJSON_IsObject(load)
-            ? cJSON_GetObjectItemCaseSensitive(load, "mode")
-            : nullptr;
+            ? cJSON_GetObjectItemCaseSensitive(load, "mode") : nullptr;
         const cJSON* powerType = cJSON_IsObject(load)
-            ? cJSON_GetObjectItemCaseSensitive(load, "powerType")
-            : nullptr;
+            ? cJSON_GetObjectItemCaseSensitive(load, "powerType") : nullptr;
         const cJSON* relayActiveHigh = cJSON_IsObject(load)
-            ? cJSON_GetObjectItemCaseSensitive(load, "relayActiveHigh")
-            : nullptr;
+            ? cJSON_GetObjectItemCaseSensitive(load, "relayActiveHigh") : nullptr;
 
         if (!cJSON_IsObject(load) ||
-            !cJSON_IsString(name) ||
-            name->valuestring[0] == '\0' ||
+            !cJSON_IsString(name) || name->valuestring[0] == '\0' ||
             std::strlen(name->valuestring) >= sizeof(request.loadName) ||
-            !readU8(
-                cJSON_GetObjectItemCaseSensitive(load, "relayPin"),
-                request.relayPin) ||
+            !readU8(cJSON_GetObjectItemCaseSensitive(load, "relayPin"), request.relayPin) ||
             !cJSON_IsBool(relayActiveHigh) ||
-            !cJSON_IsString(mode) ||
-            !parseMode(mode->valuestring, request.mode) ||
-            !cJSON_IsString(powerType) ||
-            !parsePowerType(powerType->valuestring, request.powerType) ||
-            !readU16(
-                cJSON_GetObjectItemCaseSensitive(load, "priority"),
-                request.priority) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(load, "powerRatingWatts"),
-                request.powerRatingWatts) ||
+            !cJSON_IsString(mode) || !parseMode(mode->valuestring, request.mode) ||
+            !cJSON_IsString(powerType) || !parsePowerType(powerType->valuestring, request.powerType) ||
+            !readU16(cJSON_GetObjectItemCaseSensitive(load, "priority"), request.priority) ||
+            !readFloat(cJSON_GetObjectItemCaseSensitive(load, "powerRatingWatts"), request.powerRatingWatts) ||
             request.powerRatingWatts < 0.0F ||
-            !parseSchedule(
-                cJSON_GetObjectItemCaseSensitive(load, "schedule"),
-                request.schedule)) {
+            !parseSchedule(cJSON_GetObjectItemCaseSensitive(load, "schedule"), request.schedule)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "invalid load configuration",
-                target);
+            publishAcknowledgement(request.commandId, commandType, AckStatus::REJECTED,
+                "invalid load configuration", target);
             return;
         }
 
-        std::snprintf(
-            request.loadName,
-            sizeof(request.loadName),
-            "%s",
-            name->valuestring);
+        std::snprintf(request.loadName, sizeof(request.loadName), "%s", name->valuestring);
         request.relayActiveHigh = cJSON_IsTrue(relayActiveHigh) != 0;
         request.hasLoadConfiguration = true;
         request.hasRelayPin = true;
     }
 
     if (request.action == ConfigCommandAction::REMOVE_LOAD) {
-        if (!readU8(
-                cJSON_GetObjectItemCaseSensitive(root, "relayPin"),
-                request.relayPin)) {
+        if (!readU8(cJSON_GetObjectItemCaseSensitive(root, "relayPin"), request.relayPin)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "relayPin required",
-                target);
+            publishAcknowledgement(request.commandId, commandType, AckStatus::REJECTED,
+                "relayPin required", target);
             return;
         }
         request.hasRelayPin = true;
     }
 
     if (request.action == ConfigCommandAction::CONFIGURE_BATTERY_SENSOR) {
-        const cJSON* battery =
-            cJSON_GetObjectItemCaseSensitive(root, "batterySensor");
-
+        const cJSON* battery = cJSON_GetObjectItemCaseSensitive(root, "batterySensor");
         if (!cJSON_IsObject(battery) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    battery, "shuntResistanceOhms"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(battery, "shuntResistanceOhms"),
                 request.batteryShuntResistanceOhms) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    battery, "maximumExpectedCurrentAmps"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(battery, "maximumExpectedCurrentAmps"),
                 request.batteryMaximumExpectedCurrentAmps) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(battery, "emaAlpha"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(battery, "emaAlpha"),
                 request.batteryEmaAlpha) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    battery, "batteryCapacityAmpHours"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(battery, "batteryCapacityAmpHours"),
                 request.batteryCapacityAmpHours) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    battery, "initialStateOfChargePercent"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(battery, "initialStateOfChargePercent"),
                 request.batteryInitialStateOfChargePercent) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    battery, "nominalVoltageVolts"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(battery, "nominalVoltageVolts"),
                 request.batteryNominalVoltageVolts)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "invalid batterySensor",
-                target);
+            publishAcknowledgement(request.commandId, commandType, AckStatus::REJECTED,
+                "invalid batterySensor", target);
             return;
         }
-
         request.hasBatterySensorConfiguration = true;
     }
 
     if (request.action == ConfigCommandAction::CONFIGURE_POWER_PLANNING) {
-        const cJSON* planning =
-            cJSON_GetObjectItemCaseSensitive(root, "powerPlanning");
-
+        const cJSON* planning = cJSON_GetObjectItemCaseSensitive(root, "powerPlanning");
         if (!cJSON_IsObject(planning) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(planning, "P_budget"),
-                request.P_budget) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(planning, "P_reserve"),
-                request.P_reserve) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    planning, "minimumStateOfChargePercent"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "P_budget"), request.P_budget) ||
+            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "P_reserve"), request.P_reserve) ||
+            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "minimumStateOfChargePercent"),
                 request.minimumStateOfChargePercent) ||
-            !readFloat(
-                cJSON_GetObjectItemCaseSensitive(
-                    planning, "requiredRuntimeHours"),
+            !readFloat(cJSON_GetObjectItemCaseSensitive(planning, "requiredRuntimeHours"),
                 request.requiredRuntimeHours) ||
             request.P_budget <= 0.0F ||
-            request.P_reserve < 0.0F ||
-            request.P_reserve > request.P_budget ||
+            request.P_reserve < 0.0F || request.P_reserve > request.P_budget ||
             request.minimumStateOfChargePercent < 0.0F ||
             request.minimumStateOfChargePercent > 100.0F ||
             request.requiredRuntimeHours < 0.0F) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "invalid powerPlanning",
-                target);
+            publishAcknowledgement(request.commandId, commandType, AckStatus::REJECTED,
+                "invalid powerPlanning", target);
             return;
         }
-
         request.hasPowerPlanningConfiguration = true;
     }
 
+    const std::string commandTypeCopy = commandType;
     cJSON_Delete(root);
 
     if (configCommandHandler_ == nullptr) {
-        publishAcknowledgement(
-            request.commandId,
-            commandType,
-            AckStatus::REJECTED,
-            "no handler",
-            target);
+        publishAcknowledgement(request.commandId, commandTypeCopy.c_str(), AckStatus::REJECTED,
+            "no handler", target);
         return;
     }
 
-    const CommandResult result =
-        configCommandHandler_(configCommandHandlerContext_, request);
-
-    const AckStatus status = !result.accepted
-        ? AckStatus::REJECTED
-        : (result.completed ? AckStatus::APPLIED : AckStatus::ACCEPTED);
-
-    publishAcknowledgement(
-        request.commandId,
-        commandType,
-        status,
-        result.reason,
-        target);
+    const CommandResult result = configCommandHandler_(configCommandHandlerContext_, request);
+    publishAcknowledgement(request.commandId, commandTypeCopy.c_str(),
+        resultStatus(result), result.reason, target);
 }
 
 void MqttManager::handleSimulationCommandMessage(
@@ -980,97 +790,55 @@ void MqttManager::handleSimulationCommandMessage(
 {
     cJSON* root = cJSON_ParseWithLength(data, dataLength);
     if (root == nullptr) {
-        publishAcknowledgement(
-            0U,
-            "SIMULATION",
-            AckStatus::REJECTED,
-            "malformed JSON",
-            nullptr);
+        publishAcknowledgement(0U, "SIMULATION", AckStatus::REJECTED,
+            "malformed JSON", nullptr);
         return;
     }
 
     SimulationCommandRequest request{};
-    const cJSON* action =
-        cJSON_GetObjectItemCaseSensitive(root, "action");
+    const cJSON* action = cJSON_GetObjectItemCaseSensitive(root, "action");
 
-    if (!readU32(
-            cJSON_GetObjectItemCaseSensitive(root, "commandId"),
-            request.commandId) ||
-        !cJSON_IsString(action) ||
-        !parseSimulationAction(action->valuestring, request.action)) {
+    if (!readU32(cJSON_GetObjectItemCaseSensitive(root, "commandId"), request.commandId) ||
+        !cJSON_IsString(action) || !parseSimulationAction(action->valuestring, request.action)) {
         cJSON_Delete(root);
-        publishAcknowledgement(
-            0U,
-            "SIMULATION",
-            AckStatus::REJECTED,
-            "invalid commandId/action",
-            nullptr);
+        publishAcknowledgement(0U, "SIMULATION", AckStatus::REJECTED,
+            "invalid commandId/action", nullptr);
         return;
     }
 
-    char commandType[32]{};
-    std::snprintf(
-        commandType,
-        sizeof(commandType),
-        "%s",
-        action->valuestring);
+    const std::string commandType = action->valuestring;
 
     if (request.action == SimulationCommandAction::SET_VALUES) {
-        const cJSON* values =
-            cJSON_GetObjectItemCaseSensitive(root, "values");
-
+        const cJSON* values = cJSON_GetObjectItemCaseSensitive(root, "values");
         if (!cJSON_IsObject(values)) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "invalid values",
-                nullptr);
+            publishAcknowledgement(request.commandId, commandType.c_str(), AckStatus::REJECTED,
+                "invalid values", nullptr);
             return;
         }
 
-        const cJSON* voltage =
-            cJSON_GetObjectItemCaseSensitive(
-                values, "batteryVoltageVolts");
-        const cJSON* current =
-            cJSON_GetObjectItemCaseSensitive(
-                values, "batteryCurrentAmps");
-        const cJSON* soc =
-            cJSON_GetObjectItemCaseSensitive(
-                values, "stateOfChargePercent");
-
+        const cJSON* voltage = cJSON_GetObjectItemCaseSensitive(values, "batteryVoltageVolts");
+        const cJSON* current = cJSON_GetObjectItemCaseSensitive(values, "batteryCurrentAmps");
+        const cJSON* soc = cJSON_GetObjectItemCaseSensitive(values, "stateOfChargePercent");
         const bool hasVoltage = voltage != nullptr;
         const bool hasCurrent = current != nullptr;
 
         if (hasVoltage != hasCurrent ||
-            (hasVoltage &&
-             (!readFloat(voltage, request.batteryVoltageVolts) ||
-              !readFloat(current, request.batteryCurrentAmps))) ||
-            (soc != nullptr &&
-             !readFloat(soc, request.stateOfChargePercent))) {
+            (hasVoltage && (!readFloat(voltage, request.batteryVoltageVolts) ||
+                            !readFloat(current, request.batteryCurrentAmps))) ||
+            (soc != nullptr && !readFloat(soc, request.stateOfChargePercent))) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "invalid simulation values",
-                nullptr);
+            publishAcknowledgement(request.commandId, commandType.c_str(), AckStatus::REJECTED,
+                "invalid simulation values", nullptr);
             return;
         }
 
         request.hasElectricalMeasurements = hasVoltage && hasCurrent;
         request.hasStateOfChargePercent = soc != nullptr;
-
-        if (!request.hasElectricalMeasurements &&
-            !request.hasStateOfChargePercent) {
+        if (!request.hasElectricalMeasurements && !request.hasStateOfChargePercent) {
             cJSON_Delete(root);
-            publishAcknowledgement(
-                request.commandId,
-                commandType,
-                AckStatus::REJECTED,
-                "no simulation values provided",
-                nullptr);
+            publishAcknowledgement(request.commandId, commandType.c_str(), AckStatus::REJECTED,
+                "no simulation values provided", nullptr);
             return;
         }
     }
@@ -1078,38 +846,21 @@ void MqttManager::handleSimulationCommandMessage(
     cJSON_Delete(root);
 
     if (simulationCommandHandler_ == nullptr) {
-        publishAcknowledgement(
-            request.commandId,
-            commandType,
-            AckStatus::REJECTED,
-            "no handler",
-            nullptr);
+        publishAcknowledgement(request.commandId, commandType.c_str(), AckStatus::REJECTED,
+            "no handler", nullptr);
         return;
     }
 
-    const CommandResult result =
-        simulationCommandHandler_(simulationCommandHandlerContext_, request);
-
-    const AckStatus status = !result.accepted
-        ? AckStatus::REJECTED
-        : (result.completed ? AckStatus::APPLIED : AckStatus::ACCEPTED);
-
-    publishAcknowledgement(
-        request.commandId,
-        commandType,
-        status,
-        result.reason,
-        nullptr);
+    const CommandResult result = simulationCommandHandler_(simulationCommandHandlerContext_, request);
+    publishAcknowledgement(request.commandId, commandType.c_str(),
+        resultStatus(result), result.reason, nullptr);
 }
 
 void MqttManager::printDiagnosticReport() const
 {
     const char* text = "DISCONNECTED";
-    if (state_.load() == MqttConnectionState::CONNECTING) {
-        text = "CONNECTING";
-    } else if (state_.load() == MqttConnectionState::CONNECTED) {
-        text = "CONNECTED";
-    }
+    if (state_.load() == MqttConnectionState::CONNECTING) text = "CONNECTING";
+    else if (state_.load() == MqttConnectionState::CONNECTED) text = "CONNECTED";
 
     ESP_LOGI(TAG, "State=%s namespace=%s", text, topicNamespace_.c_str());
 }
@@ -1125,22 +876,17 @@ void MqttManager::handleMqttEvent(
     MqttManager* self = static_cast<MqttManager*>(handlerArgs);
     if (self == nullptr) return;
 
-    const esp_mqtt_event_handle_t event =
-        static_cast<esp_mqtt_event_handle_t>(eventData);
+    const esp_mqtt_event_handle_t event = static_cast<esp_mqtt_event_handle_t>(eventData);
 
     switch (eventId) {
         case MQTT_EVENT_CONNECTED:
             self->onConnected();
             break;
-
         case MQTT_EVENT_DISCONNECTED:
             self->onDisconnected();
             break;
-
         case MQTT_EVENT_DATA:
-            if (event != nullptr &&
-                event->topic_len > 0 &&
-                event->data_len > 0) {
+            if (event != nullptr && event->topic_len > 0 && event->data_len > 0) {
                 self->onDataReceived(
                     event->topic,
                     static_cast<std::size_t>(event->topic_len),
@@ -1148,7 +894,6 @@ void MqttManager::handleMqttEvent(
                     static_cast<std::size_t>(event->data_len));
             }
             break;
-
         default:
             break;
     }
