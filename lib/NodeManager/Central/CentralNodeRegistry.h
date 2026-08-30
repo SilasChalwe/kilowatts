@@ -19,6 +19,19 @@ class CentralNodeRegistry {
 public:
     using MacAddress = Node::MacAddress;
 
+    /**
+     * Tracks which pages of the in-progress NodeReportPacket sequence have
+     * arrived. applyNodeReport() only prunes loads absent from the report
+     * once every page has been seen, so a page lost in transit cannot make
+     * a still-configured load look removed.
+     */
+    struct PendingNodeReport {
+        std::uint16_t sequenceId = 0U;
+        std::uint8_t totalPages = 0U;
+        std::uint8_t pagesReceivedMask = 0U;
+        std::vector<std::uint8_t> reportedRelayPins;
+    };
+
     /** One ESP32 Node identified by its MAC address. */
     struct PlanningNode {
         Node node;
@@ -27,6 +40,7 @@ public:
         std::uint16_t hopCountToCentral;
         bool isCentralNode;
         std::uint32_t lastSeenMilliseconds;
+        PendingNodeReport pendingReport;
     };
 
     CentralNodeRegistry();

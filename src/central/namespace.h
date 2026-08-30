@@ -21,6 +21,7 @@
 #include "NodeReportPackets.h"
 #include "NodeLoadHardwareStore.h"
 #include "PowerManager.h"
+#include "RadioChannelStore.h"
 #include "RadioConfig.h"
 #include "RelayCommandDispatcher.h"
 #include "RelayController.h"
@@ -71,6 +72,7 @@ EspNowCommunication communication(kilowatts::KILOWATTS_RADIO_CHANNEL);
 CurrentTimeProvider currentTimeProvider;
 WiFiManager wifiManager(kilowatts::KILOWATTS_RADIO_CHANNEL);
 WiFiCredentialsStore wifiCredentialsStore;
+RadioChannelStore radioChannelStore;
 WiFiProvisioningPortal wifiProvisioningPortal;
 MqttManager mqttManager(
     CentralNodeConfig::MQTT_TOPIC_NAMESPACE,
@@ -100,6 +102,18 @@ std::int64_t lastOptimizationEpochSeconds = 0;
 std::uint32_t relayCommandErrorCount = 0U;
 bool mqttStarted = false;
 bool mqttCredentialsUnavailableLogged = false;
+
+/* Previous-cycle values for MQTT alert edge-detection - see publishCurrentState(). */
+bool previousBatteryReserveReached = false;
+bool previousRequiredRuntimeAchievable = true;
+bool previousHardwareBatteryReadingValid = true;
+
+/** Per-node online/offline edge tracking for the NODE_OFFLINE alert. */
+struct NodeOnlineTracking {
+    Load::MacAddress macAddress;
+    bool wasOnline;
+};
+std::vector<NodeOnlineTracking> nodeOnlineTracking;
 bool mqttBrokerStartupFailedLogged = false;
 std::uint32_t optimizerIntervalMilliseconds = CentralNodeConfig::DEFAULT_OPTIMIZATION_PERIOD_MILLISECONDS;
 
@@ -152,6 +166,35 @@ std::uint32_t getOptimizerIntervalSeconds()
 std::uint32_t getOptimizerIntervalMilliseconds()
 {
     return optimizerIntervalMilliseconds;
+}
+
+/*
+ * Applies any console-saved radio channel override before communication
+ * (ESP-NOW) and wifiManager are initialised. Must run before
+ * communication.initialize() - EspNowCommunication::setChannel() only
+ * takes effect while !initialized_ - and before wifiManager.begin(),
+ * which is why this runs first thing in CentralApplication::runApp(),
+ * ahead of every other startup step. communication.initialize() (called
+ * right after this) brings up NVS itself via nvs_flash_init(), which is
+ * safe to call twice - ESP-IDF treats a second call on an
+ * already-initialized partition as a no-op.
+ */
+void applyRadioChannelOverride()
+{
+    esp_err_t result = nvs_flash_init();
+    if (result == ESP_ERR_NVS_NO_FREE_PAGES || result == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        (void)nvs_flash_erase();
+        result = nvs_flash_init();
+    }
+    if (result != ESP_OK) {
+        return;
+    }
+
+    std::uint8_t channel = 0U;
+    if (radioChannelStore.load(channel)) {
+        (void)communication.setChannel(channel);
+        wifiManager.setRequiredChannel(channel);
+    }
 }
 
 void loadOptimizerIntervalConfiguration()
@@ -585,12 +628,28 @@ void configureLocalHardware(const Load::MacAddress& localMac)
 /* Battery monitoring                                                        */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * Selecting a battery measurement source (`sensor sim` / `sensor ina219`)
+ * must work on its own - it must not depend on `battery configure` /
+ * `battery limits` having been run manually first, and it must never
+ * invent a value for either: every installation's battery/sensor facts
+ * are genuinely different, so nothing is hardcoded here. Simulation mode
+ * skips requiring them entirely (see the matching skip in
+ * PowerManager::initialize()) because it doesn't read them - only
+ * setSimulatedMeasurements()/setSimulatedStateOfChargePercent() do, fed
+ * directly by `simulation values ...`. Hardware mode still correctly
+ * requires real installer-entered values; it reports "not configured"
+ * rather than defaulting when they're missing.
+ */
 bool applyBatteryConfiguration(
     const CentralConfigurationStore::BatterySensorConfiguration& configuration,
     bool restorePersistedStateOfCharge)
 {
-    if (!configuration.configured ||
-        !CentralConfigurationStore::isValidBatterySensor(configuration)) {
+    const bool simulating = batteryMonitor.isSimulationEnabled();
+
+    if (!simulating &&
+        (!configuration.configured ||
+         !CentralConfigurationStore::isValidBatterySensor(configuration))) {
         return false;
     }
 
@@ -606,7 +665,7 @@ bool applyBatteryConfiguration(
     const auto& fullConfiguration =
         centralConfigurationStore.getConfiguration();
 
-    if (!fullConfiguration.powerLimits.configured) {
+    if (!simulating && !fullConfiguration.powerLimits.configured) {
         return false;
     }
 
@@ -673,8 +732,9 @@ void sensorAcquisitionTask(void* parameter)
             continue;
         }
 
+        const bool simulating = batteryMonitor.isSimulationEnabled();
         const bool canRead =
-            batteryMonitor.isSimulationEnabled() ||
+            simulating ||
             batteryMonitor.isInitialized();
 
         if (canRead && batteryMonitor.updateMeasurements()) {
@@ -695,7 +755,27 @@ void sensorAcquisitionTask(void* parameter)
             batteryReadingValid = false;
         }
 
+        /*
+         * Simulation "failing" (no simulation values fed yet) is a normal,
+         * expected state, not a hardware fault - only alert for a real
+         * INA219 that stops responding once selected.
+         */
+        const bool alertOnHardwareFailureEdge =
+            !simulating &&
+            batteryReadingValid != previousHardwareBatteryReadingValid;
+        const bool hardwareReadingNowValid = batteryReadingValid;
+        previousHardwareBatteryReadingValid = batteryReadingValid;
+
         xSemaphoreGive(stateMutex);
+
+        if (alertOnHardwareFailureEdge) {
+            mqttManager.publishAlert(
+                "BATTERY_SENSOR",
+                hardwareReadingNowValid ? "info" : "critical",
+                hardwareReadingNowValid
+                    ? "INA219 battery sensor reading resumed"
+                    : "INA219 battery sensor stopped responding");
+        }
     }
 }
 
@@ -1066,6 +1146,9 @@ void publishCurrentState()
     const std::uint32_t now =
         static_cast<std::uint32_t>(pdTICKS_TO_MS(xTaskGetTickCount()));
 
+    // Refresh availability before collecting the larger retained state set.
+    (void)mqttManager.publishStatus();
+
     SystemStateInputs systemInputs{};
     std::string treeJson;
     std::string loadsJson;
@@ -1099,6 +1182,70 @@ void publishCurrentState()
         CentralNodeConfig::MQTT_SCHEMA_VERSION);
 
     xSemaphoreGive(stateMutex);
+
+    /*
+     * Alerts fire only on the transition, not every cycle the condition
+     * stays true/false - the retained state/system topic above already
+     * carries the current value for anyone polling it.
+     */
+    if (systemInputs.batteryReserveReached != previousBatteryReserveReached) {
+        mqttManager.publishAlert(
+            "BATTERY_RESERVE",
+            systemInputs.batteryReserveReached ? "critical" : "info",
+            systemInputs.batteryReserveReached
+                ? "battery state of charge reached the configured reserve"
+                : "battery state of charge recovered above the configured reserve");
+        previousBatteryReserveReached = systemInputs.batteryReserveReached;
+    }
+
+    if (systemInputs.requiredRuntimeAchievable != previousRequiredRuntimeAchievable) {
+        mqttManager.publishAlert(
+            "RUNTIME_TARGET",
+            systemInputs.requiredRuntimeAchievable ? "info" : "warning",
+            systemInputs.requiredRuntimeAchievable
+                ? "required runtime target is achievable again"
+                : "required runtime target is no longer achievable at the current load");
+        previousRequiredRuntimeAchievable = systemInputs.requiredRuntimeAchievable;
+    }
+
+    for (std::size_t nodeIndex = 0U; nodeIndex < registry.getNumberOfNodes(); ++nodeIndex) {
+        const auto* planningNode = registry.getNode(nodeIndex);
+        if (planningNode == nullptr || planningNode->isCentralNode) {
+            continue;
+        }
+
+        const bool onlineNow = isNodeOnline(*planningNode, now);
+        const Load::MacAddress nodeMac = planningNode->node.getMacAddress();
+
+        NodeOnlineTracking* tracking = nullptr;
+        for (NodeOnlineTracking& entry : nodeOnlineTracking) {
+            if (entry.macAddress == nodeMac) {
+                tracking = &entry;
+                break;
+            }
+        }
+
+        if (tracking == nullptr) {
+            nodeOnlineTracking.push_back(NodeOnlineTracking{nodeMac, onlineNow});
+            continue;
+        }
+
+        if (tracking->wasOnline != onlineNow) {
+            char detail[64]{};
+            std::snprintf(
+                detail,
+                sizeof(detail),
+                "Smart Node %s",
+                onlineNow ? "came back online" : "stopped reporting and is now offline");
+
+            mqttManager.publishAlert(
+                "NODE_OFFLINE",
+                onlineNow ? "info" : "warning",
+                detail);
+
+            tracking->wasOnline = onlineNow;
+        }
+    }
 
     (void)mqttManager.publish(
         MqttManager::TOPIC_STATE_SYSTEM,
@@ -1338,7 +1485,7 @@ void runOptimizationCycle(bool printDashboard)
         }
         std::printf("------------------------------------------------------------\n");
         if (latestPlanningSnapshot.budgetValid) {
-            std::printf("Power budget          : %.2f W\n", static_cast<double>(latestPlanningSnapshot.automaticAvailablePowerWatts));
+            std::printf("Available power passed to Best-First : %.2f W\n", static_cast<double>(latestPlanningSnapshot.automaticAvailablePowerWatts));
             std::printf("Fixed load power      : %.2f W\n", static_cast<double>(latestPlanningSnapshot.fixedOnPowerWatts));
             std::printf("Automatic load power  : %.2f W\n", static_cast<double>(latestPlanningSnapshot.selectedAutomaticPowerWatts));
             std::printf("Remaining power       : %.2f W\n", static_cast<double>(latestPlanningSnapshot.finalRemainingPowerWatts));
@@ -1351,7 +1498,7 @@ void runOptimizationCycle(bool printDashboard)
                 std::printf("Required runtime      : NOT CONFIGURED\n");
             }
         } else {
-            std::printf("Power budget          : NOT AVAILABLE\n");
+            std::printf("Available power passed to Best-First : NOT AVAILABLE\n");
         }
         std::printf("Fixed ON / OFF        : %u / %u\n",
                     static_cast<unsigned int>(latestPlanningSnapshot.fixedOnCount),
@@ -1437,7 +1584,7 @@ void checkWiFiProvisioningTrigger()
     }
 
     if (!wifiCredentialsStore.isConfigured() && !wifiProvisioningPortal.isActive()) {
-        (void)wifiProvisioningPortal.begin(kilowatts::KILOWATTS_RADIO_CHANNEL);
+        (void)wifiProvisioningPortal.begin(communication.getChannel());
     }
 }
 
@@ -1518,6 +1665,7 @@ void handleHardwareConfigurationAcknowledgement(
 
             if (acknowledgement.success != 0U && remove) {
                 (void)registry.removeLoad(originMac, acknowledgement.relayPin);
+                (void)centralLoadConfigurationStore.removeConfiguration(originMac, acknowledgement.relayPin);
                 (void)centralLoadConfigurationStore.persist();
             }
             removePendingHardwareCommand(acknowledgement.commandId);
@@ -2238,6 +2386,7 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
                     reason);
 
             if (removed) {
+                (void)centralLoadConfigurationStore.removeConfiguration(localMac, request.relayPin);
                 (void)centralLoadConfigurationStore.persist();
 
                 registry.addLocalCentralNode(
@@ -2344,22 +2493,20 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
             batteryReadingValid = false;
 
             /*
-             * The INA219 may be absent during bench testing. Enabling
-             * simulation must therefore re-apply the persisted battery
-             * configuration while PowerManager is in simulation mode, so
-             * initialize() takes its no-hardware path and later
-             * `simulation values ... soc=...` can update SoC successfully.
+             * Selecting simulation is self-sufficient by construction, not
+             * by defaulting anything: applyBatteryConfiguration() and
+             * PowerManager::initialize() both skip requiring sensor/battery
+             * configuration while simulationEnabled_ is true (enabled just
+             * above), so this succeeds even starting from a completely
+             * blank configuration - no battery configure/limits required
+             * first, and nothing invented.
              */
             const auto& configuration =
                 centralConfigurationStore.getConfiguration();
 
-            if (configuration.batterySensor.configured &&
-                configuration.powerLimits.configured) {
-
-                monitorReady = applyBatteryConfiguration(
-                    configuration.batterySensor,
-                    true);
-            }
+            monitorReady = applyBatteryConfiguration(
+                configuration.batterySensor,
+                true);
         }
 
         xSemaphoreGive(stateMutex);
@@ -2368,22 +2515,68 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
             return commandResult(false, false, "simulation could not start");
         }
 
+        /*
+         * Without this, measurementSource/state wouldn't reach MQTT
+         * subscribers until the next periodic publish (watchdogTask, up
+         * to WATCHDOG_PERIOD_MILLISECONDS later) - see SET_VALUES below,
+         * which already wakes the optimizer early for the same reason.
+         */
+        xSemaphoreGive(optimizationTriggerSemaphore);
+
         return commandResult(
             true,
             monitorReady,
             monitorReady
                 ? "simulation enabled; battery monitor ready"
-                : "simulation enabled; configure battery sensor and power limits before setting values");
+                : "simulation enabled; battery monitor configuration invalid");
     }
 
     if (request.action == SimulationCommandAction::DISABLE) {
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
+
         const bool ok = batteryMonitor.enableSimulation(false);
-        if (ok) batteryReadingValid = false;
+        bool monitorReady = false;
+
+        if (ok) {
+            batteryReadingValid = false;
+
+            /*
+             * Hardware mode genuinely needs real, installer-entered sensor
+             * and battery values (see applyBatteryConfiguration()) - unlike
+             * simulation, nothing is skipped here. If they haven't been set
+             * yet, this correctly reports "not configured" below rather
+             * than inventing a shunt/capacity/voltage that would silently
+             * misreport a real installation's actual battery.
+             */
+            const auto& configuration =
+                centralConfigurationStore.getConfiguration();
+
+            monitorReady = applyBatteryConfiguration(
+                configuration.batterySensor,
+                true);
+        }
+
         xSemaphoreGive(stateMutex);
-        return commandResult(ok, ok, ok ? "hardware battery input enabled" : "hardware mode could not be restored");
+
+        if (!ok) {
+            return commandResult(false, false, "hardware mode could not be restored");
+        }
+
+        xSemaphoreGive(optimizationTriggerSemaphore);
+
+        const bool batterySensorConfigured =
+            centralConfigurationStore.getConfiguration().batterySensor.configured;
+
+        return commandResult(
+            true,
+            monitorReady,
+            monitorReady
+                ? "hardware battery input enabled; battery monitor ready"
+                : (batterySensorConfigured
+                       ? "hardware battery input enabled; INA219 is not currently responding"
+                       : "hardware battery input enabled; run battery configure/battery limits with this installation's real values first"));
     }
 
     if (request.action == SimulationCommandAction::SET_VALUES) {
@@ -2563,6 +2756,8 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
             std::printf("Configured : %s\n", wifiCredentialsStore.isConfigured() ? "YES" : "NO");
             std::printf("State      : %s\n", wifiStateText(wifiManager.getState()));
             std::printf("Channel    : %u\n", static_cast<unsigned int>(wifiManager.getConnectedChannel()));
+            std::printf("Radio Ch.  : %u\n",
+                         static_cast<unsigned int>(communication.getChannel()));
             return commandResult(true, true, "status printed");
         }
         if (request.action == NetworkCommandRequest::Action::SCAN) {
@@ -2570,12 +2765,37 @@ CommandResult consoleNetwork(void*, const NetworkCommandRequest& request)
             return commandResult(ok, ok, ok ? "scan completed" : "scan failed");
         }
         if (request.action == NetworkCommandRequest::Action::SETUP) {
-            const bool ok = wifiProvisioningPortal.begin(kilowatts::KILOWATTS_RADIO_CHANNEL);
+            const bool ok = wifiProvisioningPortal.begin(communication.getChannel());
             return commandResult(ok, ok, ok ? "setup AP active at 192.168.4.1" : "setup AP could not start");
         }
         if (request.action == NetworkCommandRequest::Action::SET) {
             const bool ok = wifiCredentialsStore.save(request.ssid, request.wifiPassword);
-            return commandResult(ok, ok, ok ? "Wi-Fi saved; restart Central to apply" : "Wi-Fi credentials rejected");
+            if (!ok) {
+                return commandResult(false, false, "Wi-Fi credentials rejected");
+            }
+
+            /*
+             * Auto-detect the Access Point's actual channel instead of
+             * requiring the installer to read it off 'wifi scan' and type
+             * it separately via 'wifi channel N' - the common case (the
+             * SSID is in range right now) needs only this one command.
+             */
+            std::uint8_t discoveredChannel = 0U;
+            if (wifiManager.findChannelForSsid(request.ssid, discoveredChannel) &&
+                radioChannelStore.save(discoveredChannel)) {
+                char text[80];
+                std::snprintf(text, sizeof(text), "Wi-Fi saved on channel %u; restart Central to apply",
+                              static_cast<unsigned int>(discoveredChannel));
+                return commandResult(true, true, text);
+            }
+            return commandResult(true, true,
+                "Wi-Fi saved; restart Central to apply (SSID not currently in range - "
+                "set the radio channel manually with 'wifi channel N' if it still mismatches)");
+        }
+        if (request.action == NetworkCommandRequest::Action::SET_CHANNEL) {
+            const bool ok = radioChannelStore.save(request.wifiChannel);
+            return commandResult(ok, ok,
+                ok ? "radio channel saved; restart Central to apply" : "radio channel rejected (must be 1-14)");
         }
         if (request.action == NetworkCommandRequest::Action::CLEAR) {
             const bool ok = wifiCredentialsStore.clear();
@@ -2659,7 +2879,7 @@ void consoleStatus(void*)
                 static_cast<unsigned int>(onlineSmartNodes),
                 static_cast<unsigned int>(totalSmartNodes));
     std::printf("Battery     : %s\n", batteryTelemetryIsFresh(now) ? "AVAILABLE" : "NOT AVAILABLE");
-    std::printf("Power budget: %s\n", latestPlanningSnapshot.budgetValid ? "AVAILABLE" : "NOT AVAILABLE");
+    std::printf("Available power passed to Best-First: %s\n", latestPlanningSnapshot.budgetValid ? "AVAILABLE" : "NOT AVAILABLE");
     std::printf("Control errors: %u\n", static_cast<unsigned int>(relayCommandErrorCount));
 
     xSemaphoreGive(stateMutex);

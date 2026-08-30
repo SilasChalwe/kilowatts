@@ -1,7 +1,3 @@
-/**
- * @file MqttManager.cpp
- * @brief MQTT connection, state publishing and dashboard command parsing.
- */
 #include "MqttManager.h"
 
 #include <cmath>
@@ -17,6 +13,8 @@ namespace kilowatts {
 namespace {
 
 static const char* TAG = "MQTT";
+static constexpr const char* MQTT_STATUS_ONLINE = "online";
+static constexpr const char* MQTT_STATUS_OFFLINE = "offline";
 
 bool parseMac(const char* text, Load::MacAddress& mac)
 {
@@ -240,6 +238,7 @@ bool parseSchedule(const cJSON* object, AutoSchedule& schedule)
 MqttManager::MqttManager(const char* topicNamespace, const char* deviceId, std::uint32_t schemaVersion)
     : topicNamespace_(topicNamespace != nullptr ? topicNamespace : ""),
       deviceId_(deviceId != nullptr ? deviceId : ""),
+      statusTopic_(),
       schemaVersion_(schemaVersion),
       client_(nullptr),
       state_(MqttConnectionState::DISCONNECTED),
@@ -318,6 +317,12 @@ bool MqttManager::begin(const Credentials& credentials)
     config.credentials.username = credentials.username;
     config.credentials.authentication.password = credentials.password;
     config.credentials.client_id = deviceId_.c_str();
+    statusTopic_ = fullTopic(TOPIC_STATUS);
+    config.session.last_will.topic = statusTopic_.c_str();
+    config.session.last_will.msg = MQTT_STATUS_OFFLINE;
+    config.session.last_will.msg_len = static_cast<int>(std::strlen(MQTT_STATUS_OFFLINE));
+    config.session.last_will.qos = 1;
+    config.session.last_will.retain = true;
 
     client_ = esp_mqtt_client_init(&config);
     if (client_ == nullptr) {
@@ -356,6 +361,11 @@ bool MqttManager::publish(const char* topicSuffix, const std::string& payload, i
         client_, topic.c_str(), payload.c_str(), static_cast<int>(payload.size()), qos, retain ? 1 : 0) >= 0;
 }
 
+bool MqttManager::publishStatus()
+{
+    return publish(TOPIC_STATUS, MQTT_STATUS_ONLINE, 1, true);
+}
+
 void MqttManager::publishAcknowledgement(
     std::uint32_t commandId,
     const char* commandType,
@@ -389,9 +399,22 @@ void MqttManager::publishEvent(const char* eventType, const char* target, const 
     publish(TOPIC_EVENTS, json, 1, false);
 }
 
+void MqttManager::publishAlert(const char* alertType, const char* severity, const char* detail)
+{
+    std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion_) + ",\"alertType\":";
+    appendJsonString(json, alertType);
+    json += ",\"severity\":";
+    appendJsonString(json, severity);
+    json += ",\"detail\":";
+    appendJsonString(json, detail);
+    json += "}";
+    publish(TOPIC_ALERTS, json, 1, false);
+}
+
 void MqttManager::onConnected()
 {
     state_.store(MqttConnectionState::CONNECTED);
+    (void)publishStatus();
     esp_mqtt_client_subscribe(client_, fullTopic(TOPIC_COMMANDS_LOAD).c_str(), 1);
     esp_mqtt_client_subscribe(client_, fullTopic(TOPIC_COMMANDS_SYSTEM).c_str(), 1);
     esp_mqtt_client_subscribe(client_, fullTopic(TOPIC_COMMANDS_CONFIG).c_str(), 1);
@@ -569,7 +592,15 @@ void MqttManager::handleConfigCommandMessage(const char* data, std::size_t dataL
 
     char target[18]{};
     formatMacAddressText(target, sizeof(target), request.nodeMacAddress);
-    const char* commandType = action->valuestring;
+
+    /*
+     * Copied out of the cJSON tree rather than kept as a pointer into it:
+     * cJSON_Delete(root) below frees action->valuestring, and commandType
+     * is still read afterwards by every publishAcknowledgement() call in
+     * this function.
+     */
+    char commandType[32]{};
+    std::snprintf(commandType, sizeof(commandType), "%s", action->valuestring);
 
     if (request.action == ConfigCommandAction::COMMISSION_NODE ||
         request.action == ConfigCommandAction::RENAME_NODE) {
@@ -688,7 +719,14 @@ void MqttManager::handleSimulationCommandMessage(const char* data, std::size_t d
         return;
     }
 
-    const char* commandType = action->valuestring;
+    /*
+     * Copied out of the cJSON tree rather than kept as a pointer into it:
+     * cJSON_Delete(root) below frees action->valuestring, and commandType
+     * is still read afterwards by every publishAcknowledgement() call in
+     * this function.
+     */
+    char commandType[32]{};
+    std::snprintf(commandType, sizeof(commandType), "%s", action->valuestring);
 
     if (request.action == SimulationCommandAction::SET_VALUES) {
         const cJSON* values = cJSON_GetObjectItemCaseSensitive(root, "values");

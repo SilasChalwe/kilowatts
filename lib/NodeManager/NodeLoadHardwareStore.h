@@ -21,7 +21,7 @@ namespace kilowatts {
 
 class NodeLoadHardwareStore {
 public:
-    static constexpr std::size_t MAX_CONFIGURED_LOADS = 4U;
+    static constexpr std::size_t MAX_CONFIGURED_LOADS = 16U;
 
     struct LoadConfiguration {
         char name[16];

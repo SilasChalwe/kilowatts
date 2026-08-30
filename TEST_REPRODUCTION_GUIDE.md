@@ -1,10 +1,15 @@
 # Reproducing the Validation Tests
 
 This is a step-by-step procedure for reproducing every result in
-`TESTING_AND_VALIDATION.md` on the physical Central Node. Follow the steps
-in order — each test builds on the state left by the previous one, and the
-exact commands used are given verbatim so the same numbers should come back
-out.
+`QA_REPORT_LOAD_SELECTION_SCENARIOS.md` and `test-evidence/` on the physical
+Central Node. Follow the steps in order — each test builds on the state left
+by the previous one, and the exact commands used are given verbatim so the
+same numbers should come back out.
+
+The GPIO pins below (2, 4, 18, 25) are one example rig's wiring, not a
+universal spec — any Central build supports up to 16 Loads on any valid
+output-capable GPIO (see `USER_MANUAL.md` §2 and `lib/RelayManager` for
+pin-safety notes); substitute your own board's wiring.
 
 ## Prerequisites
 

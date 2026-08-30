@@ -101,7 +101,8 @@ void CentralNodeRegistry::addLocalCentralNode(
                 centralNode.getMacAddress(),
                 0U,
                 true,
-                nowMilliseconds});
+                nowMilliseconds,
+                PendingNodeReport{}});
 
         return;
     }
@@ -116,12 +117,21 @@ void CentralNodeRegistry::addLocalCentralNode(
 }
 
 
+namespace {
+
+/** pagesReceivedMask is a bitmask, so more pages than this cannot be tracked. */
+constexpr std::uint8_t MAX_TRACKED_REPORT_PAGES = 8U;
+
+} // namespace
+
+
 void CentralNodeRegistry::applyNodeReport(
     const NodeReportPacket& packet,
     std::uint32_t nowMilliseconds)
 {
-    if (packet.pageIndex != 0U ||
-        packet.totalPages != 1U) {
+    if (packet.totalPages == 0U ||
+        packet.totalPages > MAX_TRACKED_REPORT_PAGES ||
+        packet.pageIndex >= packet.totalPages) {
 
         return;
     }
@@ -138,7 +148,8 @@ void CentralNodeRegistry::applyNodeReport(
                 MacAddress{},
                 0U,
                 false,
-                nowMilliseconds});
+                nowMilliseconds,
+                PendingNodeReport{}});
 
         planningNode = &planningNodes_.back();
     }
@@ -159,7 +170,24 @@ void CentralNodeRegistry::applyNodeReport(
         nowMilliseconds;
 
 
-    std::vector<std::uint8_t> reportedPins;
+    PendingNodeReport& pending = planningNode->pendingReport;
+
+    if (pending.sequenceId != packet.reportSequenceId ||
+        pending.totalPages != packet.totalPages) {
+
+        pending.sequenceId = packet.reportSequenceId;
+        pending.totalPages = packet.totalPages;
+        pending.pagesReceivedMask = 0U;
+        pending.reportedRelayPins.clear();
+    }
+
+    const std::uint8_t pageBit =
+        static_cast<std::uint8_t>(1U << packet.pageIndex);
+
+    if ((pending.pagesReceivedMask & pageBit) != 0U) {
+        /* Duplicate delivery of a page already applied this sequence. */
+        return;
+    }
 
     const std::size_t numberOfLoads =
         std::min<std::size_t>(
@@ -177,7 +205,7 @@ void CentralNodeRegistry::applyNodeReport(
             continue;
         }
 
-        reportedPins.push_back(report.relayPin);
+        pending.reportedRelayPins.push_back(report.relayPin);
 
         Load* load =
             planningNode->node.getLoadByRelayPin(
@@ -237,6 +265,20 @@ void CentralNodeRegistry::applyNodeReport(
         }
     }
 
+    pending.pagesReceivedMask =
+        static_cast<std::uint8_t>(pending.pagesReceivedMask | pageBit);
+
+    const std::uint8_t allPagesMask =
+        static_cast<std::uint8_t>((1U << packet.totalPages) - 1U);
+
+    if (pending.pagesReceivedMask != allPagesMask) {
+        /*
+         * Pages of this sequence are still in flight - do not prune yet,
+         * or a load reported only on a not-yet-arrived page would look
+         * removed.
+         */
+        return;
+    }
 
     std::vector<std::uint8_t> pinsToRemove;
 
@@ -252,10 +294,10 @@ void CentralNodeRegistry::applyNodeReport(
         }
 
         if (std::find(
-                reportedPins.begin(),
-                reportedPins.end(),
+                pending.reportedRelayPins.begin(),
+                pending.reportedRelayPins.end(),
                 load->getRelayPin()) ==
-            reportedPins.end()) {
+            pending.reportedRelayPins.end()) {
 
             pinsToRemove.push_back(
                 load->getRelayPin());
@@ -266,6 +308,9 @@ void CentralNodeRegistry::applyNodeReport(
         (void)planningNode->node.removeLoadByRelayPin(
             relayPin);
     }
+
+    pending.pagesReceivedMask = 0U;
+    pending.reportedRelayPins.clear();
 }
 
 

@@ -1,7 +1,3 @@
-/**
- * @file CentralConsole.cpp
- * @brief Serial command console implementation for the Kilowatts Central Node.
- */
 #include "CentralConsole.h"
 
 #include "esp_console.h"
@@ -307,7 +303,11 @@ void wifiUsage()
         "  wifi scan\n"
         "  wifi setup\n"
         "  wifi set ssid=NAME password=PASSWORD\n"
-        "  wifi clear\n");
+        "  wifi channel CHANNEL\n"
+        "  wifi clear\n\n"
+        "channel is the radio channel shared by ESP-NOW and this Wi-Fi "
+        "association (1-14); the configured Access Point must already "
+        "broadcast on it. Takes effect after 'system reset'.\n");
 }
 
 void mqttUsage()
@@ -891,6 +891,12 @@ int CentralConsole::wifi(int argc, char** argv)
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SETUP);
     } else if (same(argv[1], "clear")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::CLEAR);
+    } else if (same(argv[1], "channel")) {
+        request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SET_CHANNEL);
+        if (argc != 3 || !parseUint8(argv[2], request.wifiChannel)) {
+            wifiUsage();
+            return 1;
+        }
     } else if (same(argv[1], "set")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SET);
         if (!copyText(request.ssid, sizeof(request.ssid), option(argc, argv, "ssid")) ||

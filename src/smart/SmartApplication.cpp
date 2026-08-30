@@ -48,6 +48,10 @@ void SmartApplication::runApp()
 
     sendIdentityReport();
 
+    if (!startSmartConsole()) {
+        ESP_LOGE(TAG, "startup: console REPL start failed");
+    }
+
     xTaskCreate(relayControlTask, "pin_control", 4096U, nullptr, 6U, nullptr);
     xTaskCreate(espNowCommunicationTask, "espnow", 6144U, nullptr, 5U, nullptr);
     xTaskCreate(watchdogTask, "watchdog", 3072U, nullptr, 2U, nullptr);

@@ -1,8 +1,3 @@
-/**
- * @file WiFiManager.cpp
- * @brief Implements Central Node infrastructure Wi-Fi station connectivity.
- */
-
 #include "WiFiManager.h"
 
 #include <algorithm>
@@ -25,12 +20,45 @@ static const char *TAG = "WIFI_MANAGER";
 
 namespace {
 
-/* Exponential backoff bounds for reconnection after a disconnect event. */
-constexpr std::uint64_t RECONNECT_BASE_DELAY_MICROSECONDS = 2000000ULL;   // 2 s
-constexpr std::uint64_t RECONNECT_MAXIMUM_DELAY_MICROSECONDS = 60000000ULL; // 60 s
+constexpr std::uint64_t RECONNECT_BASE_DELAY_MICROSECONDS = 2000000ULL;
+constexpr std::uint64_t RECONNECT_MAXIMUM_DELAY_MICROSECONDS = 60000000ULL;
 constexpr std::uint32_t RECONNECT_BACKOFF_CAP_SHIFT = 5U; // 2^5 * base = 64s, already clamped below
 
 esp_timer_handle_t reconnectTimer = nullptr;
+
+/*
+ * Blocking scan for ssid, reporting the channel it was found broadcasting
+ * on. Shared by verifyChannelAndConnect() (which then decides whether to
+ * connect) and findChannelForSsid() (a pure query used by console/MQTT
+ * provisioning) so the scan-and-match logic exists in exactly one place.
+ */
+bool scanForSsidChannel(const char* ssid, std::uint8_t& channel)
+{
+    wifi_scan_config_t scanConfig{};
+    scanConfig.ssid = reinterpret_cast<std::uint8_t*>(const_cast<char*>(ssid));
+    scanConfig.show_hidden = true;
+
+    if (esp_wifi_scan_start(&scanConfig, true) != ESP_OK) {
+        return false;
+    }
+
+    std::uint16_t apCount = 0U;
+    esp_wifi_scan_get_ap_num(&apCount);
+    if (apCount == 0U) {
+        return false;
+    }
+
+    std::vector<wifi_ap_record_t> records(apCount);
+    esp_wifi_scan_get_ap_records(&apCount, records.data());
+
+    for (std::uint16_t i = 0U; i < apCount; ++i) {
+        if (std::strncmp(reinterpret_cast<const char*>(records[i].ssid), ssid, sizeof(records[i].ssid)) == 0) {
+            channel = records[i].primary;
+            return true;
+        }
+    }
+    return false;
+}
 
 } // namespace
 
@@ -143,51 +171,18 @@ bool WiFiManager::verifyChannelAndConnect()
 {
     state_.store(WiFiConnectionState::SCANNING);
 
-    wifi_scan_config_t scanConfig{};
-    scanConfig.ssid = reinterpret_cast<std::uint8_t*>(const_cast<char*>(ssid_));
-    scanConfig.show_hidden = true;
-
     /*
-     * A blocking scan (block = true) is used here deliberately: the
-     * caller (Central's WiFiManager initialisation, or the reconnect
-     * timer callback) is not on a latency-sensitive path, and a blocking
-     * scan lets verifyChannelAndConnect() make its channel decision and
-     * either call esp_wifi_connect() or refuse in one straight-line
-     * function without an extra asynchronous scan-done handoff.
+     * A blocking scan (block = true, inside scanForSsidChannel) is used
+     * here deliberately: the caller (Central's WiFiManager initialisation,
+     * or the reconnect timer callback) is not on a latency-sensitive path,
+     * and a blocking scan lets verifyChannelAndConnect() make its channel
+     * decision and either call esp_wifi_connect() or refuse in one
+     * straight-line function without an extra asynchronous scan-done
+     * handoff.
      */
-    esp_err_t result = esp_wifi_scan_start(&scanConfig, true);
-    if (result != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi scan for SSID '%s' failed to start: %s", ssid_, esp_err_to_name(result));
-        onStationDisconnected(nullptr);
-        return false;
-    }
-
-    std::uint16_t apCount = 0U;
-    esp_wifi_scan_get_ap_num(&apCount);
-
-    if (apCount == 0U) {
-        ESP_LOGW(TAG, "SSID '%s' was not found in the scan; retrying with backoff", ssid_);
-        onStationDisconnected(nullptr);
-        return false;
-    }
-
-    std::vector<wifi_ap_record_t> records(apCount);
-    esp_wifi_scan_get_ap_records(&apCount, records.data());
-
-    bool found = false;
     std::uint8_t discoveredChannel = 0U;
-
-    for (std::uint16_t i = 0U; i < apCount; ++i) {
-        if (std::strncmp(reinterpret_cast<const char*>(records[i].ssid), ssid_, sizeof(records[i].ssid)) == 0) {
-            found = true;
-            discoveredChannel = records[i].primary;
-            break;
-        }
-    }
-
-    if (!found) {
-        ESP_LOGW(TAG, "SSID '%s' not present among %u scanned networks; retrying with backoff",
-                 ssid_, static_cast<unsigned int>(apCount));
+    if (!scanForSsidChannel(ssid_, discoveredChannel)) {
+        ESP_LOGW(TAG, "SSID '%s' was not found in the scan; retrying with backoff", ssid_);
         onStationDisconnected(nullptr);
         return false;
     }
@@ -196,10 +191,7 @@ bool WiFiManager::verifyChannelAndConnect()
         /*
          * Refuse to connect rather than letting esp_wifi_connect() force
          * the shared radio onto a different channel and silently break
-         * ESP-NOW to every Smart Node. Local ESP-NOW control is
-         * unaffected; only MQTT/Wi-Fi connectivity stays unavailable
-         * until the Access Point is reconfigured onto
-         * KILOWATTS_RADIO_CHANNEL.
+         * ESP-NOW to every Smart Node.
          */
         ESP_LOGE(TAG,
                  "RADIO_CHANNEL_MISMATCH: SSID '%s' is broadcasting on channel %u but ESP-NOW requires channel %u. "
@@ -226,7 +218,7 @@ bool WiFiManager::verifyChannelAndConnect()
     std::memcpy(wifiConfig.sta.password, password_, std::min(std::strlen(password_), sizeof(wifiConfig.sta.password)));
     wifiConfig.sta.channel = requiredChannel_;
 
-    result = esp_wifi_set_config(WIFI_IF_STA, &wifiConfig);
+    esp_err_t result = esp_wifi_set_config(WIFI_IF_STA, &wifiConfig);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "esp_wifi_set_config() failed: %s", esp_err_to_name(result));
         onStationDisconnected(nullptr);
@@ -334,6 +326,26 @@ bool WiFiManager::printNearbyNetworks() const
     if (printed == 0U) std::printf("No named Wi-Fi networks detected.\n");
     return true;
 }
+
+bool WiFiManager::findChannelForSsid(const char* ssid, std::uint8_t& channel) const
+{
+    if (ssid == nullptr || ssid[0] == '\0') {
+        return false;
+    }
+
+    if (isConnected()) {
+        wifi_ap_record_t accessPoint{};
+        if (esp_wifi_sta_get_ap_info(&accessPoint) == ESP_OK &&
+            std::strncmp(reinterpret_cast<const char*>(accessPoint.ssid), ssid, sizeof(accessPoint.ssid)) == 0) {
+            channel = accessPoint.primary;
+            return true;
+        }
+        return false;
+    }
+
+    return scanForSsidChannel(ssid, channel);
+}
+
 
 bool WiFiManager::hasInternetConnection() const
 {

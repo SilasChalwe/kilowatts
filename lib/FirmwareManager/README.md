@@ -58,8 +58,7 @@ state, not a domain object.
 
 
 Real wall-clock time for the Kilowatts firmware, from exactly one of two
-legitimate production sources the user selects — not a fake or forced
-test clock.
+legitimate time sources the user selects — not a fake or forced test clock.
 
 ## Two Time Modes
 
@@ -72,9 +71,9 @@ enum class TimeMode : std::uint8_t { AUTOMATIC = 0U, MANUAL = 1U };
   connectivity is available.
 - **MANUAL** — the user/application supplies a real current local
   date/time directly, and that value becomes authoritative even while
-  internet connectivity exists. This is a real production fallback for
-  when internet time is unavailable or the user deliberately wants
-  manual control — not a test-only affordance.
+  internet connectivity exists. This is a real fallback for when internet
+  time is unavailable or the user deliberately wants manual control — not a
+  test-only affordance.
 
 Both modes ultimately set the **same** ESP32 system clock. There are
 never two independent clocks, and there is no custom incrementing timer
@@ -230,15 +229,15 @@ captive portal when none are saved — after
 and reports `CONNECTED_WITH_IP` once a real IP address is obtained (see
 `src/central/main.cpp` and the `WiFiManager` README). Only once Central
 reaches that state can `esp_netif_sntp_init()` actually reach a real NTP
-server, so Automatic mode on Central is a genuinely production-legitimate
-path today, not only Manual mode.
+server, so Automatic mode on Central is a supported path today, not only
+Manual mode.
 
 **Smart Nodes have no such path.** `WiFiManager` is deliberately
 Central-only — a Smart Node's radio stays in ESP-NOW station mode and
 never associates with an Access Point (see `WiFiManager`'s own boundary
 notes) — so Automatic mode on a Smart Node still cannot synchronize.
-Manual mode remains the only production-legitimate way for a Smart Node
-to have valid time, until a time-distribution mechanism over ESP-NOW
+Manual mode remains the only supported way for a Smart Node to have valid
+time, until a time-distribution mechanism over ESP-NOW
 (Central relaying its own synced time down to Smart Nodes) is added. No
 credentials have been invented here to work around that gap.
 

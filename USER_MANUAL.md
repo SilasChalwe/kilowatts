@@ -34,6 +34,8 @@ A Load contains configuration/planning data:
 
 `powerRatingWatts` means the configured expected operating power consumed by that Load while it is ON. It is entered during installation. It is not a live per-Load sensor reading.
 
+Each Node (Central or a Smart Node) supports up to 16 Loads.
+
 Deleted/unsupported Load fields are not part of the current model: `startupWatts`, per-Load nominal voltage, per-Load nominal current, target relay state, applied state, confirmed state, or physical relay feedback.
 
 ### Modes
@@ -205,24 +207,6 @@ Current fields:
 | `mode=` | `FIXED_ON`, `FIXED_OFF`, `AUTO_ON`, or `AUTO_OFF`. |
 | `schedule=` | `HH:MM` or `none`. |
 
-### Battery sensor and power limits
-
-Configure the battery sensor/profile:
-
-```text
-battery configure shunt_ohms=0.005 max_sensor_amps=40 ema_alpha=0.2 capacity_ah=100 initial_soc=80 nominal_voltage=12
-```
-
-Configure reserve and runtime/safety limits:
-
-```text
-battery limits min_soc=20 max_discharge_amps=40 max_main_amps=40 runtime_hours=8
-```
-
-`runtime_hours=0` or omitting `runtime_hours` disables the required-runtime target.
-
-The battery interface tracks voltage, current, power, SoC, capacity, nominal voltage, reserve SoC, discharge/main current limits, and required runtime. It does not report charger states such as charging, charged, or full.
-
 ### Measurement source and simulation
 
 ```text
@@ -236,7 +220,29 @@ simulation values soc=80
 simulation values voltage=12.4 current=3.0 soc=80
 ```
 
-Simulation is only a test input source for battery measurements/SoC. It is not a second planner and does not validate physical hardware.
+`sensor sim` works immediately — it does **not** require `battery configure`/`battery limits` to have been run first, and the firmware never invents a shunt resistance, capacity, or voltage on your behalf. Simulation mode doesn't need INA219 calibration data at all (there is no physical sensor to calibrate), so nothing is required before `simulation start`/`simulation values` other than selecting `sensor sim`.
+
+Simulation is only a test input source for battery measurements/SoC — the exact same downstream planning code runs either way (§2 "Battery/runtime objective"). It is not a second planner and does not validate physical hardware. This is also the intended way to size an installation: before ever touching a real INA219, use simulation to feed the loads you expect and observe what the battery/runtime budget can actually sustain, and use that to decide the real `battery limits` reserve/runtime values (see `INSTALLATION_GUIDE.md`).
+
+### Battery sensor and power limits
+
+`battery limits` is the installation's reserve/runtime **policy** — this is what simulation above is for deciding, and it is never defaulted by the firmware:
+
+```text
+battery limits min_soc=20 max_discharge_amps=40 max_main_amps=40 runtime_hours=8
+```
+
+`runtime_hours=0` or omitting `runtime_hours` disables the required-runtime target.
+
+`battery configure` describes the real physical INA219 sensor's calibration — only needed for `sensor ina219` (hardware mode), never for simulation:
+
+```text
+battery configure shunt_ohms=0.005 max_sensor_amps=40 ema_alpha=0.2 capacity_ah=100 initial_soc=80 nominal_voltage=12
+```
+
+Every value here is the specific installation's real hardware — the firmware does not ship with or fall back to a default shunt/capacity/voltage. `shunt_ohms × max_sensor_amps` must not exceed 0.32 (the INA219's ±320 mV shunt-voltage measurement range); an out-of-range pair is rejected.
+
+The battery interface tracks voltage, current, power, SoC, capacity, nominal voltage, reserve SoC, discharge/main current limits, and required runtime. It does not report charger states such as charging, charged, or full.
 
 ### System reset
 
@@ -257,6 +263,25 @@ WARNING: `system factory-reset` erases persisted configuration on the target dev
 
 To request a non-destructive control action (optimizer run) use the `optimize` command instead.
 
+### Smart Node console
+
+A Smart Node has its own minimal serial console, independent of Central — useful for bench setup or diagnosing a node without going through ESP-NOW/MQTT at all.
+
+```bash
+pio device monitor -e smart
+```
+
+```text
+status
+loads
+load show PIN
+load add pin=PIN name=NAME power=WATTS priority=0..10 type=AC|DC active_high=on|off mode=FIXED_OFF|FIXED_ON|AUTO_OFF|AUTO_ON schedule=HH:MM-HH:MM|none
+load remove PIN
+load set PIN priority=0..10 mode=... schedule=...
+```
+
+A Smart Node's own Load is always local, so these commands never take a MAC — unlike Central's console. `load set` changes priority/mode/schedule in place without touching the pin, name, power rating, or polarity. Whatever is configured here reaches Central on its next ESP-NOW report cycle.
+
 ## 5. MQTT interface
 
 Default namespace:
@@ -269,19 +294,31 @@ Topics:
 
 | Topic | Direction | Purpose |
 |---|---|---|
+| `kilowatts/v1/status` | publish | Availability: retained `online`, Last-Will `offline`. |
 | `kilowatts/v1/state/system` | publish | Battery, runtime budget, power-flow, connectivity, optimization snapshot. |
 | `kilowatts/v1/state/tree` | publish | Topology/Node tree. |
 | `kilowatts/v1/state/loads` | publish | Configured Load inventory/status data. No fake physical confirmation state. |
 | `kilowatts/v1/state/nodes` | publish | Node identity/status data. |
 | `kilowatts/v1/config/nodes` | publish | Commissioned Node configuration mirror. |
 | `kilowatts/v1/events` | publish | Discovery, offline/recovery, and runtime events. |
+| `kilowatts/v1/alerts` | publish | Fault-condition transitions — pushed once when a condition changes, not repeated every cycle. |
 | `kilowatts/v1/acks` | publish | Command acknowledgements. |
 | `kilowatts/v1/commands/config` | subscribe | Node, Load, battery sensor, and power-limit configuration. |
 | `kilowatts/v1/commands/load` | subscribe | Existing Load priority/mode/schedule updates. |
 | `kilowatts/v1/commands/system` | subscribe | Optimization request and factory reset. |
 | `kilowatts/v1/commands/simulation` | subscribe | Simulation enable/disable/set-values. |
 
-Every MQTT command needs a `commandId`.
+Every MQTT command needs a `commandId`. Full field-by-field payload shapes for every topic are in `lib/MqttManager/README.md` — this section only shows representative examples.
+
+### Alerts
+
+Unlike the retained `state/*` topics (which only change value on the next periodic publish), `alerts` is pushed the moment a condition actually changes:
+
+```json
+{"schemaVersion":3,"alertType":"BATTERY_RESERVE","severity":"critical","detail":"battery state of charge reached the configured reserve"}
+```
+
+`alertType` is one of `BATTERY_RESERVE`, `RUNTIME_TARGET`, `BATTERY_SENSOR` (real INA219 stops/resumes responding), `NODE_OFFLINE` (a Smart Node's online status flips). Each fires once per transition in both directions (e.g. reserve reached, then again when recovered) — see `lib/MqttManager/README.md` for the full table.
 
 ### Node config examples
 
@@ -459,3 +496,5 @@ The host tests exercise the pure calculation/planning behavior without ESP32 har
 - There is no per-Load live power sensor in the current model. The planner uses configured `powerRatingWatts`.
 - There is no physical downstream-device feedback mechanism.
 - Wi-Fi and MQTT broker credential bootstrap remains console-side because MQTT cannot be used until networking and broker settings are configured.
+
+See also: `lib/MqttManager/README.md` (complete MQTT API field reference), `INSTALLATION_GUIDE.md` (site survey and sizing process), `TECHNICAL_REFERENCE.md` (formulas), `FAQ.md`, `FUTURE_WORK.md`, `LIMITATIONS.md`.

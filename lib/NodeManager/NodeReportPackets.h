@@ -14,7 +14,14 @@
 
 namespace kilowatts {
 
-static constexpr std::size_t MAX_LOADS_PER_NODE_PACKET = 3U;
+static constexpr std::size_t MAX_LOADS_PER_NODE_PACKET = 4U;
+
+/** Must match NodeLoadHardwareStore::MAX_CONFIGURED_LOADS. */
+static constexpr std::size_t MAX_LOADS_PER_NODE = 16U;
+
+static_assert(
+    MAX_LOADS_PER_NODE % MAX_LOADS_PER_NODE_PACKET == 0U,
+    "MAX_LOADS_PER_NODE_PACKET must divide MAX_LOADS_PER_NODE evenly for exact page counts");
 
 /**
  * @brief One Load reported by a Smart Node.

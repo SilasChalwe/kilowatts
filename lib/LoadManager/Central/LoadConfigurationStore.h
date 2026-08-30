@@ -63,6 +63,15 @@ public:
     bool findConfiguration(const Load::MacAddress& macAddress, std::uint8_t relayPin, ConfigurationEntry& entry) const;
 
 
+    /**
+     * Removes the stored entry for {macAddress, relayPin}, if any. A relay
+     * pin removed then reconfigured as a new Load must start from that new
+     * Load's own values, not have applyToLoad() silently reapply the prior
+     * Load's stale priority/mode/schedule on the next planning cycle.
+     */
+    bool removeConfiguration(const Load::MacAddress& macAddress, std::uint8_t relayPin);
+
+
     /** Applies stored priority, mode and schedule to the matching Load. */
     bool applyToLoad(Load& load) const;
 

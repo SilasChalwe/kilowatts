@@ -1,162 +1,78 @@
 # QA Report: Load Selection and Power Budget Scenarios
 
 ## Scope
-This report documents the verification status of the Kilowatts load-selection logic and the modeled scenario coverage for representative Home, Mine, and Hospital environments.
 
-## Verified Baseline
+This report documents the verification status of the Kilowatts Best-First load-selection logic. Unlike the previous version of this report, every number below is measured from the live physical board (ESP32-D0WDQ6, MAC `A4:CF:12:0E:32:C0`), not modeled or invented — see `test-evidence/` for the raw captures this report is built from.
 
-### Build verification
-Command run:
+## Verified baseline
 
 ```bash
-pio run -e central
-```
-
-Result:
-- Central firmware build succeeded
-- Status: PASS
-
-### Logic verification
-Command run:
-
-```bash
+pio run -e central && pio run -e smart && pio run -e smart_esp32
 bash test/run_tests.sh
 ```
 
-Result:
-- 49 checks
-- 0 failed
-- Status: PASS
+- All three firmware targets build clean.
+- 49 checks, 0 failed (host-native behavioral suite, `test/main.cpp` — exercises `lib/BestFirstSearch/BestFirstSearch.cpp` without ESP32 hardware).
 
-This verifies the core planner logic in:
-- [lib/BestFirstSearch/BestFirstSearch.cpp](lib/BestFirstSearch/BestFirstSearch.cpp)
-- [test/main.cpp](test/main.cpp)
+## The 8-Load test configuration
 
-## Verified Behavior
-The implemented algorithm confirms the following behavior:
+All scenarios below run against the same live configuration: 2 fixed loads (one ON, one OFF) and 6 AUTO loads competing for a shared power budget.
 
-1. The planner rejects any load combination that would exceed the available power budget.
-2. Higher-priority loads are favored when power is constrained.
-3. Multiple feasible loads may be selected together if they fit inside the active power cap.
-4. Fixed-load power is accounted for before automatic-load planning.
-5. The selected set is the best feasible option under the search rules and budgets.
+| Pin | Name | Type | Mode | Priority | Power |
+|---|---|---|---|---|---|
+| 4 | Fridge | AC | FIXED_ON | — | 8.00 W |
+| 26 | WaterHeater | AC | FIXED_OFF | — | 15.00 W |
+| 5 | Lights | DC | AUTO | 8 | 3.00 W |
+| 18 | WaterPump | DC | AUTO | 5 | 10.00 W |
+| 19 | Fan | DC | AUTO | 3 | 5.00 W |
+| 23 | Router | DC | AUTO | 9 | 2.00 W |
+| 25 | SecurityCamera | DC | AUTO | 7 | 4.00 W |
+| 27 | PhoneCharger | DC | AUTO | 2 | 1.00 W |
 
-This is algorithmic verification, not hardware-validated battery savings measurement.
+## Scenario 1 — Baseline selection (measured)
 
-## Distinction: Verified vs Assumed
+Battery: simulated 12.6 V / 1.5 A / 75% SoC. Available power to Best-First: **6.37–6.43 W** (varies slightly cycle-to-cycle from EMA smoothing on repeated identical inputs).
 
-### Verified
-- The planner enforces the power budget.
-- The planner picks the highest-priority feasible combination.
-- The planner is validated by the passing test suite.
+**Result:** Router + Lights + PhoneCharger selected (2 + 3 + 1 = 6.00 W), total priority 19 — the combination maximizing total priority under budget, beating the alternative of WaterPump alone (10 W, doesn't fit) or Router + SecurityCamera (6 W, priority 16, lower than 19).
 
-### Assumed / modeled
-- The specific battery savings in watt-hours or runtime extension.
-- The exact benefit for any particular installation.
-- Real-world field performance under battery degradation, environmental conditions, and load variation.
+## Scenario 2 — Schedule-driven priority boost (measured)
 
-These modeled values are included only to provide realistic scenario examples for QA planning and engineering review.
+Gave SecurityCamera (priority 7, normally not selected) an active schedule window covering the current time (`load set <mac> 25 schedule=14:00-15:00`). The scheduler applies a +5 effective-priority boost to an AUTO load while its window is active — SecurityCamera's effective priority became 12.
 
-## Scenario Matrix
+**Before:** Router + Lights + PhoneCharger selected (as Scenario 1).
+**After:** Router + SecurityCamera selected (2 + 4 = 6.00 W, effective priority 9 + 12 = 21) — Lights and PhoneCharger displaced.
 
-### 1) Home Scenario
-Category: Residential / light commercial
-Environment: Connected home energy management
-Assumed available power budget: 180 W
+This is a genuine, observed behavior change driven purely by wall-clock time entering the configured window, not a predicted one.
 
-Loads (12 total):
-- Lights: 40 W, priority 7
-- Refrigerator: 120 W, priority 9
-- Water pump: 100 W, priority 8
-- Router: 15 W, priority 5
-- TV: 80 W, priority 6
-- Laptop: 60 W, priority 4
-- Washing machine: 150 W, priority 3
-- HVAC fan: 90 W, priority 7
-- Charger: 20 W, priority 5
-- Microwave: 110 W, priority 3
-- Space heater: 180 W, priority 2
-- Electric kettle: 150 W, priority 2
+## Scenario 3 — Priority tie (measured)
 
-Expected planner behavior:
-- It will prefer essential and higher-priority loads.
-- It will drop lower-priority or non-critical loads before exceeding the budget.
-- Example: lights + water pump + router + charger may be preferred over a low-priority heavy appliance.
+Set SecurityCamera's priority to 9, exactly tying Router (also 9), with no schedule active.
 
-Assumption for modeled benefit:
-- Avoided nonessential load: 120 W
-- Estimated saved energy over 4 h: approximately 480 Wh
-- Estimated saved energy over 8 h: approximately 960 Wh
+**Result:** Router + Lights + PhoneCharger still selected (priority sum 19) — **not** Router + SecurityCamera (priority sum 18), even though Router and SecurityCamera were individually tied. This is the more interesting and accurate finding: Best-First does not resolve ties between two loads in isolation — it compares total **combination** priority across every feasible subset, and a 3-load combination with a lower top individual priority beat a 2-load combination containing both tied loads, because the combination's total was higher. The g/h/wattage tie-break rule in `BestFirstSearch.cpp` only matters when two *combinations* have equal total priority, which did not occur in this run.
 
-### 2) Mine Scenario
-Category: Industrial / harsh environment
-Environment: Remote mine support / ventilation and pumping
-Assumed available power budget: 220 W
+## Scenario 4 — Power-budget scaling (measured)
 
-Loads (12 total):
-- Ventilation fan: 110 W, priority 30
-- Water pump: 95 W, priority 25
-- Conveyor system: 90 W, priority 18
-- Drilling rig: 180 W, priority 28
-- Lighting tower: 60 W, priority 12
-- Compressor: 130 W, priority 24
-- Sensor array: 30 W, priority 11
-- Charging station: 50 W, priority 10
-- Safety beacon: 20 W, priority 32
-- Air scrubber: 85 W, priority 22
-- Dehumidifier: 70 W, priority 16
-- Emergency alarm: 25 W, priority 35
+Same 8 loads, only the simulated SoC changed (75% → 90%, voltage/current held at 12.6 V / 1.5 A). This raises the runtime-sustainable power ceiling (see `TECHNICAL_REFERENCE.md`'s formula), which was the binding constraint in both readings.
 
-Expected planner behavior:
-- Safety and ventilation loads are prioritized over nonessential equipment.
-- Non-critical loads are cut first when the budget is constrained.
-- Example: ventilation + water pump + safety beacon + sensor array should be favored over lower-priority conveyor or lighting loads.
+| SoC | Available power | Automatic loads selected | Automatic power used |
+|---|---|---|---|
+| 75% | 6.37 W | 3 / 6 (Router, Lights, PhoneCharger) | 6.00 W |
+| 90% | 10.78 W | 4 / 6 (Router, Lights, PhoneCharger, SecurityCamera) | 10.00 W |
 
-Assumption for modeled benefit:
-- Avoided lower-priority load: 90 W
-- Estimated saved energy over 6 h: approximately 540 Wh
-- Estimated saved energy over 12 h: approximately 1,080 Wh
+At the higher SoC, every AUTO load fits except WaterPump (10 W) and Fan (5 W) — neither fits alone or combined in the remaining 0.78 W. This is a real, measured example of how the algorithm's selection scales directly with available power, rather than an invented watt-hour savings estimate.
 
-### 3) Hospital Scenario
-Category: Critical infrastructure / patient care
-Environment: Hospital support with life-safety priority
-Assumed available power budget: 350 W
+## Distinction: verified vs. still-modeled
 
-Loads (12 total):
-- Ventilator: 220 W, priority 40
-- Patient monitor: 120 W, priority 35
-- ICU lights: 90 W, priority 18
-- Laundry: 150 W, priority 7
-- Imaging equipment: 200 W, priority 22
-- Refrigerator: 80 W, priority 16
-- UPS system: 140 W, priority 27
-- Air handling: 110 W, priority 25
-- Nurse station: 70 W, priority 20
-- Elevator backup: 160 W, priority 12
-- Lab freezer: 100 W, priority 19
-- Sterilizer: 180 W, priority 15
+### Verified (measured on real hardware this session)
+- The planner enforces the power budget — infeasible combinations are never selected regardless of priority (Scenario 1, WaterPump).
+- Schedule windows apply their priority boost and visibly change the selected set (Scenario 2).
+- Priority ties are resolved at the combination level, not the individual-load level (Scenario 3).
+- Selection scales with available power in the expected direction (Scenario 4).
+- Fixed loads are committed before AUTO planning and are never selected/rejected by Best-First (both Fridge and WaterHeater held their configured state through every scenario above).
 
-Expected planner behavior:
-- Critical care and patient-support equipment is prioritized.
-- Low-priority convenience or nonessential loads are deferred or rejected.
-- Example: ventilator + patient monitor + UPS + air handling should be favored over laundry or imaging loads when the budget is tight.
+### Still modeled / not measured
+- Long-run watt-hour savings or runtime extension over days/weeks — this session measured instantaneous selection at specific SoC/voltage/current points, not a time-integrated savings figure.
+- Real-world behavior with more than one physical node — every scenario above ran on Central's own 8 loads; see `LIMITATIONS.md` for why a real multi-node network wasn't available to test.
+- Behavior against a real INA219 sensor rather than simulated input — see `LIMITATIONS.md`.
 
-Assumption for modeled benefit:
-- Avoided lower-priority load set: 240 W
-- Estimated saved energy over 4 h: approximately 960 Wh
-- Estimated saved energy over 8 h: approximately 1,920 Wh
-
-## Interpretation
-These scenarios are valuable QA coverage because they represent realistic situations where the budget is tight and the system must choose which loads to admit.
-
-The key conclusion is: the planner is expected to preserve essential loads and reject the lower-priority ones first, and the test suite confirms the planner behaves accordingly under the modeled constraints.
-
-## Final Status
-- Verified algorithm behavior: PASS
-- Verified build: PASS
-- Verified tests: PASS
-- Real measured battery savings: not yet measured on hardware
-- Modeled savings estimates: included as assumptions for scenario planning only
-
-## Recommendation
-For future validation, the next meaningful step would be a hardware-in-the-loop test with a real battery pack and load profile to convert the modeled “avoided power” values into measured Wh savings and runtime extension.
+Raw console captures backing every scenario above: `test-evidence/logs/`.

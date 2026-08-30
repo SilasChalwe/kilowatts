@@ -387,59 +387,74 @@ bool PowerManager::initialize(
     }
 
 
-    if (!isFinitePositive(
-            sensorConfiguration.shuntResistanceOhms) ||
-
-        !isFinitePositive(
-            sensorConfiguration.maximumExpectedCurrentAmps) ||
-
-        !std::isfinite(
-            sensorConfiguration.emaAlpha) ||
-
-        sensorConfiguration.emaAlpha <= 0.0F ||
-
-        sensorConfiguration.emaAlpha > 1.0F) {
-
-        return false;
-    }
-
-
     /**
-     * Ensure the expected shunt voltage remains inside the
-     * INA219 ±320 mV range.
+     * Every field validated below is either INA219 hardware calibration
+     * (shunt/max-current/ema, and the shunt-voltage-vs-±320mV-range check
+     * they feed) or an installation-specific battery/limits fact
+     * (nameplate voltage, capacity, reserve SoC, max discharge/main
+     * current) - none of it is read by the simulationEnabled_ branch
+     * below, which only ever consumes whatever setSimulatedMeasurements()/
+     * setSimulatedStateOfChargePercent() are given directly. Requiring it
+     * anyway would force simulation to wait on installation-specific
+     * numbers nobody has decided yet - the opposite of what simulation is
+     * for (discovering those numbers before committing to them).
      */
-    const float maximumExpectedShuntVoltage =
-        sensorConfiguration.shuntResistanceOhms *
-        sensorConfiguration.maximumExpectedCurrentAmps;
+    if (!simulationEnabled_) {
+
+        if (!isFinitePositive(
+                sensorConfiguration.shuntResistanceOhms) ||
+
+            !isFinitePositive(
+                sensorConfiguration.maximumExpectedCurrentAmps) ||
+
+            !std::isfinite(
+                sensorConfiguration.emaAlpha) ||
+
+            sensorConfiguration.emaAlpha <= 0.0F ||
+
+            sensorConfiguration.emaAlpha > 1.0F) {
+
+            return false;
+        }
 
 
-    if (maximumExpectedShuntVoltage >
-        MAXIMUM_SHUNT_VOLTAGE_VOLTS) {
-
-        return false;
-    }
-
-
-    if (!isFinitePositive(
-            batteryConfiguration.nameplateVoltageVolts) ||
-
-        !isFinitePositive(
-            batteryConfiguration.capacityAmpHours) ||
-
-        !isValidPercent(
-            batteryConfiguration.minimumStateOfChargePercent) ||
-
-        !isFinitePositive(
-            batteryConfiguration.maximumDischargeCurrentAmps)) {
-
-        return false;
-    }
+        /**
+         * Ensure the expected shunt voltage remains inside the
+         * INA219 ±320 mV range.
+         */
+        const float maximumExpectedShuntVoltage =
+            sensorConfiguration.shuntResistanceOhms *
+            sensorConfiguration.maximumExpectedCurrentAmps;
 
 
-    if (!isFinitePositive(
-            mainBusConfiguration.maximumCurrentAmps)) {
+        if (maximumExpectedShuntVoltage >
+            MAXIMUM_SHUNT_VOLTAGE_VOLTS) {
 
-        return false;
+            return false;
+        }
+
+
+        if (!isFinitePositive(
+                batteryConfiguration.nameplateVoltageVolts) ||
+
+            !isFinitePositive(
+                batteryConfiguration.capacityAmpHours) ||
+
+            !isValidPercent(
+                batteryConfiguration.minimumStateOfChargePercent) ||
+
+            !isFinitePositive(
+                batteryConfiguration.maximumDischargeCurrentAmps)) {
+
+            return false;
+        }
+
+
+        if (!isFinitePositive(
+                mainBusConfiguration.maximumCurrentAmps)) {
+
+            return false;
+        }
     }
 
 

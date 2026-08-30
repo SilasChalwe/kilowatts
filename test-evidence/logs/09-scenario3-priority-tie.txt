@@ -1,0 +1,167 @@
+
+Please build project in debug configuration to get more details about an excepti
+on.
+See https://docs.platformio.org/page/projectconf/build_configurations.html
+
+
+--- Terminal on /dev/ttyUSB0 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_ex
+ception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+kilowatts >  status
+SYSTEM STATUS
+Wi-Fi       : CONNECTED
+MQTT        : CONNECTED
+Smart Nodes : 1 / 1 online
+Battery     : AVAILABLE
+Available power passed to Best-First: AVAILABLE
+Control errors: 0
+kilowatts >  loads
+LOADS
+A4:CF:12:0E:32:C0 pin=23 | Router           |    2.00 W | priority=9 | AUTO_ON
+ | DC
+A4:CF:12:0E:32:C0 pin=26 | WaterHeater      |   15.00 W | priority=1 | FIXED_OFF
+ | AC
+A4:CF:12:0E:32:C0 pin=27 | PhoneCharger     |    1.00 W | priority=2 | AUTO_ON
+ | DC
+A4:CF:12:0E:32:C0 pin=5 | Lights           |    3.00 W | priority=8 | AUTO_ON
+| DC
+A4:CF:12:0E:32:C0 pin=18 | WaterPump        |   10.00 W | priority=5 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=19 | Fan              |    5.00 W | priority=3 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=25 | SecurityCamera   |    4.00 W | priority=7 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=4 | Fridge           |    8.00 W | priority=1 | FIXED_ON
+| AC
+kilowatts >  load set 18 schedule=14:00-15:00
+[FAIL] invalid MAC address or relay pin
+Command returned non-zero error code: 0x1 (ERROR)
+kilowatts >  optimize run
+
+============================================================
+                    KILOWATTS DASHBOARD
+============================================================
+Battery source        : SIMULATED
+Battery voltage       : 12.60 V
+Battery current       : 1.50 A
+Battery power         : 18.90 W
+Battery SoC           : 73.8 %
+------------------------------------------------------------
+Available power passed to Best-First : 6.38 W
+Fixed load power      : 8.00 W
+Automatic load power  : 6.00 W
+Remaining power       : 0.38 W
+Required runtime      : 23.56 h remaining | sustainable 14.38 W | ACHIEVABLE
+Fixed ON / OFF        : 1 / 1
+Automatic loads       : 3 / 6
+============================================================
+
+kilowatts >  load set A4:CF:12:0E:32:C0 18 schedule=14:00-15:00
+[ OK ] applied
+kilowatts >  optimize run
+
+============================================================
+                    KILOWATTS DASHBOARD
+============================================================
+Battery source        : SIMULATED
+Battery voltage       : 12.60 V
+Battery current       : 1.50 A
+Battery power         : 18.90 W
+Battery SoC           : 73.7 %
+------------------------------------------------------------
+Available power passed to Best-First : 6.38 W
+Fixed load power      : 8.00 W
+Automatic load power  : 6.00 W
+Remaining power       : 0.38 W
+Required runtime      : 23.55 h remaining | sustainable 14.38 W | ACHIEVABLE
+Fixed ON / OFF        : 1 / 1
+Automatic loads       : 3 / 6
+============================================================
+
+kilowatts >  load set A4:CF:12:0E:32:C0 18 schedule=none
+[ OK ] applied
+kilowatts >  load set A4:CF:12:0E:32:C0 25 schedule=14:00-15:00
+[ OK ] applied
+kilowatts >  optimize run
+
+============================================================
+                    KILOWATTS DASHBOARD
+============================================================
+Battery source        : SIMULATED
+Battery voltage       : 12.60 V
+Battery current       : 1.50 A
+Battery power         : 18.90 W
+Battery SoC           : 73.7 %
+------------------------------------------------------------
+Available power passed to Best-First : 6.38 W
+Fixed load power      : 8.00 W
+Automatic load power  : 6.00 W
+Remaining power       : 0.38 W
+Required runtime      : 23.52 h remaining | sustainable 14.38 W | ACHIEVABLE
+Fixed ON / OFF        : 1 / 1
+Automatic loads       : 2 / 6
+============================================================
+
+kilowatts >  loads
+LOADS
+A4:CF:12:0E:32:C0 pin=23 | Router           |    2.00 W | priority=9 | AUTO_ON
+ | DC
+A4:CF:12:0E:32:C0 pin=26 | WaterHeater      |   15.00 W | priority=1 | FIXED_OFF
+ | AC
+A4:CF:12:0E:32:C0 pin=27 | PhoneCharger     |    1.00 W | priority=2 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=5 | Lights           |    3.00 W | priority=8 | AUTO_OFF
+| DC
+A4:CF:12:0E:32:C0 pin=18 | WaterPump        |   10.00 W | priority=5 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=19 | Fan              |    5.00 W | priority=3 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=25 | SecurityCamera   |    4.00 W | priority=7 | AUTO_ON
+ | DC
+A4:CF:12:0E:32:C0 pin=4 | Fridge           |    8.00 W | priority=1 | FIXED_ON
+| AC
+kilowatts >  load set A4:CF:12:0E:32:C0 25 schedule=none
+[ OK ] applied
+kilowatts >  load set A4:CF:12:0E:32:C0 25 priority=9
+[ OK ] applied
+kilowatts >  optimize run
+
+============================================================
+                    KILOWATTS DASHBOARD
+============================================================
+Battery source        : SIMULATED
+Battery voltage       : 12.60 V
+Battery current       : 1.50 A
+Battery power         : 18.90 W
+Battery SoC           : 73.6 %
+------------------------------------------------------------
+Available power passed to Best-First : 6.37 W
+Fixed load power      : 8.00 W
+Automatic load power  : 6.00 W
+Remaining power       : 0.37 W
+Required runtime      : 23.50 h remaining | sustainable 14.37 W | ACHIEVABLE
+Fixed ON / OFF        : 1 / 1
+Automatic loads       : 3 / 6
+============================================================
+
+kilowatts >  loads
+LOADS
+A4:CF:12:0E:32:C0 pin=23 | Router           |    2.00 W | priority=9 | AUTO_ON
+ | DC
+A4:CF:12:0E:32:C0 pin=26 | WaterHeater      |   15.00 W | priority=1 | FIXED_OFF
+ | AC
+A4:CF:12:0E:32:C0 pin=27 | PhoneCharger     |    1.00 W | priority=2 | AUTO_ON
+ | DC
+A4:CF:12:0E:32:C0 pin=5 | Lights           |    3.00 W | priority=8 | AUTO_ON
+| DC
+A4:CF:12:0E:32:C0 pin=18 | WaterPump        |   10.00 W | priority=5 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=19 | Fan              |    5.00 W | priority=3 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=25 | SecurityCamera   |    4.00 W | priority=9 | AUTO_OFF
+ | DC
+A4:CF:12:0E:32:C0 pin=4 | Fridge           |    8.00 W | priority=1 | FIXED_ON
+| AC
+kilowatts >

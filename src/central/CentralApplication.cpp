@@ -13,6 +13,8 @@ void CentralApplication::runApp()
      */
     esp_log_level_set("*", ESP_LOG_NONE);
 
+    applyRadioChannelOverride();
+
     communication.setLocalNodeName(CentralNodeConfig::CENTRAL_NODE_NAME);
 
     if (!communication.initialize()) {
@@ -78,7 +80,7 @@ void CentralApplication::runApp()
                 CentralNodeConfig::WIFI_STATION_HOSTNAME})) {
             ESP_LOGE(TAG, "startup: wifiManager.begin() failed; Wi-Fi/MQTT will remain unavailable this boot");
         }
-    } else if (!wifiProvisioningPortal.begin(kilowatts::KILOWATTS_RADIO_CHANNEL)) {
+    } else if (!wifiProvisioningPortal.begin(communication.getChannel())) {
         ESP_LOGE(TAG, "startup: wifiProvisioningPortal.begin() failed; no way to provision Wi-Fi this boot");
     }
 

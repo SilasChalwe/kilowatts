@@ -155,6 +155,20 @@ bool LoadConfigurationStore::findConfiguration(
 }
 
 
+bool LoadConfigurationStore::removeConfiguration(
+    const Load::MacAddress& macAddress, std::uint8_t relayPin)
+{
+    for (std::size_t i = 0U; i < entries_.size(); ++i) {
+        if (entries_[i].macAddress == macAddress && entries_[i].relayPin == relayPin) {
+            entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(i));
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
 bool LoadConfigurationStore::applyToLoad(Load& load) const
 {
     ConfigurationEntry entry{};

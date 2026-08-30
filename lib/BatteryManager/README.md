@@ -70,4 +70,4 @@ Simulation is an input source for testing, not another system. Supported control
 - battery current,
 - State of Charge.
 
-These values feed the same `PowerManager` state used by production planning. Host-native tests validate the budget/planning math but do not claim physical INA219 or battery validation.
+These values feed the same `PowerManager` state used by runtime planning. Host-native tests validate the budget/planning math but do not claim physical INA219 or battery validation.

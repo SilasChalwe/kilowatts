@@ -1,7 +1,3 @@
-/**
- * @file MqttManager.h
- * @brief MQTT connection and dashboard command contract for Central.
- */
 #ifndef KILOWATTS_MQTT_MANAGER_H
 #define KILOWATTS_MQTT_MANAGER_H
 
@@ -45,11 +41,13 @@ public:
     };
 
     static constexpr const char* TOPIC_STATE_SYSTEM = "state/system";
+    static constexpr const char* TOPIC_STATUS = "status";
     static constexpr const char* TOPIC_STATE_TREE = "state/tree";
     static constexpr const char* TOPIC_STATE_LOADS = "state/loads";
     static constexpr const char* TOPIC_STATE_NODES = "state/nodes";
     static constexpr const char* TOPIC_CONFIG_NODES = "config/nodes";
     static constexpr const char* TOPIC_EVENTS = "events";
+    static constexpr const char* TOPIC_ALERTS = "alerts";
     static constexpr const char* TOPIC_COMMANDS_LOAD = "commands/load";
     static constexpr const char* TOPIC_COMMANDS_SYSTEM = "commands/system";
     static constexpr const char* TOPIC_COMMANDS_CONFIG = "commands/config";
@@ -72,6 +70,7 @@ public:
     MqttConnectionState getState() const;
 
     bool publish(const char* topicSuffix, const std::string& payload, int qos, bool retain);
+    bool publishStatus();
 
     void publishAcknowledgement(
         std::uint32_t commandId,
@@ -81,6 +80,14 @@ public:
         const char* target);
 
     void publishEvent(const char* eventType, const char* target, const char* detail);
+
+    /**
+     * Pushed only on a state transition (e.g. reserve just reached, not
+     * every cycle it stays reached) - see the call sites in namespace.h.
+     * severity is a free-form string ("warning"/"critical") rather than an
+     * enum so new severities never need a firmware update to add.
+     */
+    void publishAlert(const char* alertType, const char* severity, const char* detail);
     void printDiagnosticReport() const;
 
 private:
@@ -99,6 +106,7 @@ private:
 
     std::string topicNamespace_;
     std::string deviceId_;
+    std::string statusTopic_;
     std::uint32_t schemaVersion_;
 
     esp_mqtt_client_handle_t client_;
