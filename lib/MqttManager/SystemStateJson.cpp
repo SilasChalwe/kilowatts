@@ -4,17 +4,13 @@
 #include <cstdio>
 
 namespace kilowatts {
-
 namespace {
-
 void appendString(std::string& out, const char* value)
 {
     out.push_back('"');
     if (value != nullptr) {
         for (const char* c = value; *c != '\0'; ++c) {
-            if (*c == '"' || *c == '\\') {
-                out.push_back('\\');
-            }
+            if (*c == '"' || *c == '\\') out.push_back('\\');
             out.push_back(*c);
         }
     }
@@ -23,13 +19,6 @@ void appendString(std::string& out, const char* value)
 
 void number(std::string& out, const char* key, float value, bool comma = true)
 {
-    /*
-     * A NaN/Inf input (e.g. a division by a zero planned load power) would
-     * otherwise format as the bare tokens nan/inf, which is not valid JSON
-     * and breaks any strict JSON.parse() consumer. Emitting null instead of
-     * substituting a numeric 0 avoids fabricating a real-looking reading
-     * for a value that is actually unavailable/invalid.
-     */
     if (!std::isfinite(value)) {
         char buffer[64]{};
         std::snprintf(buffer, sizeof(buffer), "\"%s\":null%s", key, comma ? "," : "");
@@ -37,37 +26,27 @@ void number(std::string& out, const char* key, float value, bool comma = true)
         return;
     }
     char buffer[64]{};
-    std::snprintf(buffer, sizeof(buffer), "\"%s\":%.3f%s",
-                  key, static_cast<double>(value), comma ? "," : "");
+    std::snprintf(buffer, sizeof(buffer), "\"%s\":%.3f%s", key, static_cast<double>(value), comma ? "," : "");
     out += buffer;
 }
 
 void boolean(std::string& out, const char* key, bool value, bool comma = true)
 {
-    out += "\"";
-    out += key;
-    out += "\":";
-    out += value ? "true" : "false";
+    out += "\""; out += key; out += "\":"; out += value ? "true" : "false";
     if (comma) out += ",";
 }
 
 void text(std::string& out, const char* key, const char* value, bool comma = true)
 {
-    out += "\"";
-    out += key;
-    out += "\":";
-    appendString(out, value);
+    out += "\""; out += key; out += "\":"; appendString(out, value);
     if (comma) out += ",";
 }
 
 void integer(std::string& out, const char* key, std::int64_t value, bool comma = true)
 {
-    out += "\"";
-    out += key;
-    out += "\":" + std::to_string(value);
+    out += "\""; out += key; out += "\":" + std::to_string(value);
     if (comma) out += ",";
 }
-
 } // namespace
 
 std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t schemaVersion)
@@ -85,7 +64,7 @@ std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t sc
     number(json, "usableEnergyWattHours", in.batteryUsableEnergyWattHours);
     number(json, "voltageVolts", in.batteryVoltageVolts);
     number(json, "currentAmps", in.batteryCurrentAmps);
-    number(json, "currentBatteryOutputPowerWatts", in.currentBatteryOutputPowerWatts);
+    number(json, "P_measured", in.P_measured);
     text(json, "measurementSource", in.batteryMeasurementSourceText);
     number(json, "stateOfChargePercent", in.stateOfChargePercent);
     boolean(json, "stateOfChargeValid", in.stateOfChargeValid);
@@ -96,17 +75,18 @@ std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t sc
     number(json, "remainingRuntimeHours", in.remainingRuntimeHours);
     number(json, "estimatedRuntimeHours", in.estimatedRuntimeHours);
     boolean(json, "runtimeEstimateValid", in.runtimeEstimateValid);
-    number(json, "maximumPowerForRequiredRuntimeWatts", in.maximumPowerForRequiredRuntimeWatts);
+    number(json, "P_runtime", in.P_runtime);
     boolean(json, "requiredRuntimeAchievable", in.requiredRuntimeAchievable, false);
     json += "},";
 
     json += "\"powerFlow\":{";
-    number(json, "batteryMaximumPowerWatts", in.batteryMaximumPowerWatts);
-    number(json, "mainMaximumPowerWatts", in.mainMaximumPowerWatts);
-    number(json, "fixedOnPowerWatts", in.fixedOnPowerWatts);
-    number(json, "automaticPowerBudgetWatts", in.automaticPowerBudgetWatts);
-    number(json, "selectedAutoLoadPowerWatts", in.selectedAutoLoadPowerWatts);
-    number(json, "remainingAutomaticBudgetWatts", in.remainingAutomaticBudgetWatts, false);
+    number(json, "P_budget", in.P_budget);
+    number(json, "P_reserve", in.P_reserve);
+    number(json, "P_usable", in.P_usable);
+    number(json, "P_fixed", in.P_fixed);
+    number(json, "P_auto_available", in.P_auto_available);
+    number(json, "P_auto", in.P_auto);
+    number(json, "P_remaining", in.P_remaining, false);
     json += "},";
 
     json += "\"connectivity\":{";
