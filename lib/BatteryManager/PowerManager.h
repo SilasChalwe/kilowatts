@@ -41,6 +41,9 @@ enum class StateOfChargeSource : std::uint8_t {
  *                    FIXED_ON demand, and optional runtime policy.
  * P_remaining      = max(0, P_budget - (P_fixed + P_auto))
  * P_measured       = measured voltage * measured current
+ *
+ * Runtime remains a policy/status input. Its internal allowance is folded
+ * directly into P_auto_available and is not exposed as another power value.
  */
 struct PowerBudget {
     float batteryVoltageVolts;
