@@ -85,6 +85,7 @@ loads
 optimize
 
 wifi
+wifi scan
 wifi setup
 wifi set ssid=MyWiFi password=MyPassword
 wifi clear
@@ -93,6 +94,10 @@ mqtt
 mqtt set host=192.168.1.10
 mqtt clear
 ```
+
+`wifi scan` lists the named Wi-Fi networks Central can currently detect, including signal strength and channel.
+
+The shared Wi-Fi/ESP-NOW channel is automatic. `wifi set` detects the configured Access Point's current channel and saves it. If that Access Point later moves to another channel, Central detects the new channel, saves it and restarts automatically so Wi-Fi and ESP-NOW come back on the same channel. Smart Nodes search the radio channels for Central when normal discovery fails. There is no manual `wifi channel` command.
 
 For MQTT, port and TLS are optional. Defaults are 1883 without TLS and 8883 with TLS.
 
