@@ -1,6 +1,33 @@
 #include "namespace.h"
 #include "CentralApplication.h"
 
+namespace {
+
+CommandResult consoleNetworkReadable(void* context, const NetworkCommandRequest& request)
+{
+    if (request.action == NetworkCommandRequest::Action::STATUS) {
+        if (request.target == NetworkCommandTarget::WIFI) {
+            std::printf("WIFI\n");
+            std::printf("Configured       : %s\n", wifiCredentialsStore.isConfigured() ? "YES" : "NO");
+            std::printf("Wi-Fi connection : %s\n", wifiStateText(wifiManager.getState()));
+            std::printf("Wi-Fi channel    : %u\n", static_cast<unsigned int>(wifiManager.getConnectedChannel()));
+            std::printf("Radio channel    : %u\n", static_cast<unsigned int>(communication.getChannel()));
+            return commandResult(true, true, "status printed");
+        }
+
+        std::printf("MQTT\n");
+        std::printf("Configured       : %s\n", mqttCredentialsStore.isConfigured() ? "YES" : "NO");
+        std::printf("MQTT connection  : %s\n",
+            mqttManager.getState() == MqttConnectionState::CONNECTED ? "CONNECTED" :
+            (mqttManager.getState() == MqttConnectionState::CONNECTING ? "CONNECTING" : "DISCONNECTED"));
+        return commandResult(true, true, "status printed");
+    }
+
+    return consoleNetwork(context, request);
+}
+
+} // namespace
+
 void CentralApplication::runApp()
 {
     esp_log_level_set("*", ESP_LOG_NONE);
@@ -93,7 +120,7 @@ void CentralApplication::runApp()
     consoleCallbacks.configureLoad = &consoleConfigureLoad;
     consoleCallbacks.removeLoad = &consoleRemoveLoad;
     consoleCallbacks.loadCommand = &consoleLoadCommand;
-    consoleCallbacks.network = &consoleNetwork;
+    consoleCallbacks.network = &consoleNetworkReadable;
     consoleCallbacks.simulation = &consoleSimulation;
     consoleCallbacks.system = &consoleSystem;
     consoleCallbacks.context = nullptr;
