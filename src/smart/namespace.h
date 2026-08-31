@@ -41,6 +41,7 @@ constexpr std::uint32_t NODE_REPORT_PERIOD_MS = 2000U;
 constexpr std::uint32_t WATCHDOG_PERIOD_MS = 60000U;
 constexpr std::uint32_t DISCOVERY_RETRY_PERIOD_MS = 2000U;
 constexpr std::uint32_t DISCOVERY_WINDOW_MS = 500U;
+constexpr std::uint8_t REPORT_FAILURES_BEFORE_RESTART = 3U;
 
 EspNowCommunication communication(kilowatts::KILOWATTS_RADIO_CHANNEL);
 CurrentTimeProvider currentTimeProvider;
@@ -613,6 +614,7 @@ void espNowCommunicationTask(void* parameter)
     std::uint16_t reportSequence = 0U;
     TickType_t lastReport = xTaskGetTickCount();
     TickType_t lastDiscovery = 0U;
+    std::uint8_t consecutiveReportFailures = 0U;
 
     int discoveryFailures = 0;
     const int DISCOVERY_FAILURES_BEFORE_SWEEP = 3;
@@ -627,6 +629,7 @@ void espNowCommunicationTask(void* parameter)
             } else {
                 syncUpstreamPeerChannel();
                 discoveryFailures = 0;
+                consecutiveReportFailures = 0U;
             }
 
             if (discoveryFailures >= DISCOVERY_FAILURES_BEFORE_SWEEP) {
@@ -639,6 +642,7 @@ void espNowCommunicationTask(void* parameter)
                              static_cast<unsigned int>(channel));
                     if (communication.discoverUpstreamNode(DISCOVERY_WINDOW_MS)) {
                         syncUpstreamPeerChannel();
+                        consecutiveReportFailures = 0U;
                         ESP_LOGI(TAG, "Central found on channel %u",
                                  static_cast<unsigned int>(channel));
                         break;
@@ -702,11 +706,25 @@ void espNowCommunicationTask(void* parameter)
                 xSemaphoreGive(nodeMutex);
             }
 
+            bool reportsDelivered = true;
             const std::uint8_t totalPages = computeReportPageCount(loadCount);
             for (std::uint8_t page = 0U; page < totalPages; ++page) {
                 const NodeReportPacket report =
                     buildNodeReportPacket(localMac, reportSequence, page, totalPages);
-                communication.sendToCentral(EspNowCommunication::MessageType::NODE_REPORT, report);
+                reportsDelivered = communication.sendToCentral(
+                    EspNowCommunication::MessageType::NODE_REPORT, report) && reportsDelivered;
+            }
+
+            if (communication.hasUpstreamNode()) {
+                if (reportsDelivered) {
+                    consecutiveReportFailures = 0U;
+                } else if (++consecutiveReportFailures >= REPORT_FAILURES_BEFORE_RESTART) {
+                    ESP_LOGW(TAG,
+                             "Central is no longer reachable on channel %u; restarting to rediscover it",
+                             static_cast<unsigned int>(activeRadioChannel));
+                    vTaskDelay(pdMS_TO_TICKS(100U));
+                    esp_restart();
+                }
             }
         }
     }
