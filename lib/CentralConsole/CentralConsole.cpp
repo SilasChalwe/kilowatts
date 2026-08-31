@@ -371,7 +371,7 @@ int CentralConsole::status(int argc, char** argv)
 
 int CentralConsole::dashboard(int argc, char** argv)
 {
-    if (helpRequested(argc, char** argv)) {
+    if (helpRequested(argc, argv)) {
         dashboardUsage();
         return 0;
     }
