@@ -75,15 +75,45 @@ void consoleBatteryReadable(void*)
         std::printf("P_reserve          : %.2f W\n", static_cast<double>(planning.P_reserve));
         std::printf("Minimum SoC        : %.1f %%\n", static_cast<double>(planning.minimumStateOfChargePercent));
         if (planning.requiredRuntimeHours > 0.0F) {
-            std::printf("Required runtime   : %.2f h | %.2f h remaining\n",
-                static_cast<double>(planning.requiredRuntimeHours),
-                static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()));
+            if (!battery.configured) {
+                std::printf("Required runtime   : INVALID - battery capacity/voltage not configured\n");
+            } else {
+                std::printf("Required runtime   : %.2f h | %.2f h remaining\n",
+                    static_cast<double>(planning.requiredRuntimeHours),
+                    static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()));
+            }
         } else {
             std::printf("Required runtime   : NOT CONFIGURED\n");
         }
     }
 
     xSemaphoreGive(stateMutex);
+}
+
+CommandResult consoleConfigurePowerPlanningValidated(
+    void* context,
+    const PowerPlanningCommandRequest& request)
+{
+    if (request.requiredRuntimeHours > 0.0F) {
+        const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
+        if (!battery.configured ||
+            battery.batteryCapacityAmpHours <= 0.0F ||
+            battery.nominalVoltageVolts <= 0.0F) {
+            return commandResult(
+                false,
+                false,
+                "runtime requires battery capacity and voltage configuration; existing power plan was not changed");
+        }
+
+        if (!batteryMonitor.isStateOfChargeValid()) {
+            return commandResult(
+                false,
+                false,
+                "runtime requires a valid battery state of charge; existing power plan was not changed");
+        }
+    }
+
+    return consoleConfigurePowerPlanning(context, request);
 }
 
 } // namespace
@@ -161,7 +191,7 @@ void CentralApplication::runApp()
     mqttManager.setSystemCommandHandler(&handleSystemCommand, nullptr);
     mqttManager.setConfigCommandHandler(&handleConfigCommand, nullptr);
     mqttManager.setSimulationCommandHandler(&handleSimulationCommand, nullptr);
-    mqttManager.setPowerPlanningCommandHandler(&consoleConfigurePowerPlanning, nullptr);
+    mqttManager.setPowerPlanningCommandHandler(&consoleConfigurePowerPlanningValidated, nullptr);
 
     CentralConsole::Callbacks consoleCallbacks{};
     consoleCallbacks.status = &consoleStatus;
@@ -175,7 +205,7 @@ void CentralApplication::runApp()
     consoleCallbacks.sensorMode = &consoleSensorMode;
     consoleCallbacks.localMac = &consoleLocalMac;
     consoleCallbacks.configureBattery = &consoleConfigureBattery;
-    consoleCallbacks.configurePowerPlanning = &consoleConfigurePowerPlanning;
+    consoleCallbacks.configurePowerPlanning = &consoleConfigurePowerPlanningValidated;
     consoleCallbacks.nodeCommand = &consoleNodeCommand;
     consoleCallbacks.configureLoad = &consoleConfigureLoad;
     consoleCallbacks.removeLoad = &consoleRemoveLoad;
