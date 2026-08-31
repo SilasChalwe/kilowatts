@@ -59,7 +59,7 @@ Battery measurement contains:
 P_measured
 ```
 
-Runtime is reported using runtime hours/status fields. It does not add another named power value.
+Runtime is reported with fields such as required hours, remaining hours, estimated hours, and achievable status. Its internal power calculation is folded directly into `P_auto_available`.
 
 ## Command
 
