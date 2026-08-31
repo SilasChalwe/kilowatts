@@ -731,13 +731,13 @@ SystemStateInputs makeSystemStateInputs()
     inputs.batteryNominalVoltageVolts = configuration.batterySensor.nominalVoltageVolts;
     inputs.batteryCapacityAmpHours = configuration.batterySensor.batteryCapacityAmpHours;
 
-    inputs.stateOfChargePercent = batteryMonitor.getStateOfChargePercent();
-    inputs.stateOfChargeValid = batteryMonitor.isStateOfChargeValid();
-    inputs.stateOfChargeSourceText = stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource());
-
     const float fullEnergyWh =
         configuration.batterySensor.batteryCapacityAmpHours * configuration.batterySensor.nominalVoltageVolts;
     inputs.batteryRatedEnergyWattHours = fullEnergyWh;
+
+    inputs.stateOfChargePercent = batteryMonitor.getStateOfChargePercent();
+    inputs.stateOfChargeValid = batteryMonitor.isStateOfChargeValid();
+    inputs.stateOfChargeSourceText = stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource());
     inputs.batteryStoredEnergyWattHours = inputs.stateOfChargeValid
         ? fullEnergyWh * (inputs.stateOfChargePercent / 100.0F)
         : 0.0F;
@@ -762,16 +762,12 @@ SystemStateInputs makeSystemStateInputs()
     inputs.estimatedRuntimeHours = inputs.runtimeEstimateValid
         ? inputs.batteryUsableEnergyWattHours / inputs.P_measured
         : 0.0F;
-    inputs.P_runtime = latestPlanningSnapshot.budgetValid && latestPlanningSnapshot.budget.runtimeBudgetActive
-        ? latestPlanningSnapshot.budget.P_runtime
-        : 0.0F;
     inputs.requiredRuntimeAchievable =
         !latestPlanningSnapshot.budgetValid || latestPlanningSnapshot.budget.requiredRuntimeAchievable;
 
     if (latestPlanningSnapshot.budgetValid) {
         inputs.P_budget = latestPlanningSnapshot.budget.P_budget;
         inputs.P_reserve = latestPlanningSnapshot.budget.P_reserve;
-        inputs.P_usable = latestPlanningSnapshot.budget.P_usable;
         inputs.P_fixed = latestPlanningSnapshot.budget.P_fixed;
         inputs.P_auto_available = latestPlanningSnapshot.budget.P_auto_available;
         inputs.P_auto = latestPlanningSnapshot.budget.P_auto;
@@ -1055,14 +1051,12 @@ void runOptimizationCycle(bool printDashboard)
         if (snapshot.budgetValid) {
             std::printf("P_budget             : %.2f W\n", static_cast<double>(snapshot.budget.P_budget));
             std::printf("P_reserve            : %.2f W\n", static_cast<double>(snapshot.budget.P_reserve));
-            std::printf("P_usable             : %.2f W\n", static_cast<double>(snapshot.budget.P_usable));
             std::printf("P_fixed              : %.2f W\n", static_cast<double>(snapshot.budget.P_fixed));
             std::printf("P_auto_available     : %.2f W\n", static_cast<double>(snapshot.budget.P_auto_available));
             std::printf("P_auto               : %.2f W\n", static_cast<double>(snapshot.budget.P_auto));
             std::printf("P_remaining          : %.2f W\n", static_cast<double>(snapshot.budget.P_remaining));
             if (snapshot.budget.runtimeBudgetActive) {
-                std::printf("P_runtime            : %.2f W | %.2f h remaining | %s\n",
-                    static_cast<double>(snapshot.budget.P_runtime),
+                std::printf("Runtime              : %.2f h remaining | %s\n",
                     static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()),
                     snapshot.budget.requiredRuntimeAchievable ? "ACHIEVABLE" : "NOT ACHIEVABLE");
             }
