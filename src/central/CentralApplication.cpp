@@ -38,10 +38,11 @@ void consoleBatteryReadable(void*)
     const auto& planning = configuration.powerPlanning;
 
     const bool simulating = batteryMonitor.isSimulationEnabled();
-    const bool ina219Detected = battery.configured && batteryMonitor.isHardwareSensorPresent();
+    const bool ina219Detected =
+        battery.ina219Configured && batteryMonitor.isHardwareSensorPresent();
 
     const char* ina219Status = "NOT CONFIGURED";
-    if (battery.configured) {
+    if (battery.ina219Configured) {
         if (simulating) {
             ina219Status = "CONFIGURED (SIMULATION ACTIVE)";
         } else {
@@ -52,7 +53,7 @@ void consoleBatteryReadable(void*)
     const char* measurementSource = "NONE";
     if (simulating) {
         measurementSource = "SIMULATED";
-    } else if (!battery.configured) {
+    } else if (!battery.ina219Configured) {
         measurementSource = "INA219 NOT CONFIGURED";
     } else if (!ina219Detected) {
         measurementSource = "INA219 NOT DETECTED";
@@ -62,6 +63,8 @@ void consoleBatteryReadable(void*)
 
     std::printf("BATTERY MONITOR\n");
     std::printf("INA219             : %s\n", ina219Status);
+    std::printf("Battery setup      : %s\n",
+        battery.batteryMetadataConfigured ? "CONFIGURED" : "NOT CONFIGURED");
     std::printf("Measurement source : %s\n", measurementSource);
     if (batteryReadingValid) {
         std::printf("Voltage            : %.3f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
@@ -87,8 +90,8 @@ void consoleBatteryReadable(void*)
         std::printf("P_reserve          : %.2f W\n", static_cast<double>(planning.P_reserve));
         std::printf("Minimum SoC        : %.1f %%\n", static_cast<double>(planning.minimumStateOfChargePercent));
         if (planning.requiredRuntimeHours > 0.0F) {
-            if (!battery.configured) {
-                std::printf("Required runtime   : INVALID - battery capacity/voltage not configured\n");
+            if (!battery.batteryMetadataConfigured) {
+                std::printf("Required runtime   : INVALID - battery setup not configured\n");
             } else {
                 std::printf("Required runtime   : %.2f h | %.2f h remaining\n",
                     static_cast<double>(planning.requiredRuntimeHours),
@@ -108,13 +111,13 @@ CommandResult consoleConfigurePowerPlanningValidated(
 {
     if (request.requiredRuntimeHours > 0.0F) {
         const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
-        if (!battery.configured ||
+        if (!battery.batteryMetadataConfigured ||
             battery.batteryCapacityAmpHours <= 0.0F ||
             battery.nominalVoltageVolts <= 0.0F) {
             return commandResult(
                 false,
                 false,
-                "runtime requires battery capacity and voltage configuration; existing power plan was not changed");
+                "runtime requires battery setup (capacity and voltage); existing power plan was not changed");
         }
 
         if (!batteryMonitor.isStateOfChargeValid()) {
@@ -216,7 +219,8 @@ void CentralApplication::runApp()
     consoleCallbacks.optimize = &consoleOptimize;
     consoleCallbacks.sensorMode = &consoleSensorMode;
     consoleCallbacks.localMac = &consoleLocalMac;
-    consoleCallbacks.configureBattery = &consoleConfigureBattery;
+    consoleCallbacks.configureIna219 = &consoleConfigureIna219;
+    consoleCallbacks.configureBatterySetup = &consoleConfigureBatterySetup;
     consoleCallbacks.configurePowerPlanning = &consoleConfigurePowerPlanningValidated;
     consoleCallbacks.nodeCommand = &consoleNodeCommand;
     consoleCallbacks.configureLoad = &consoleConfigureLoad;
