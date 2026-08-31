@@ -3,35 +3,20 @@
 
 void CentralApplication::runApp()
 {
-    /*
-     * Every operation on the Central node's UART is user-run: the
-     * "kilowatts>" prompt only ever shows output the user asked for by
-     * typing a command. ESP-NOW/Wi-Fi/time-sync/config-store setup below
-     * all run before the console exists and would otherwise print
-     * unprompted boot noise ahead of it - silence logging for the whole
-     * node from the first line, not just once the console starts.
-     */
     esp_log_level_set("*", ESP_LOG_NONE);
 
     applyRadioChannelOverride();
-
     communication.setLocalNodeName(CentralNodeConfig::CENTRAL_NODE_NAME);
 
-    if (!communication.initialize()) {
-        ESP_LOGE(TAG, "startup: communication.initialize() failed");
-        return;
-    }
-    if (!communication.setAsCentralNode()) {
-        ESP_LOGE(TAG, "startup: communication.setAsCentralNode() failed");
+    if (!communication.initialize() || !communication.setAsCentralNode()) {
+        ESP_LOGE(TAG, "startup: ESP-NOW communication initialization failed");
         return;
     }
 
     stateMutex = xSemaphoreCreateMutex();
     optimizationTriggerSemaphore = xSemaphoreCreateBinary();
     if (stateMutex == nullptr || optimizationTriggerSemaphore == nullptr) {
-        ESP_LOGE(TAG, "startup: synchronization allocation failed (stateMutex=%s, optimizationTrigger=%s)",
-                 stateMutex != nullptr ? "ok" : "failed",
-                 optimizationTriggerSemaphore != nullptr ? "ok" : "failed");
+        ESP_LOGE(TAG, "startup: synchronization allocation failed");
         return;
     }
 
@@ -78,16 +63,18 @@ void CentralApplication::runApp()
                 wifi.ssid,
                 wifi.password,
                 CentralNodeConfig::WIFI_STATION_HOSTNAME})) {
-            ESP_LOGE(TAG, "startup: wifiManager.begin() failed; Wi-Fi/MQTT will remain unavailable this boot");
+            ESP_LOGE(TAG, "startup: Wi-Fi initialization failed");
         }
     } else if (!wifiProvisioningPortal.begin(communication.getChannel())) {
-        ESP_LOGE(TAG, "startup: wifiProvisioningPortal.begin() failed; no way to provision Wi-Fi this boot");
+        ESP_LOGE(TAG, "startup: Wi-Fi provisioning portal failed");
     }
 
+    // Frontend MQTT commands are operational only.
     mqttManager.setLoadCommandHandler(&handleLoadCommand, nullptr);
     mqttManager.setSystemCommandHandler(&handleSystemCommand, nullptr);
     mqttManager.setConfigCommandHandler(&handleConfigCommand, nullptr);
     mqttManager.setSimulationCommandHandler(&handleSimulationCommand, nullptr);
+    mqttManager.setPowerPlanningCommandHandler(&consoleConfigurePowerPlanning, nullptr);
 
     CentralConsole::Callbacks consoleCallbacks{};
     consoleCallbacks.status = &consoleStatus;
@@ -101,7 +88,7 @@ void CentralApplication::runApp()
     consoleCallbacks.sensorMode = &consoleSensorMode;
     consoleCallbacks.localMac = &consoleLocalMac;
     consoleCallbacks.configureBattery = &consoleConfigureBattery;
-    consoleCallbacks.configurePowerLimits = &consoleConfigurePowerLimits;
+    consoleCallbacks.configurePowerPlanning = &consoleConfigurePowerPlanning;
     consoleCallbacks.nodeCommand = &consoleNodeCommand;
     consoleCallbacks.configureLoad = &consoleConfigureLoad;
     consoleCallbacks.removeLoad = &consoleRemoveLoad;
@@ -112,20 +99,20 @@ void CentralApplication::runApp()
     consoleCallbacks.context = nullptr;
 
     if (!centralConsole.begin(consoleCallbacks)) {
-        ESP_LOGE(TAG, "startup: centralConsole.begin() failed; the serial console will be unavailable this boot");
+        ESP_LOGE(TAG, "startup: serial console initialization failed");
     }
 
     if (xTaskCreate(sensorAcquisitionTask, "sensor", 4096U, nullptr, 5U, nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "startup: failed to create the sensor acquisition task");
+        ESP_LOGE(TAG, "startup: failed to create sensor acquisition task");
     }
     if (xTaskCreate(espNowCommunicationTask, "espnow", 6144U, nullptr, 5U, nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "startup: failed to create the ESP-NOW communication task");
+        ESP_LOGE(TAG, "startup: failed to create ESP-NOW task");
     }
     if (xTaskCreate(optimizationTask, "planner", 8192U, nullptr, 6U, nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "startup: failed to create the optimization task; planning/safety loop will not run");
+        ESP_LOGE(TAG, "startup: failed to create planning task");
     }
     if (xTaskCreate(watchdogTask, "watchdog", 3072U, nullptr, 2U, nullptr) != pdPASS) {
-        ESP_LOGE(TAG, "startup: failed to create the watchdog task");
+        ESP_LOGE(TAG, "startup: failed to create watchdog task");
     }
 
     printCentralBootSummary(localMac);

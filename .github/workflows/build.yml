@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/power-flow-cleanup
+      - clean-power-budget
   pull_request:
 
 jobs:

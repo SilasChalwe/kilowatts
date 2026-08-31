@@ -16,7 +16,7 @@ struct SystemStateInputs {
 
     float batteryVoltageVolts;
     float batteryCurrentAmps;
-    float currentBatteryOutputPowerWatts;
+    float P_measured;
     const char* batteryMeasurementSourceText;
 
     float stateOfChargePercent;
@@ -29,24 +29,22 @@ struct SystemStateInputs {
     float remainingRuntimeHours;
     float estimatedRuntimeHours;
     bool runtimeEstimateValid;
-    float maximumPowerForRequiredRuntimeWatts;
     bool requiredRuntimeAchievable;
 
-    float batteryMaximumPowerWatts;
-    float mainMaximumPowerWatts;
-    float fixedOnPowerWatts;
-    float automaticPowerBudgetWatts;
-    float selectedAutoLoadPowerWatts;
-    float remainingAutomaticBudgetWatts;
+    float P_budget;
+    float P_reserve;
+    float P_fixed;
+    float P_auto_available;
+    float P_auto;
+    float P_remaining;
 
+    // Used internally by Central but intentionally not serialized to MQTT state.
     bool wifiConnected;
     const char* wifiStateText;
     bool mqttConnected;
-
     bool currentTimeValid;
     const char* currentTimeSourceText;
     std::int64_t lastOptimizationEpochSeconds;
-
     std::uint32_t pinCommandErrorCount;
 };
 

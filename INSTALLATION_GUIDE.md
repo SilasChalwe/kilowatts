@@ -1,68 +1,190 @@
 # Installation Guide
 
-This is the process for taking Kilowatts firmware from a flashed board to a real, working installation at a customer's site. It is deliberately sequenced: **simulate before you connect anything real.**
+## 1. Configure the power plan
 
-## 0. Before you touch a real site: learn the system first
+Example:
 
-Do not install this on a live battery/appliance setup as your first exposure to it. Before any real installation, spend time running the system in simulation mode on a bench — connect Wi-Fi/MQTT, add a few Loads, feed `simulation values` through a range of voltage/current/SoC, and watch `dashboard`/`state/system` respond. Understand what `battery limits` (reserve SoC, max discharge/main current, required runtime) actually controls, and how it relates to what Best-First selects (`TECHNICAL_REFERENCE.md`). An installer who understands this relationship can size and configure a real site confidently and quickly; one who doesn't will be guessing at the customer's premises.
+```text
+battery set budget=200 reserve=20 min_soc=20 runtime=24
+```
 
-## 1. Survey the site
+The public power values are exactly:
 
-Before configuring anything, learn from the customer:
-- What appliances/loads do they want managed, and their approximate power draw (watts) and criticality (must never turn off vs. can be deferred)?
-- What battery do they have (or plan to install) — nominal voltage, capacity in Ah?
-- Do they have a target minimum runtime (hours the system must sustain critical loads)?
-- Is a real INA219 battery sensor available yet, or is this visit purely for sizing?
+```text
+P_budget
+P_reserve
+P_fixed
+P_auto_available
+P_auto
+P_remaining
+P_measured
+```
 
-## 2. Size the system in simulation — before any real sensor is connected
+If:
 
-This is the core of what simulation mode is for. It is not a "fake" or "demo" mode — it's the real pre-installation validation step, using the exact same planning code a live installation uses (`USER_MANUAL.md` §2, §4 "Measurement source and simulation").
+```text
+P_budget = 200 W
+P_reserve = 20 W
+P_fixed = 80 W
+```
 
-1. Record the intended battery's nominal voltage and capacity. If the INA219
-   board and shunt are already known, record those specifications too.
-2. Run `sensor sim` then `simulation start`. Source selection itself can start
-   without prior configuration and does not invent any profile values.
-3. Enter the proposed profile with `battery configure ...`. Because simulation
-   is already selected, this does not attempt to connect to the sensor; it
-   supplies the battery capacity and nominal voltage needed by the runtime
-   formula. Do not invent these values—use the intended installation
-   specifications.
-4. Set an initial `battery limits` policy (reserve SoC, max discharge/main
-   current, required runtime). These are deliberate sizing assumptions, not
-   firmware defaults.
-5. Configure each Load the customer described (`load add ...`), with realistic
-   wattages, priorities, schedules, and FIXED/AUTO modes.
-6. Feed `simulation values voltage=... current=... soc=...` across the range
-   expected from the real battery.
-7. Watch `dashboard`/`optimize run` and observe which Loads get selected and
-   whether the runtime target is `ACHIEVABLE` or `NOT ACHIEVABLE`.
-8. Adjust priorities and `battery limits`, or discuss trade-offs with the
-   customer, until the simulated behavior matches their requirements.
+and runtime does not reduce the AUTO allowance:
 
-## 3. Connect the real INA219 sensor
+```text
+P_auto_available = 200 - 20 - 80 = 100 W
+```
 
-Only after step 2 is complete:
+Best-First receives only `P_auto_available`.
 
-1. Verify the proposed profile from step 2 against the actual battery, shunt,
-   and sensor board. Correct it with `battery configure
-   shunt_ohms=... max_sensor_amps=... ema_alpha=... capacity_ah=...
-   initial_soc=... nominal_voltage=...` before selecting hardware mode. None of
-   these values is defaulted by the firmware (see `LIMITATIONS.md` and
-   `USER_MANUAL.md` §4).
-2. `sensor ina219`, then `battery status` — confirm `Measurement source : HARDWARE` with sane readings. If it reports `NONE`/"not currently responding", check wiring before proceeding.
-3. Re-check `dashboard` against the real reading. The `battery limits` policy
-   set during simulation does not need to change unless the real battery's
-   behavior genuinely differs from the sizing assumptions.
+If Best-First selects AUTO loads totaling 70 W:
 
-## 4. Commission Smart Nodes (if any)
+```text
+P_auto = 70 W
+P_remaining = 200 - (80 + 70) = 50 W
+```
 
-For each Smart Node board at the site: flash it (`pio run -e smart -t upload`), power it up, and either commission it from Central's console/MQTT (`node commission MAC name=...` / `commands/config` `COMMISSION_NODE`) or configure its Loads directly at the node using its own local console (`USER_MANUAL.md` §4 "Smart Node console") if you're standing right at it.
+## 2. Runtime
 
-## 5. Final checks before leaving site
+When `runtime` is greater than zero, battery energy and SoC are used internally to reduce `P_auto_available` when necessary.
 
-- `status` / `state/nodes` — every expected node shows online.
-- `loads` / `state/loads` — every configured Load matches what was agreed with the customer.
-- Subscribe to `alerts` for a few minutes and confirm nothing unexpected fires (see `lib/MqttManager/README.md`).
-- Leave the customer or their app pointed at `status` for availability monitoring (`USER_MANUAL.md` §"Availability").
+To disable runtime planning:
 
-See also: `USER_MANUAL.md`, `TECHNICAL_REFERENCE.md`, `lib/MqttManager/README.md`, `LIMITATIONS.md`.
+```text
+battery set budget=200 reserve=20 min_soc=20 runtime=0
+```
+
+## 3. Configure INA219/battery measurement
+
+Technical sensor setup stays on the Central console:
+
+```text
+sensor set shunt=0.005 max_amps=40 ema=0.2 capacity=200 soc=70 voltage=15
+```
+
+`max_amps` describes the expected INA219/shunt measurement range. It is not a software protection limit.
+
+## 4. Test with simulation
+
+```text
+sensor sim
+sensor values voltage=15 current=1.5 soc=70
+```
+
+The system calculates:
+
+```text
+P_measured = 15 × 1.5 = 22.5 W
+```
+
+Then run:
+
+```text
+dashboard
+optimize
+```
+
+## 5. Switch to INA219
+
+```text
+sensor ina219
+battery
+dashboard
+```
+
+INA219 now supplies voltage/current to the same path used by simulation.
+
+## 6. Configure Central networking
+
+Wi-Fi and MQTT broker setup are local installation settings. They are not frontend MQTT commands.
+
+Wi-Fi:
+
+```text
+wifi
+wifi setup
+wifi set ssid=MyWiFi password=MyPassword
+wifi clear
+```
+
+MQTT broker:
+
+```text
+mqtt
+mqtt set host=192.168.1.10
+mqtt clear
+```
+
+Optional MQTT settings include `port=`, `tls=on|off`, `username=` and `password=`.
+
+## 7. Configure loads
+
+Central load example:
+
+```text
+load add pin=16 name=Lamp power=10 priority=5 type=DC active_high=off mode=AUTO_OFF schedule=none
+```
+
+Smart Node load example:
+
+```text
+load add mac=AA:BB:CC:DD:EE:FF pin=4 name=Fan power=25 priority=10 type=DC active_high=off mode=AUTO_OFF schedule=18:30-20:00
+```
+
+Use realistic `power=` values because planning uses each load's configured rating.
+
+## 8. Check operation
+
+```text
+status
+nodes
+loads
+optimize
+dashboard
+```
+
+Each planning cycle should:
+
+1. sum `FIXED_ON` load ratings into `P_fixed`;
+2. calculate `P_auto_available`;
+3. pass `P_auto_available` to Best-First;
+4. command selected AUTO loads ON and unselected AUTO loads OFF;
+5. calculate `P_auto` and `P_remaining`;
+6. measure actual instantaneous consumption as `P_measured`.
+
+## 9. Frontend MQTT
+
+Only five external topics are used:
+
+```text
+kilowatts/v1/status
+kilowatts/v1/state
+kilowatts/v1/command
+kilowatts/v1/ack
+kilowatts/v1/alert
+```
+
+Use `status` for Central `online`/`offline` presence.
+
+Use `state` for system, loads and nodes. The node state includes Central/Smart Node chip and diagnostic information. Wi-Fi and broker details are not published to the frontend.
+
+Use `command` only for:
+
+```text
+node
+load
+battery
+sensor
+system
+```
+
+## 10. Hardware check
+
+Before using a real installation, verify:
+
+- correct `P_budget` and `P_reserve`;
+- correct FIXED/AUTO modes and load watt ratings;
+- real INA219 wiring and shunt rating;
+- relay operation;
+- correctly rated physical fuses, breakers, BMS, and other required protection hardware.
+
+Kilowatts software plans, monitors, and commands loads. It does not replace electrical protection hardware.

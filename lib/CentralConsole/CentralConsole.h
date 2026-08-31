@@ -10,6 +10,7 @@
 
 namespace kilowatts {
 
+/** Central-only INA219 and battery measurement setup. */
 struct BatterySensorCommandRequest {
     float shuntResistanceOhms;
     float maximumExpectedCurrentAmps;
@@ -19,26 +20,12 @@ struct BatterySensorCommandRequest {
     float nominalVoltageVolts;
 };
 
-/** requiredRuntimeHours: 0 = no target configured. */
-struct PowerLimitsCommandRequest {
-    float minimumStateOfChargePercent;
-    float maximumBatteryDischargeCurrentAmps;
-    float maximumMainCurrentAmps;
-    float requiredRuntimeHours;
-};
-
 struct NodeCommandRequest {
-    enum class Action : std::uint8_t {
-        COMMISSION = 0U,
-        RENAME = 1U,
-        DECOMMISSION = 2U
-    } action;
-
+    enum class Action : std::uint8_t { COMMISSION = 0U, RENAME = 1U, DECOMMISSION = 2U } action;
     Load::MacAddress nodeMacAddress;
     char friendlyName[20];
 };
 
-/** No startup watts, nominal volts, nominal amps, or other invented fields. */
 struct LoadConfigurationCommandRequest {
     Load::MacAddress nodeMacAddress;
     std::uint8_t relayPin;
@@ -61,14 +48,16 @@ enum class NetworkCommandTarget : std::uint8_t {
     MQTT = 1U
 };
 
+/** Central-console network setup. It is never exposed as an MQTT command. */
 struct NetworkCommandRequest {
     NetworkCommandTarget target;
-
     enum class Action : std::uint8_t {
         STATUS = 0U,
         SET = 1U,
         CLEAR = 2U,
         SETUP = 3U,
+        // Internal handler values retained until the Central handler is trimmed.
+        // The simplified console does not register scan/channel commands.
         SCAN = 4U,
         SET_CHANNEL = 5U
     } action;
@@ -90,49 +79,22 @@ public:
         void (*status)(void*);
         void (*dashboard)(void*);
         void (*batteryStatus)(void*);
-
         void (*nodes)(void*);
         void (*nodeStatus)(void*, const Load::MacAddress&);
         void (*loads)(void*);
         void (*loadStatus)(void*, const Load::MacAddress&, std::uint8_t relayPin);
-
         void (*optimize)(void*);
-
         bool (*sensorMode)(void*, bool simulated);
-
         Load::MacAddress (*localMac)(void*);
-
-        CommandResult (*configureBattery)(
-            void*, const BatterySensorCommandRequest&);
-
-        CommandResult (*configurePowerLimits)(
-            void*, const PowerLimitsCommandRequest&);
-
-        CommandResult (*nodeCommand)(
-            void*, const NodeCommandRequest&);
-
-        CommandResult (*configureLoad)(
-            void*, const LoadConfigurationCommandRequest&);
-
-        CommandResult (*removeLoad)(
-            void*, const RemoveLoadCommandRequest&);
-
-        /**
-         * Uses the SAME canonical LoadCommandRequest and the SAME handler
-         * MQTT's commands/load topic drives — see SystemCommandModel.h.
-         */
-        CommandResult (*loadCommand)(
-            void*, const LoadCommandRequest&);
-
-        CommandResult (*network)(
-            void*, const NetworkCommandRequest&);
-
-        CommandResult (*simulation)(
-            void*, const SimulationCommandRequest&);
-
-        CommandResult (*system)(
-            void*, const SystemCommandRequest&);
-
+        CommandResult (*configureBattery)(void*, const BatterySensorCommandRequest&);
+        CommandResult (*configurePowerPlanning)(void*, const PowerPlanningCommandRequest&);
+        CommandResult (*nodeCommand)(void*, const NodeCommandRequest&);
+        CommandResult (*configureLoad)(void*, const LoadConfigurationCommandRequest&);
+        CommandResult (*removeLoad)(void*, const RemoveLoadCommandRequest&);
+        CommandResult (*loadCommand)(void*, const LoadCommandRequest&);
+        CommandResult (*network)(void*, const NetworkCommandRequest&);
+        CommandResult (*simulation)(void*, const SimulationCommandRequest&);
+        CommandResult (*system)(void*, const SystemCommandRequest&);
         void* context;
     };
 
@@ -150,7 +112,6 @@ private:
     static int optimize(int argc, char** argv);
     static int wifi(int argc, char** argv);
     static int mqtt(int argc, char** argv);
-    static int simulation(int argc, char** argv);
     static int system(int argc, char** argv);
     static int clear(int argc, char** argv);
 

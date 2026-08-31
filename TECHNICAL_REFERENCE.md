@@ -1,66 +1,181 @@
-# Technical Reference — Formulas and Algorithms
+# Technical Reference — Power Flow
 
-This document explains the two pieces of math the firmware runs every optimization cycle: the runtime/power budget (how much power is available to spend), and Best-First Search (which AUTO Loads get that power). Both are implemented once, in `lib/BatteryManager/PowerManager.cpp` and `lib/BestFirstSearch/BestFirstSearch.cpp`, and used identically regardless of whether the battery reading is real (INA219) or simulated — see `USER_MANUAL.md` §2.
+Kilowatts keeps planning and measurement separate.
 
-## 1. Power budget (P_available)
-
-```text
-fullBatteryEnergyWh      = batteryCapacityAh × nominalVoltageVolts
-usableSoCFraction        = max(0, currentSoCPercent − reserveSoCPercent) / 100
-usableEnergyWh           = fullBatteryEnergyWh × usableSoCFraction
-
-sustainableTotalPowerW   = usableEnergyWh / remainingRequiredRuntimeHours   (only if a runtime target is configured)
-P_battery_max            = batteryVoltage × maximumBatteryDischargeCurrentAmps
-P_main_max                = batteryVoltage × maximumMainCurrentAmps
-
-P_committed               = sum of every FIXED_ON Load's powerRatingWatts
-P_remaining                = min(P_battery_max, P_main_max) − P_committed
-
-P_available (final)       = min(P_remaining, sustainableTotalPowerW − P_committed)   (the runtime target, when configured, is the stricter of the two limits)
-```
-
-If `currentSoCPercent ≤ reserveSoCPercent`, `P_available` is forced to `0` regardless of every other term — battery protection always wins. If no runtime target is configured (`requiredRuntimeHours = 0`), only the immediate electrical limit (`P_remaining`) applies.
-
-`P_available` is what gets handed to Best-First Search as the budget for AUTO Loads. FIXED_ON Loads are never candidates for selection — their power is subtracted before AUTO planning starts, and FIXED_OFF Loads never draw power at all.
-
-## 2. Best-First Search — which AUTO Loads get selected
-
-Source: `lib/BestFirstSearch/BestFirstSearch.cpp`. This is a genuine best-first graph search over *combinations* of AUTO Loads (candidate subsets), not a simple sort-by-priority.
-
-**Per-Load effective priority:**
+## Exact power values
 
 ```text
-effectivePriority(load) = load.priority + (5 if load has an AutoSchedule window active right now, else 0)
+P_budget
+P_reserve
+P_fixed
+P_auto_available
+P_auto
+P_remaining
+P_measured
 ```
 
-The `+5` boost (`ACTIVE_SCHEDULE_PRIORITY_BOOST`) only applies while the load's configured `HH:MM-HH:MM` window contains the current time — outside the window, effective priority equals the configured priority. Verified live: `QA_REPORT_LOAD_SELECTION_SCENARIOS.md` Scenario 2.
+Meanings:
 
-**Per-combination scoring**, for any candidate subset of AUTO Loads:
+- `P_budget`: configured installation power allocation.
+- `P_reserve`: configured watts intentionally left outside allocation.
+- `P_fixed`: sum of `FIXED_ON` load ratings.
+- `P_auto_available`: watts passed to Best-First Search.
+- `P_auto`: sum of AUTO load ratings selected by Best-First Search.
+- `P_remaining`: configured power left after FIXED + selected AUTO loads.
+- `P_measured`: instantaneous voltage × current from INA219 or simulation.
+
+No additional public power names are used.
+
+Without runtime planning:
 
 ```text
-totalEffectivePriority(combo) = sum of effectivePriority(load) for every load in combo
-g(combo) = combo.size()                                    (search depth — number of loads)
-h(combo) = average(load.powerRatingWatts for load in combo)  (heuristic cost)
-f(combo) = g + h
+P_auto_available = max(0, P_budget - P_reserve - P_fixed)
 ```
 
-**Search**: starts from the empty combination and repeatedly expands the best-ranked open state by adding one more AUTO Load, rejecting any child whose total wattage exceeds `P_available` (infeasible combinations are never explored further — verified live: Scenario 1, a 10 W load never gets selected against a ~6 W budget no matter its priority).
+After selection:
 
-**Ranking** (both for which state to expand next, and for choosing the final answer), in order:
-1. Highest `totalEffectivePriority` wins.
-2. Then highest *configured* priority sum (without the schedule boost) as a secondary tiebreak.
-3. Then lowest `f = g + h`.
-4. Then more loads selected (larger combination) wins.
-5. Finally, lowest total wattage wins.
+```text
+P_remaining = max(0, P_budget - (P_fixed + P_auto))
+```
 
-**Important nuance, confirmed live** (Scenario 3): rule 1 operates on the *combination's total*, not on any single load. Two individually-tied loads do not automatically tie the outcome — a combination containing neither of them can still win if its own total effective priority is higher. The g/h/wattage tiebreaks (rules 3–5) only come into play when two *combinations* have equal total priority, which is less common than it might sound given rule 1 dominates almost every real comparison.
+## Runtime calculation
 
-**Mode semantics**: `FIXED_ON`/`FIXED_OFF` are never passed to Best-First — they're forced every cycle. `AUTO_ON`/`AUTO_OFF` are the *result* of the last cycle's selection, not a command — every cycle re-evaluates from scratch, so an `AUTO_OFF` load is exactly as eligible as an `AUTO_ON` one on the next run.
+Runtime is an internal constraint on `P_auto_available`; it does not add another public power variable.
 
-**Relay dispatch**: selected loads are switched ON with a staggered delay (3 s before the first, 2 s between each subsequent one) rather than all at once — see `CentralNodeConfig::RELAY_ON_FIRST_DELAY_MILLISECONDS`/`RELAY_ON_BETWEEN_DELAY_MILLISECONDS`.
+Conceptually:
 
-## 3. Where these numbers surface
+```text
+usable battery energy =
+    capacityAh × nominalVoltage ×
+    max(0, SoC - minimumSoC) / 100
 
-- Console: `battery status`, `dashboard`, `optimize run`.
-- MQTT: `state/system`'s `battery`/`powerFlow` objects (see `lib/MqttManager/README.md`).
-- Per-load rejection reason: `state/loads[].bestFirstRejectionReason` — `NONE`, `LOW_BATTERY`, `POWER_BUDGET_EXCEEDED`, `BATTERY_CURRENT_LIMIT`, `MAIN_LIMIT_EXCEEDED`, `BRANCH_LIMIT_EXCEEDED`, `UNKNOWN`.
+runtime allowance =
+    usable battery energy / remainingRuntimeHours
+
+P_auto_available = max(
+    0,
+    min(P_budget - P_reserve, runtime allowance) - P_fixed
+)
+```
+
+Example:
+
+```text
+P_budget = 200 W
+P_reserve = 20 W
+Battery = 200 Ah at 15 V
+SoC = 70%
+minimum SoC = 20%
+runtime = 24 h
+P_fixed = 40 W
+```
+
+Usable battery energy is 1500 Wh. The internal runtime allowance is 62.5 W, therefore:
+
+```text
+P_auto_available = 22.5 W
+```
+
+Only `P_auto_available` is passed to Best-First.
+
+## INA219 and simulation
+
+Both use the same `PowerManager` path.
+
+```text
+if simulation enabled:
+    voltage/current come from simulated values
+else:
+    voltage/current come from INA219
+
+P_measured = voltage × current
+```
+
+`P_measured` is monitoring data. It is not `P_budget` and it is not used as the starting allocation budget.
+
+## FIXED and AUTO
+
+```text
+P_fixed = sum(FIXED_ON powerRatingWatts)
+```
+
+Central calculates `P_auto_available` and sends the AUTO candidates plus that value to the existing Best-First Search. The Best-First Search algorithm itself is unchanged.
+
+Selected AUTO loads are summed into `P_auto`, then:
+
+```text
+P_remaining = max(0, P_budget - (P_fixed + P_auto))
+```
+
+## Best-First result
+
+The active planner uses only:
+
+```text
+NONE
+POWER_BUDGET_EXCEEDED
+```
+
+Old battery-current, main-current and branch-current rejection reasons are not part of this model.
+
+## Monitoring
+
+The system can compare:
+
+```text
+P_measured > P_budget
+```
+
+If true, it publishes a monitoring warning. It does not guess the electrical cause and does not claim hardware protection.
+
+## Console and frontend boundary
+
+The Central serial console owns installation setup:
+
+```text
+Wi-Fi credentials
+MQTT broker credentials
+INA219/shunt technical configuration
+```
+
+These settings are not remotely exposed through MQTT commands or frontend state.
+
+Frontend MQTT has five external topics:
+
+```text
+status
+state
+command
+ack
+alert
+```
+
+`status` is the authoritative Central liveness signal. Central publishes retained `online`; the MQTT Last Will publishes retained `offline` if Central disappears.
+
+`state` contains:
+
+```text
+system
+loads
+nodes
+```
+
+The system state contains battery/measurement/power-flow data, not Wi-Fi or MQTT connection details.
+
+The nodes state includes Central and Smart Node hardware/device information such as firmware version, chip model, relay capability and diagnostics. Central's node entry is not used as its liveness signal; `status` is.
+
+Frontend `command` accepts only:
+
+```text
+node
+load
+battery
+sensor
+system
+```
+
+Node commands support add/update/delete. Load commands support add/update/delete. Battery commands set planning inputs. Sensor commands choose INA219/simulation or provide simulation values. System commands trigger optimization, change its interval, or restart Central.
+
+## Hardware boundary
+
+Firmware performs measurement, energy estimation, planning, Best-First allocation, monitoring, and relay/GPIO commands. Electrical protection remains the responsibility of appropriately rated physical hardware such as fuses, breakers, BMS cut-offs, and thermal protection.

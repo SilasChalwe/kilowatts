@@ -42,8 +42,10 @@ const char* option(int argc, char** argv, const char* name)
 
 bool copyText(char* destination, std::size_t destinationSize, const char* source)
 {
-    if (destination == nullptr || destinationSize == 0U || source == nullptr) return false;
-    if (std::strlen(source) >= destinationSize) return false;
+    if (destination == nullptr || destinationSize == 0U || source == nullptr ||
+        std::strlen(source) >= destinationSize) {
+        return false;
+    }
     std::snprintf(destination, destinationSize, "%s", source);
     return true;
 }
@@ -97,7 +99,9 @@ bool parseMac(const char* text, Load::MacAddress& mac)
     const int count = std::sscanf(
         text,
         "%2x:%2x:%2x:%2x:%2x:%2x%c",
-        &byte[0], &byte[1], &byte[2], &byte[3], &byte[4], &byte[5], &trailing);
+        &byte[0], &byte[1], &byte[2],
+        &byte[3], &byte[4], &byte[5],
+        &trailing);
 
     if (count != 6) return false;
 
@@ -134,7 +138,6 @@ bool parsePowerType(const char* text, LoadPowerType& powerType)
 bool parseSchedule(const char* text, AutoSchedule& schedule)
 {
     if (text == nullptr) return false;
-
     if (same(text, "none") || same(text, "off")) {
         schedule = AutoSchedule{};
         return true;
@@ -154,19 +157,12 @@ bool parseSchedule(const char* text, AutoSchedule& schedule)
             &endHour,
             &endMinute,
             &trailing) != 4 ||
-        startHour > 23U ||
-        startMinute > 59U ||
-        endHour > 23U ||
-        endMinute > 59U) {
+        startHour > 23U || startMinute > 59U ||
+        endHour > 23U || endMinute > 59U) {
         return false;
     }
 
-    const unsigned int startTotalMinutes = startHour * 60U + startMinute;
-    const unsigned int endTotalMinutes = endHour * 60U + endMinute;
-
-    if (startTotalMinutes == endTotalMinutes) {
-        return false;
-    }
+    if (startHour * 60U + startMinute == endHour * 60U + endMinute) return false;
 
     schedule = AutoSchedule{
         true,
@@ -177,52 +173,47 @@ bool parseSchedule(const char* text, AutoSchedule& schedule)
     return true;
 }
 
-/**
- * Console-locally-initiated commands (system reset, etc.) have no external
- * client supplying a commandId the way an MQTT request does, so Console
- * allocates its own — unique for this boot, never zero. This is transport-
- * specific plumbing, not domain duplication: the resulting SystemCommandRequest
- * is the exact same shared type MQTT's parser builds.
- */
 std::uint32_t allocateConsoleCommandId()
 {
     static std::uint32_t next = 1U;
+    if (next == 0U) next = 1U;
     return next++;
 }
 
 int showResult(const CommandResult& result)
 {
     if (!result.accepted) {
-        std::printf("[FAIL] %s\n", result.reason[0] != '\0' ? result.reason : "command rejected");
+        std::printf("FAIL: %s\n", result.reason[0] != '\0' ? result.reason : "command rejected");
         return 1;
     }
 
-    std::printf("%s %s\n",
-                result.completed ? "[ OK ]" : "[INFO]",
-                result.reason[0] != '\0' ? result.reason :
-                (result.completed ? "command completed" : "command accepted"));
+    std::printf("%s\n", result.reason[0] != '\0'
+        ? result.reason
+        : (result.completed ? "done" : "accepted"));
     return 0;
 }
 
 void printBanner()
 {
-    std::printf("\n");
-    std::printf("============================================================\n");
-    std::printf("                         KILOWATTS\n");
-    std::printf("                  Central Energy Controller\n");
-    std::printf("============================================================\n");
-    std::printf("Type 'help' for the ESP console command list.\n");
-    std::printf("Use '<command> help' for command-specific usage.\n\n");
+    std::printf("\nKILOWATTS CENTRAL\n");
+    std::printf("Type 'help' for commands. Use '<command> help' for details.\n\n");
 }
 
-void statusUsage()
-{
-    std::printf("Usage: status\n");
-}
+void statusUsage() { std::printf("Usage: status\n"); }
+void dashboardUsage() { std::printf("Usage: dashboard\n"); }
+void nodesUsage() { std::printf("Usage: nodes\n"); }
+void loadsUsage() { std::printf("Usage: loads\n"); }
 
-void dashboardUsage()
+void sensorUsage()
 {
-    std::printf("Usage: dashboard\n");
+    std::printf(
+        "Usage:\n"
+        "  sensor ina219\n"
+        "  sensor sim\n"
+        "  sensor set shunt=R max_amps=A ema=X capacity=AH soc=PERCENT voltage=V\n"
+        "  sensor values voltage=V current=A [soc=PERCENT]\n\n"
+        "INA219 and simulation are two input sources for the same power path.\n"
+        "P_measured = voltage * current.\n");
 }
 
 void batteryUsage()
@@ -230,24 +221,7 @@ void batteryUsage()
     std::printf(
         "Usage:\n"
         "  battery\n"
-        "  battery status\n"
-        "  battery configure shunt_ohms=R max_sensor_amps=A ema_alpha=X "
-        "capacity_ah=AH initial_soc=PERCENT nominal_voltage=V\n"
-        "  battery limits min_soc=PERCENT max_discharge_amps=A max_main_amps=A "
-        "[runtime_hours=H]\n\n"
-        "Battery monitoring is limited to voltage, current, power and SoC.\n"
-        "The console does not report charger state such as CHARGING or CHARGED.\n"
-        "runtime_hours is the user's required-runtime target; omit or 0 to disable it.\n");
-}
-
-void sensorUsage()
-{
-    std::printf("Usage: sensor sim|ina219\n");
-}
-
-void nodesUsage()
-{
-    std::printf("Usage: nodes\n");
+        "  battery set budget=W reserve=W min_soc=PERCENT [runtime=H]\n");
 }
 
 void nodeUsage()
@@ -260,11 +234,6 @@ void nodeUsage()
         "  node decommission MAC\n");
 }
 
-void loadsUsage()
-{
-    std::printf("Usage: loads\n");
-}
-
 void loadUsage()
 {
     std::printf(
@@ -275,12 +244,7 @@ void loadUsage()
         "type=AC|DC active_high=on|off mode=FIXED_OFF|FIXED_ON|AUTO_OFF|AUTO_ON "
         "schedule=HH:MM-HH:MM|none\n"
         "  load remove MAC PIN\n"
-        "  load set MAC PIN [priority=N] "
-        "[mode=FIXED_OFF|FIXED_ON|AUTO_OFF|AUTO_ON] [schedule=HH:MM-HH:MM|none]\n\n"
-        "The load configuration matches Load.h exactly: name, power rating, "
-        "priority, AC/DC type, mode and optional AUTO schedule window.\n"
-        "'load set' changes priority/mode/schedule on a Load that already "
-        "exists; provide at least one of priority=, mode=, schedule=.\n");
+        "  load set MAC PIN [priority=N] [mode=...] [schedule=...]\n");
 }
 
 void optimizeUsage()
@@ -288,45 +252,29 @@ void optimizeUsage()
     std::printf(
         "Usage:\n"
         "  optimize\n"
-        "  optimize run\n"
         "  optimize status\n"
         "  optimize interval seconds=N\n"
-        "  optimize interval minutes=N\n"
-        "Default automatic interval is 5 minutes. Manual optimize/run still works immediately.\n");
+        "  optimize interval minutes=N\n");
 }
 
 void wifiUsage()
 {
     std::printf(
         "Usage:\n"
-        "  wifi status\n"
-        "  wifi scan\n"
+        "  wifi\n"
         "  wifi setup\n"
         "  wifi set ssid=NAME password=PASSWORD\n"
-        "  wifi channel CHANNEL\n"
-        "  wifi clear\n\n"
-        "channel is the radio channel shared by ESP-NOW and this Wi-Fi "
-        "association (1-14); the configured Access Point must already "
-        "broadcast on it. Takes effect after 'system reset'.\n");
+        "  wifi clear\n");
 }
 
 void mqttUsage()
 {
     std::printf(
         "Usage:\n"
-        "  mqtt status\n"
-        "  mqtt set host=HOST port=PORT tls=on|off [username=USER] [password=PASSWORD]\n"
-        "  mqtt clear\n");
-}
-
-void simulationUsage()
-{
-    std::printf(
-        "Usage:\n"
-        "  simulation start\n"
-        "  simulation stop\n"
-        "  simulation values [voltage=V current=A] [soc=PERCENT]\n"
-        "Provide voltage and current together. At least one value group is required.\n");
+        "  mqtt\n"
+        "  mqtt set host=HOST [port=PORT] [tls=on|off] [username=USER] [password=PASSWORD]\n"
+        "  mqtt clear\n"
+        "Topics: status, state, command, ack, alert\n");
 }
 
 void systemUsage()
@@ -335,8 +283,7 @@ void systemUsage()
         "Usage:\n"
         "  system reset\n"
         "  system factory-reset confirm=RESET\n"
-        "  system factory-reset mac=AA:BB:CC:DD:EE:FF confirm=RESET\n"
-        "reset reboots Central only; factory-reset erases persisted configuration.\n");
+        "  system factory-reset mac=AA:BB:CC:DD:EE:FF confirm=RESET\n");
 }
 
 NetworkCommandRequest makeNetworkRequest(
@@ -358,34 +305,27 @@ bool CentralConsole::begin(const Callbacks& callbacks)
     callbacks_ = callbacks;
     active_ = this;
 
-    /*
-     * esp_console_new_repl_uart() performs the common console initialization.
-     * Do not call esp_console_init() separately before it.
-     */
     const esp_console_cmd_t commands[] = {
-        {"status", "Quick Central status", nullptr, &CentralConsole::status, nullptr, nullptr, nullptr},
-        {"dashboard", "Complete Kilowatts dashboard", nullptr, &CentralConsole::dashboard, nullptr, nullptr, nullptr},
-        {"battery", "Battery measurements and battery-monitor configuration", nullptr, &CentralConsole::battery, nullptr, nullptr, nullptr},
-        {"bat", "Alias for battery", nullptr, &CentralConsole::battery, nullptr, nullptr, nullptr},
-        {"sensor", "Select simulated input or physical INA219", nullptr, &CentralConsole::sensor, nullptr, nullptr, nullptr},
-        {"nodes", "List registered Nodes", nullptr, &CentralConsole::nodes, nullptr, nullptr, nullptr},
-        {"node", "Show, commission, rename or decommission a Node", nullptr, &CentralConsole::node, nullptr, nullptr, nullptr},
-        {"loads", "List configured Loads", nullptr, &CentralConsole::loads, nullptr, nullptr, nullptr},
-        {"load", "Show, add, remove or update a Load", nullptr, &CentralConsole::load, nullptr, nullptr, nullptr},
-        {"optimize", "Run one Best-First Search control cycle", nullptr, &CentralConsole::optimize, nullptr, nullptr, nullptr},
-        {"wifi", "Wi-Fi status and provisioning", nullptr, &CentralConsole::wifi, nullptr, nullptr, nullptr},
-        {"mqtt", "MQTT status and configuration", nullptr, &CentralConsole::mqtt, nullptr, nullptr, nullptr},
-        {"simulation", "Control the battery-input simulator", nullptr, &CentralConsole::simulation, nullptr, nullptr, nullptr},
-        {"sim", "Alias for simulation", nullptr, &CentralConsole::simulation, nullptr, nullptr, nullptr},
-        {"system", "Reboot Central, or factory-reset Central or a Smart Node", nullptr, &CentralConsole::system, nullptr, nullptr, nullptr},
-        {"clear", "Clear the terminal", nullptr, &CentralConsole::clear, nullptr, nullptr, nullptr},
+        {"status", "Central status", nullptr, &CentralConsole::status, nullptr, nullptr, nullptr},
+        {"dashboard", "Power dashboard", nullptr, &CentralConsole::dashboard, nullptr, nullptr, nullptr},
+        {"battery", "Battery and power planning", nullptr, &CentralConsole::battery, nullptr, nullptr, nullptr},
+        {"sensor", "INA219 or simulation input", nullptr, &CentralConsole::sensor, nullptr, nullptr, nullptr},
+        {"nodes", "List Nodes", nullptr, &CentralConsole::nodes, nullptr, nullptr, nullptr},
+        {"node", "Manage a Node", nullptr, &CentralConsole::node, nullptr, nullptr, nullptr},
+        {"loads", "List Loads", nullptr, &CentralConsole::loads, nullptr, nullptr, nullptr},
+        {"load", "Manage a Load", nullptr, &CentralConsole::load, nullptr, nullptr, nullptr},
+        {"optimize", "Run or configure Best-First", nullptr, &CentralConsole::optimize, nullptr, nullptr, nullptr},
+        {"wifi", "Wi-Fi", nullptr, &CentralConsole::wifi, nullptr, nullptr, nullptr},
+        {"mqtt", "MQTT", nullptr, &CentralConsole::mqtt, nullptr, nullptr, nullptr},
+        {"system", "Reset", nullptr, &CentralConsole::system, nullptr, nullptr, nullptr},
+        {"clear", "Clear terminal", nullptr, &CentralConsole::clear, nullptr, nullptr, nullptr},
     };
 
     for (const auto& command : commands) {
         const esp_err_t result = esp_console_cmd_register(&command);
         if (result != ESP_OK) {
             ESP_LOGE(TAG, "command registration failed (%s): %s",
-                     command.command, esp_err_to_name(result));
+                command.command, esp_err_to_name(result));
             return false;
         }
     }
@@ -397,21 +337,18 @@ bool CentralConsole::begin(const Callbacks& callbacks)
     esp_console_dev_uart_config_t uartConfiguration = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     esp_console_repl_t* repl = nullptr;
 
-    esp_err_t result = esp_console_new_repl_uart(
-        &uartConfiguration, &replConfiguration, &repl);
+    esp_err_t result = esp_console_new_repl_uart(&uartConfiguration, &replConfiguration, &repl);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "UART REPL creation failed: %s", esp_err_to_name(result));
         return false;
     }
 
     printBanner();
-
     result = esp_console_start_repl(repl);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "UART REPL start failed: %s", esp_err_to_name(result));
         return false;
     }
-
     return true;
 }
 
@@ -446,111 +383,142 @@ int CentralConsole::dashboard(int argc, char** argv)
 int CentralConsole::battery(int argc, char** argv)
 {
     if (active_ == nullptr) return 1;
-
     if (helpRequested(argc, argv)) {
         batteryUsage();
         return 0;
     }
 
-    if (argc == 1 || (argc == 2 && same(argv[1], "status"))) {
-        if (active_->callbacks_.batteryStatus == nullptr) {
-            std::printf("[FAIL] battery status is unavailable\n");
-            return 1;
-        }
+    if (argc == 1) {
+        if (active_->callbacks_.batteryStatus == nullptr) return 1;
         active_->callbacks_.batteryStatus(active_->callbacks_.context);
         return 0;
     }
 
-    if (argc >= 2 && same(argv[1], "limits")) {
-        if (active_->callbacks_.configurePowerLimits == nullptr) {
-            std::printf("[FAIL] power limits configuration is unavailable\n");
-            return 1;
-        }
-
-        PowerLimitsCommandRequest limitsRequest{};
-        if (!parseFloat(option(argc, argv, "min_soc"), limitsRequest.minimumStateOfChargePercent) ||
-            !parseFloat(option(argc, argv, "max_discharge_amps"), limitsRequest.maximumBatteryDischargeCurrentAmps) ||
-            !parseFloat(option(argc, argv, "max_main_amps"), limitsRequest.maximumMainCurrentAmps)) {
-            batteryUsage();
-            return 1;
-        }
-
-        const char* runtimeText = option(argc, argv, "runtime_hours");
-        limitsRequest.requiredRuntimeHours = 0.0F;
-        if (runtimeText != nullptr && !parseFloat(runtimeText, limitsRequest.requiredRuntimeHours)) {
-            batteryUsage();
-            return 1;
-        }
-
-        if (limitsRequest.minimumStateOfChargePercent < 0.0F ||
-            limitsRequest.minimumStateOfChargePercent > 100.0F ||
-            limitsRequest.maximumBatteryDischargeCurrentAmps <= 0.0F ||
-            limitsRequest.maximumMainCurrentAmps <= 0.0F ||
-            limitsRequest.requiredRuntimeHours < 0.0F) {
-            std::printf("[FAIL] invalid power limits configuration\n");
-            return 1;
-        }
-
-        return showResult(active_->callbacks_.configurePowerLimits(
-            active_->callbacks_.context, limitsRequest));
-    }
-
-    if (argc < 2 || !same(argv[1], "configure") ||
-        active_->callbacks_.configureBattery == nullptr) {
+    if (!same(argv[1], "set") || active_->callbacks_.configurePowerPlanning == nullptr) {
         batteryUsage();
         return 1;
     }
 
-    BatterySensorCommandRequest request{};
-    if (!parseFloat(option(argc, argv, "shunt_ohms"), request.shuntResistanceOhms) ||
-        !parseFloat(option(argc, argv, "max_sensor_amps"), request.maximumExpectedCurrentAmps) ||
-        !parseFloat(option(argc, argv, "ema_alpha"), request.emaAlpha) ||
-        !parseFloat(option(argc, argv, "capacity_ah"), request.batteryCapacityAmpHours) ||
-        !parseFloat(option(argc, argv, "initial_soc"), request.initialStateOfChargePercent) ||
-        !parseFloat(option(argc, argv, "nominal_voltage"), request.nominalVoltageVolts)) {
+    PowerPlanningCommandRequest request{};
+    if (!parseFloat(option(argc, argv, "budget"), request.P_budget) ||
+        !parseFloat(option(argc, argv, "reserve"), request.P_reserve) ||
+        !parseFloat(option(argc, argv, "min_soc"), request.minimumStateOfChargePercent)) {
         batteryUsage();
         return 1;
     }
 
-    if (request.shuntResistanceOhms <= 0.0F ||
-        request.maximumExpectedCurrentAmps <= 0.0F ||
-        request.emaAlpha <= 0.0F || request.emaAlpha > 1.0F ||
-        request.batteryCapacityAmpHours <= 0.0F ||
-        request.initialStateOfChargePercent < 0.0F ||
-        request.initialStateOfChargePercent > 100.0F ||
-        request.nominalVoltageVolts <= 0.0F) {
-        std::printf("[FAIL] invalid battery-monitor configuration\n");
+    request.requiredRuntimeHours = 0.0F;
+    const char* runtimeText = option(argc, argv, "runtime");
+    if (runtimeText != nullptr && !parseFloat(runtimeText, request.requiredRuntimeHours)) {
+        batteryUsage();
         return 1;
     }
 
-    return showResult(active_->callbacks_.configureBattery(
+    if (request.P_budget <= 0.0F ||
+        request.P_reserve < 0.0F || request.P_reserve > request.P_budget ||
+        request.minimumStateOfChargePercent < 0.0F ||
+        request.minimumStateOfChargePercent > 100.0F ||
+        request.requiredRuntimeHours < 0.0F) {
+        std::printf("FAIL: invalid battery settings\n");
+        return 1;
+    }
+
+    return showResult(active_->callbacks_.configurePowerPlanning(
         active_->callbacks_.context, request));
 }
 
 int CentralConsole::sensor(int argc, char** argv)
 {
-    if (helpRequested(argc, argv)) {
+    if (active_ == nullptr) return 1;
+    if (helpRequested(argc, argv) || argc < 2) {
         sensorUsage();
-        return 0;
-    }
-    if (argc != 2 || active_ == nullptr || active_->callbacks_.sensorMode == nullptr) {
-        sensorUsage();
-        return 1;
+        return helpRequested(argc, argv) ? 0 : 1;
     }
 
-    const bool simulated = same(argv[1], "sim");
-    const bool hardware = same(argv[1], "ina219");
-    if (!simulated && !hardware) {
-        sensorUsage();
-        return 1;
+    if (argc == 2 && (same(argv[1], "sim") || same(argv[1], "ina219"))) {
+        if (active_->callbacks_.sensorMode == nullptr) return 1;
+        const bool simulated = same(argv[1], "sim");
+        const bool changed = active_->callbacks_.sensorMode(active_->callbacks_.context, simulated);
+        std::printf("%s\n", changed
+            ? (simulated ? "measurement source: SIMULATION" : "measurement source: INA219")
+            : "FAIL: measurement source change failed");
+        return changed ? 0 : 1;
     }
 
-    const bool changed = active_->callbacks_.sensorMode(
-        active_->callbacks_.context, simulated);
-    std::printf("%s Battery measurement source: %s\n",
-                changed ? "[ OK ]" : "[FAIL]",
-                changed ? (simulated ? "SIMULATION" : "INA219") : "CHANGE FAILED");
-    return changed ? 0 : 1;
+    if (same(argv[1], "set")) {
+        if (active_->callbacks_.configureBattery == nullptr) return 1;
+
+        BatterySensorCommandRequest request{};
+        if (!parseFloat(option(argc, argv, "shunt"), request.shuntResistanceOhms) ||
+            !parseFloat(option(argc, argv, "max_amps"), request.maximumExpectedCurrentAmps) ||
+            !parseFloat(option(argc, argv, "ema"), request.emaAlpha) ||
+            !parseFloat(option(argc, argv, "capacity"), request.batteryCapacityAmpHours) ||
+            !parseFloat(option(argc, argv, "soc"), request.initialStateOfChargePercent) ||
+            !parseFloat(option(argc, argv, "voltage"), request.nominalVoltageVolts)) {
+            sensorUsage();
+            return 1;
+        }
+
+        if (request.shuntResistanceOhms <= 0.0F ||
+            request.maximumExpectedCurrentAmps <= 0.0F ||
+            request.emaAlpha <= 0.0F || request.emaAlpha > 1.0F ||
+            request.batteryCapacityAmpHours <= 0.0F ||
+            request.initialStateOfChargePercent < 0.0F ||
+            request.initialStateOfChargePercent > 100.0F ||
+            request.nominalVoltageVolts <= 0.0F) {
+            std::printf("FAIL: invalid sensor settings\n");
+            return 1;
+        }
+
+        return showResult(active_->callbacks_.configureBattery(
+            active_->callbacks_.context, request));
+    }
+
+    if (same(argv[1], "values")) {
+        if (active_->callbacks_.simulation == nullptr) return 1;
+
+        SimulationCommandRequest request{};
+        request.commandId = allocateConsoleCommandId();
+        request.action = SimulationCommandAction::SET_VALUES;
+
+        const char* voltageText = option(argc, argv, "voltage");
+        const char* currentText = option(argc, argv, "current");
+        const char* socText = option(argc, argv, "soc");
+
+        if ((voltageText == nullptr) != (currentText == nullptr)) {
+            sensorUsage();
+            return 1;
+        }
+
+        if (voltageText != nullptr) {
+            if (!parseFloat(voltageText, request.batteryVoltageVolts) ||
+                !parseFloat(currentText, request.batteryCurrentAmps)) {
+                sensorUsage();
+                return 1;
+            }
+            request.hasElectricalMeasurements = true;
+        }
+
+        if (socText != nullptr) {
+            if (!parseFloat(socText, request.stateOfChargePercent) ||
+                request.stateOfChargePercent < 0.0F ||
+                request.stateOfChargePercent > 100.0F) {
+                sensorUsage();
+                return 1;
+            }
+            request.hasStateOfChargePercent = true;
+        }
+
+        if (!request.hasElectricalMeasurements && !request.hasStateOfChargePercent) {
+            sensorUsage();
+            return 1;
+        }
+
+        return showResult(active_->callbacks_.simulation(active_->callbacks_.context, request));
+    }
+
+    sensorUsage();
+    return 1;
 }
 
 int CentralConsole::nodes(int argc, char** argv)
@@ -582,7 +550,7 @@ int CentralConsole::node(int argc, char** argv)
         }
         Load::MacAddress mac{};
         if (!parseMac(argv[2], mac)) {
-            std::printf("[FAIL] invalid MAC address\n");
+            std::printf("FAIL: invalid MAC address\n");
             return 1;
         }
         active_->callbacks_.nodeStatus(active_->callbacks_.context, mac);
@@ -594,24 +562,17 @@ int CentralConsole::node(int argc, char** argv)
             nodeUsage();
             return 1;
         }
-
         NodeCommandRequest request{};
         request.action = NodeCommandRequest::Action::DECOMMISSION;
-
         if (!parseMac(argv[2], request.nodeMacAddress)) {
-            std::printf("[FAIL] invalid MAC address\n");
+            std::printf("FAIL: invalid MAC address\n");
             return 1;
         }
-
-        return showResult(active_->callbacks_.nodeCommand(
-            active_->callbacks_.context, request));
+        return showResult(active_->callbacks_.nodeCommand(active_->callbacks_.context, request));
     }
 
-    if (!same(argv[1], "commission") && !same(argv[1], "rename")) {
-        nodeUsage();
-        return 1;
-    }
-    if (argc < 3 || active_->callbacks_.nodeCommand == nullptr) {
+    if ((!same(argv[1], "commission") && !same(argv[1], "rename")) ||
+        argc < 3 || active_->callbacks_.nodeCommand == nullptr) {
         nodeUsage();
         return 1;
     }
@@ -622,14 +583,12 @@ int CentralConsole::node(int argc, char** argv)
         : NodeCommandRequest::Action::RENAME;
 
     if (!parseMac(argv[2], request.nodeMacAddress) ||
-        !copyText(request.friendlyName, sizeof(request.friendlyName),
-                  option(argc, argv, "name"))) {
+        !copyText(request.friendlyName, sizeof(request.friendlyName), option(argc, argv, "name"))) {
         nodeUsage();
         return 1;
     }
 
-    return showResult(active_->callbacks_.nodeCommand(
-        active_->callbacks_.context, request));
+    return showResult(active_->callbacks_.nodeCommand(active_->callbacks_.context, request));
 }
 
 int CentralConsole::loads(int argc, char** argv)
@@ -655,14 +614,10 @@ int CentralConsole::load(int argc, char** argv)
     }
 
     if (same(argv[1], "show")) {
-        if (active_->callbacks_.loadStatus == nullptr) {
-            std::printf("[FAIL] load status is unavailable\n");
-            return 1;
-        }
+        if (active_->callbacks_.loadStatus == nullptr) return 1;
 
         Load::MacAddress mac{};
         std::uint8_t relayPin = 0U;
-
         if (argc == 3) {
             if (active_->callbacks_.localMac == nullptr || !parseUint8(argv[2], relayPin)) {
                 loadUsage();
@@ -688,16 +643,12 @@ int CentralConsole::load(int argc, char** argv)
             loadUsage();
             return 1;
         }
-
         RemoveLoadCommandRequest request{};
-        if (!parseMac(argv[2], request.nodeMacAddress) ||
-            !parseUint8(argv[3], request.relayPin)) {
-            std::printf("[FAIL] invalid MAC address or relay pin\n");
+        if (!parseMac(argv[2], request.nodeMacAddress) || !parseUint8(argv[3], request.relayPin)) {
+            std::printf("FAIL: invalid MAC address or relay pin\n");
             return 1;
         }
-
-        return showResult(active_->callbacks_.removeLoad(
-            active_->callbacks_.context, request));
+        return showResult(active_->callbacks_.removeLoad(active_->callbacks_.context, request));
     }
 
     if (same(argv[1], "set")) {
@@ -708,10 +659,8 @@ int CentralConsole::load(int argc, char** argv)
 
         LoadCommandRequest request{};
         request.commandId = allocateConsoleCommandId();
-
-        if (!parseMac(argv[2], request.nodeMacAddress) ||
-            !parseUint8(argv[3], request.relayPin)) {
-            std::printf("[FAIL] invalid MAC address or relay pin\n");
+        if (!parseMac(argv[2], request.nodeMacAddress) || !parseUint8(argv[3], request.relayPin)) {
+            std::printf("FAIL: invalid MAC address or relay pin\n");
             return 1;
         }
 
@@ -743,12 +692,11 @@ int CentralConsole::load(int argc, char** argv)
         }
 
         if (!request.hasPriority && !request.hasMode && !request.hasSchedule) {
-            std::printf("[FAIL] provide at least one of priority=, mode=, schedule=\n");
+            std::printf("FAIL: provide priority=, mode= or schedule=\n");
             return 1;
         }
 
-        return showResult(active_->callbacks_.loadCommand(
-            active_->callbacks_.context, request));
+        return showResult(active_->callbacks_.loadCommand(active_->callbacks_.context, request));
     }
 
     if (!same(argv[1], "add") || active_->callbacks_.configureLoad == nullptr) {
@@ -757,18 +705,14 @@ int CentralConsole::load(int argc, char** argv)
     }
 
     LoadConfigurationCommandRequest request{};
-
     const char* macText = option(argc, argv, "mac");
     if (macText != nullptr) {
         if (!parseMac(macText, request.nodeMacAddress)) {
-            std::printf("[FAIL] invalid Node MAC address\n");
+            std::printf("FAIL: invalid Node MAC address\n");
             return 1;
         }
     } else {
-        if (active_->callbacks_.localMac == nullptr) {
-            std::printf("[FAIL] Central MAC unavailable; provide mac=MAC\n");
-            return 1;
-        }
+        if (active_->callbacks_.localMac == nullptr) return 1;
         request.nodeMacAddress = active_->callbacks_.localMac(active_->callbacks_.context);
     }
 
@@ -784,26 +728,18 @@ int CentralConsole::load(int argc, char** argv)
     }
 
     const char* activeHighText = option(argc, argv, "active_high");
-    if (activeHighText == nullptr ||
-        (!same(activeHighText, "on") && !same(activeHighText, "off"))) {
+    if (activeHighText == nullptr || (!same(activeHighText, "on") && !same(activeHighText, "off"))) {
         loadUsage();
         return 1;
     }
     request.relayActiveHigh = same(activeHighText, "on");
 
     if (request.powerRatingWatts < 0.0F) {
-        std::printf("[FAIL] power rating cannot be negative\n");
+        std::printf("FAIL: power rating cannot be negative\n");
         return 1;
     }
 
-    if (!request.schedule.enabled &&
-        (request.mode == LoadMode::Value::FIXED_OFF ||
-         request.mode == LoadMode::Value::FIXED_ON)) {
-        /* Valid: Fixed loads simply have no AUTO schedule. */
-    }
-
-    return showResult(active_->callbacks_.configureLoad(
-        active_->callbacks_.context, request));
+    return showResult(active_->callbacks_.configureLoad(active_->callbacks_.context, request));
 }
 
 int CentralConsole::optimize(int argc, char** argv)
@@ -812,24 +748,16 @@ int CentralConsole::optimize(int argc, char** argv)
         optimizeUsage();
         return 0;
     }
-
-    if (active_ == nullptr) {
-        return 1;
-    }
+    if (active_ == nullptr) return 1;
 
     if (argc == 1 || (argc == 2 && same(argv[1], "run"))) {
-        if (active_->callbacks_.optimize == nullptr) {
-            return 1;
-        }
+        if (active_->callbacks_.optimize == nullptr) return 1;
         active_->callbacks_.optimize(active_->callbacks_.context);
         return 0;
     }
 
     if (argc == 2 && same(argv[1], "status")) {
-        if (active_->callbacks_.system == nullptr) {
-            return 1;
-        }
-
+        if (active_->callbacks_.system == nullptr) return 1;
         SystemCommandRequest request{};
         request.commandId = allocateConsoleCommandId();
         request.action = SystemCommandAction::REPORT_OPTIMIZER_INTERVAL;
@@ -837,9 +765,7 @@ int CentralConsole::optimize(int argc, char** argv)
     }
 
     if (argc == 3 && same(argv[1], "interval")) {
-        if (active_->callbacks_.system == nullptr) {
-            return 1;
-        }
+        if (active_->callbacks_.system == nullptr) return 1;
 
         unsigned long parsed = 0U;
         const char* secondsText = option(argc, argv, "seconds");
@@ -866,7 +792,6 @@ int CentralConsole::optimize(int argc, char** argv)
         request.action = SystemCommandAction::SET_OPTIMIZER_INTERVAL;
         request.hasOptimizerIntervalSeconds = true;
         request.optimizerIntervalSeconds = static_cast<std::uint32_t>(parsed);
-
         return showResult(active_->callbacks_.system(active_->callbacks_.context, request));
     }
 
@@ -877,26 +802,18 @@ int CentralConsole::optimize(int argc, char** argv)
 int CentralConsole::wifi(int argc, char** argv)
 {
     if (active_ == nullptr || active_->callbacks_.network == nullptr) return 1;
-    if (helpRequested(argc, argv) || argc < 2) {
+    if (helpRequested(argc, argv)) {
         wifiUsage();
-        return helpRequested(argc, argv) ? 0 : 1;
+        return 0;
     }
 
     NetworkCommandRequest request{};
-    if (same(argv[1], "status")) {
+    if (argc == 1) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::STATUS);
-    } else if (same(argv[1], "scan")) {
-        request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SCAN);
     } else if (same(argv[1], "setup")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SETUP);
     } else if (same(argv[1], "clear")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::CLEAR);
-    } else if (same(argv[1], "channel")) {
-        request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SET_CHANNEL);
-        if (argc != 3 || !parseUint8(argv[2], request.wifiChannel)) {
-            wifiUsage();
-            return 1;
-        }
     } else if (same(argv[1], "set")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SET);
         if (!copyText(request.ssid, sizeof(request.ssid), option(argc, argv, "ssid")) ||
@@ -915,105 +832,57 @@ int CentralConsole::wifi(int argc, char** argv)
 int CentralConsole::mqtt(int argc, char** argv)
 {
     if (active_ == nullptr || active_->callbacks_.network == nullptr) return 1;
-    if (helpRequested(argc, argv) || argc < 2) {
+    if (helpRequested(argc, argv)) {
         mqttUsage();
-        return helpRequested(argc, argv) ? 0 : 1;
+        return 0;
     }
 
     NetworkCommandRequest request{};
-    if (same(argv[1], "status")) {
+    if (argc == 1) {
         request = makeNetworkRequest(NetworkCommandTarget::MQTT, NetworkCommandRequest::Action::STATUS);
     } else if (same(argv[1], "clear")) {
         request = makeNetworkRequest(NetworkCommandTarget::MQTT, NetworkCommandRequest::Action::CLEAR);
     } else if (same(argv[1], "set")) {
         request = makeNetworkRequest(NetworkCommandTarget::MQTT, NetworkCommandRequest::Action::SET);
 
-        unsigned long port = 0U;
-        const char* tls = option(argc, argv, "tls");
-        if (!copyText(request.mqttHost, sizeof(request.mqttHost), option(argc, argv, "host")) ||
-            !parseUnsigned(option(argc, argv, "port"), port) || port == 0U || port > 65535U ||
-            (tls == nullptr || (!same(tls, "on") && !same(tls, "off")))) {
+        if (!copyText(request.mqttHost, sizeof(request.mqttHost), option(argc, argv, "host"))) {
             mqttUsage();
             return 1;
         }
 
-        request.mqttPort = static_cast<std::uint16_t>(port);
-        request.mqttUseTls = same(tls, "on");
+        request.mqttUseTls = false;
+        const char* tls = option(argc, argv, "tls");
+        if (tls != nullptr) {
+            if (!same(tls, "on") && !same(tls, "off")) {
+                mqttUsage();
+                return 1;
+            }
+            request.mqttUseTls = same(tls, "on");
+        }
+
+        request.mqttPort = request.mqttUseTls ? 8883U : 1883U;
+        const char* portText = option(argc, argv, "port");
+        if (portText != nullptr) {
+            unsigned long port = 0U;
+            if (!parseUnsigned(portText, port) || port == 0U || port > 65535U) {
+                mqttUsage();
+                return 1;
+            }
+            request.mqttPort = static_cast<std::uint16_t>(port);
+        }
 
         const char* username = option(argc, argv, "username");
         const char* password = option(argc, argv, "password");
-        if (username != nullptr && !copyText(request.mqttUsername, sizeof(request.mqttUsername), username)) {
-            std::printf("[FAIL] MQTT username is too long\n");
-            return 1;
-        }
-        if (password != nullptr && !copyText(request.mqttPassword, sizeof(request.mqttPassword), password)) {
-            std::printf("[FAIL] MQTT password is too long\n");
-            return 1;
-        }
+        if (username != nullptr &&
+            !copyText(request.mqttUsername, sizeof(request.mqttUsername), username)) return 1;
+        if (password != nullptr &&
+            !copyText(request.mqttPassword, sizeof(request.mqttPassword), password)) return 1;
     } else {
         mqttUsage();
         return 1;
     }
 
     return showResult(active_->callbacks_.network(active_->callbacks_.context, request));
-}
-
-int CentralConsole::simulation(int argc, char** argv)
-{
-    if (active_ == nullptr || active_->callbacks_.simulation == nullptr) return 1;
-    if (helpRequested(argc, argv) || argc < 2) {
-        simulationUsage();
-        return helpRequested(argc, argv) ? 0 : 1;
-    }
-
-    SimulationCommandRequest request{};
-    request.commandId = allocateConsoleCommandId();
-
-    if (same(argv[1], "start") && argc == 2) {
-        request.action = SimulationCommandAction::ENABLE;
-    } else if (same(argv[1], "stop") && argc == 2) {
-        request.action = SimulationCommandAction::DISABLE;
-    } else if (same(argv[1], "values")) {
-        request.action = SimulationCommandAction::SET_VALUES;
-
-        const char* voltageText = option(argc, argv, "voltage");
-        const char* currentText = option(argc, argv, "current");
-        const char* socText = option(argc, argv, "soc");
-
-        if ((voltageText == nullptr) != (currentText == nullptr)) {
-            simulationUsage();
-            return 1;
-        }
-
-        if (voltageText != nullptr) {
-            if (!parseFloat(voltageText, request.batteryVoltageVolts) ||
-                !parseFloat(currentText, request.batteryCurrentAmps)) {
-                simulationUsage();
-                return 1;
-            }
-            request.hasElectricalMeasurements = true;
-        }
-
-        if (socText != nullptr) {
-            if (!parseFloat(socText, request.stateOfChargePercent) ||
-                request.stateOfChargePercent < 0.0F ||
-                request.stateOfChargePercent > 100.0F) {
-                simulationUsage();
-                return 1;
-            }
-            request.hasStateOfChargePercent = true;
-        }
-
-        if (!request.hasElectricalMeasurements && !request.hasStateOfChargePercent) {
-            simulationUsage();
-            return 1;
-        }
-    } else {
-        simulationUsage();
-        return 1;
-    }
-
-    return showResult(active_->callbacks_.simulation(active_->callbacks_.context, request));
 }
 
 int CentralConsole::system(int argc, char** argv)
@@ -1025,16 +894,10 @@ int CentralConsole::system(int argc, char** argv)
     }
 
     if (same(argv[1], "reset")) {
-        if (option(argc, argv, "mac") != nullptr) {
-            std::printf("[FAIL] system reset reboots Central only; use system factory-reset mac=... for a Smart Node\n");
-            return 1;
-        }
-
+        if (option(argc, argv, "mac") != nullptr) return 1;
         SystemCommandRequest request{};
         request.commandId = allocateConsoleCommandId();
         request.action = SystemCommandAction::REBOOT_CENTRAL;
-        request.hasTargetNodeMacAddress = false;
-
         return showResult(active_->callbacks_.system(active_->callbacks_.context, request));
     }
 
@@ -1045,7 +908,7 @@ int CentralConsole::system(int argc, char** argv)
 
     const char* confirmation = option(argc, argv, "confirm");
     if (!same(confirmation, "RESET")) {
-        std::printf("[FAIL] factory-reset requires confirm=RESET\n");
+        std::printf("FAIL: factory-reset requires confirm=RESET\n");
         return 1;
     }
 
@@ -1056,12 +919,11 @@ int CentralConsole::system(int argc, char** argv)
     const char* macText = option(argc, argv, "mac");
     if (macText == nullptr) {
         request.action = SystemCommandAction::FACTORY_RESET_CENTRAL;
-        request.hasTargetNodeMacAddress = false;
     } else {
         request.action = SystemCommandAction::FACTORY_RESET_NODE;
         request.hasTargetNodeMacAddress = true;
         if (!parseMac(macText, request.targetNodeMacAddress)) {
-            std::printf("[FAIL] invalid target Node MAC address\n");
+            std::printf("FAIL: invalid target Node MAC address\n");
             return 1;
         }
     }
@@ -1076,9 +938,9 @@ int CentralConsole::clear(int argc, char** argv)
         std::printf("Usage: clear\n");
         return 1;
     }
-
     std::printf("\033[2J\033[H");
     std::fflush(stdout);
     return 0;
 }
+
 } // namespace kilowatts
