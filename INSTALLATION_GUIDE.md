@@ -101,10 +101,15 @@ Wi-Fi:
 
 ```text
 wifi
+wifi scan
 wifi setup
 wifi set ssid=MyWiFi password=MyPassword
 wifi clear
 ```
+
+Use `wifi scan` to confirm which networks Central can see, their signal strength, and their current channel.
+
+The shared Wi-Fi/ESP-NOW channel is automatic. `wifi set` detects and stores the configured Access Point's channel. If the Access Point later changes channel, Central detects the new channel and restarts automatically with Wi-Fi and ESP-NOW aligned to it. Smart Nodes search channels for Central if normal discovery fails. There is no manual channel configuration command.
 
 MQTT broker:
 
