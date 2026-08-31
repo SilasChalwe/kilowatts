@@ -1,14 +1,10 @@
 /**
  * ESP-NOW and infrastructure Wi-Fi share one physical radio. This class
- * does NOT call esp_wifi_init()/esp_wifi_start()/esp_wifi_set_mode() —
- * EspNowCommunication::initialize() already brings the Wi-Fi driver up in
- * station mode on kilowatts::KILOWATTS_RADIO_CHANNEL (see
- * include/RadioConfig.h), and WiFiManager only ever associates with an
- * Access Point confirmed to already be broadcasting on that exact
- * channel. Associating on a different channel would force the whole
- * radio onto that channel and silently break ESP-NOW to every Smart
- * Node, so WiFiManager refuses to connect on a mismatch
- * (RADIO_CHANNEL_MISMATCH) rather than connecting anyway.
+ * does not initialize the Wi-Fi driver; EspNowCommunication brings the
+ * station interface up first. WiFiManager scans the configured SSID before
+ * association. If the Access Point has moved to a different channel, the
+ * newly discovered channel is persisted and Central restarts so ESP-NOW and
+ * Wi-Fi come back on the same channel automatically.
  */
 
 #ifndef KILOWATTS_WIFI_MANAGER_H
@@ -23,10 +19,6 @@
 namespace kilowatts {
 
 
-/**
- * Never collapses to a single boolean, since "not connected" has several
- * distinct causes a diagnostic needs to tell apart.
- */
 enum class WiFiConnectionState : std::uint8_t {
     DISCONNECTED = 0U,
     SCANNING = 1U,
@@ -41,33 +33,19 @@ class WiFiManager {
 
 public:
 
-    static constexpr std::size_t SSID_BUFFER_SIZE = 33U;      // IEEE 802.11 max SSID + null
-    static constexpr std::size_t PASSWORD_BUFFER_SIZE = 65U;  // WPA2-PSK max passphrase + null
+    static constexpr std::size_t SSID_BUFFER_SIZE = 33U;
+    static constexpr std::size_t PASSWORD_BUFFER_SIZE = 65U;
 
     struct Credentials {
         const char* ssid;
         const char* password;
-
-        /**
-         * Cosmetic only, never part of authentication. nullptr or empty
-         * leaves esp-idf's own default hostname in place.
-         */
         const char* hostname;
     };
 
 
-    /**
-     * requiredChannel must be exactly the channel EspNowCommunication was
-     * constructed with (kilowatts::KILOWATTS_RADIO_CHANNEL) — the channel
-     * this Central Node's Access Point must already be broadcasting on.
-     */
     explicit WiFiManager(std::uint8_t requiredChannel);
 
-    /**
-     * Overrides the channel supplied at construction. Must be called
-     * before begin() — this class never re-verifies an already-running
-     * connection against a new channel.
-     */
+    /** Sets the startup shared-radio channel before begin(). */
     void setRequiredChannel(std::uint8_t requiredChannel);
 
     ~WiFiManager();
@@ -77,43 +55,25 @@ public:
 
 
     /**
-     * Registers Wi-Fi/IP event handlers and starts the connection
-     * sequence (channel verification, then association). Must be called
-     * after EspNowCommunication::initialize() has already brought up the
-     * Wi-Fi driver in station mode — this class only registers event
-     * handlers and issues esp_wifi_scan_start()/esp_wifi_connect(), it
-     * never (re)initialises the Wi-Fi driver itself.
-     *
-     * Returns false when event handler registration itself failed, or
-     * credentials.ssid is empty. This is independent of whether
-     * association has actually completed yet — see getState() for that.
+     * Registers Wi-Fi/IP event handlers and starts the connection sequence.
+     * The configured SSID is scanned first so its current channel can be
+     * verified automatically.
      */
     bool begin(const Credentials& credentials);
 
 
-    /** Equivalent to getState() == CONNECTED_WITH_IP. */
     bool isConnected() const;
 
     WiFiConnectionState getState() const;
 
-    /** Channel actually associated with, or 0 when not currently connected. */
     std::uint8_t getConnectedChannel() const;
 
     std::uint32_t getReconnectAttemptCount() const;
 
-    /**
-     * When already connected, prints the connected network only instead
-     * of scanning — a real scan would retune the shared radio and
-     * interrupt ESP-NOW.
-     */
+    /** Prints all named Wi-Fi networks currently visible to Central. */
     bool printNearbyNetworks() const;
 
-    /**
-     * Skips scanning and reports the connected AP's channel directly when
-     * already connected to ssid, to avoid retuning the shared radio — see
-     * printNearbyNetworks(). Returns false when ssid is empty or not
-     * currently in range.
-     */
+    /** Finds the current channel of one SSID. */
     bool findChannelForSsid(const char* ssid, std::uint8_t& channel) const;
 
     bool hasInternetConnection() const;
@@ -135,12 +95,6 @@ private:
 
     std::uint8_t requiredChannel_;
 
-    /**
-     * Owned copies of the SSID/password bytes, populated in begin(). The
-     * caller's Credentials struct only borrows pointers (e.g. into a
-     * stack-local buffer that does not outlive the call), so this class
-     * must not retain those pointers past begin() returning.
-     */
     char ssid_[SSID_BUFFER_SIZE];
     char password_[PASSWORD_BUFFER_SIZE];
 
