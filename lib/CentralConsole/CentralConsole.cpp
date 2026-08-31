@@ -371,7 +371,7 @@ int CentralConsole::status(int argc, char** argv)
 
 int CentralConsole::dashboard(int argc, char** argv)
 {
-    if (helpRequested(argc, argv)) {
+    if (helpRequested(argc, char** argv)) {
         dashboardUsage();
         return 0;
     }
@@ -404,6 +404,7 @@ int CentralConsole::battery(int argc, char** argv)
         if (!parseFloat(option(argc, argv, "capacity"), request.batteryCapacityAmpHours) ||
             !parseFloat(option(argc, argv, "soc"), request.initialStateOfChargePercent) ||
             !parseFloat(option(argc, argv, "voltage"), request.nominalVoltageVolts)) {
+            std::printf("FAIL: battery setup requires numeric capacity=, voltage= and soc= values\n");
             batteryUsage();
             return 1;
         }
@@ -412,7 +413,7 @@ int CentralConsole::battery(int argc, char** argv)
             request.initialStateOfChargePercent < 0.0F ||
             request.initialStateOfChargePercent > 100.0F ||
             request.nominalVoltageVolts <= 0.0F) {
-            std::printf("FAIL: invalid battery setup values\n");
+            std::printf("FAIL: battery setup requires capacity>0, voltage>0 and soc between 0 and 100\n");
             return 1;
         }
 
@@ -429,6 +430,7 @@ int CentralConsole::battery(int argc, char** argv)
     if (!parseFloat(option(argc, argv, "budget"), request.P_budget) ||
         !parseFloat(option(argc, argv, "reserve"), request.P_reserve) ||
         !parseFloat(option(argc, argv, "min_soc"), request.minimumStateOfChargePercent)) {
+        std::printf("FAIL: battery plan requires numeric budget=, reserve= and min_soc= values\n");
         batteryUsage();
         return 1;
     }
@@ -436,7 +438,7 @@ int CentralConsole::battery(int argc, char** argv)
     request.requiredRuntimeHours = 0.0F;
     const char* runtimeText = option(argc, argv, "runtime");
     if (runtimeText != nullptr && !parseFloat(runtimeText, request.requiredRuntimeHours)) {
-        batteryUsage();
+        std::printf("FAIL: runtime must be a numeric number of hours\n");
         return 1;
     }
 
@@ -445,7 +447,7 @@ int CentralConsole::battery(int argc, char** argv)
         request.minimumStateOfChargePercent < 0.0F ||
         request.minimumStateOfChargePercent > 100.0F ||
         request.requiredRuntimeHours < 0.0F) {
-        std::printf("FAIL: invalid power plan settings\n");
+        std::printf("FAIL: power plan requires budget>0, reserve between 0 and budget, min_soc 0..100 and runtime>=0\n");
         return 1;
     }
 
@@ -465,10 +467,19 @@ int CentralConsole::sensor(int argc, char** argv)
         if (active_->callbacks_.sensorMode == nullptr) return 1;
         const bool simulated = same(argv[1], "sim");
         const bool changed = active_->callbacks_.sensorMode(active_->callbacks_.context, simulated);
-        std::printf("%s\n", changed
-            ? (simulated ? "measurement source: SIMULATION" : "measurement source: INA219")
-            : "FAIL: measurement source change failed");
-        return changed ? 0 : 1;
+        if (!changed) {
+            if (simulated) {
+                std::printf("FAIL: simulation input could not start; check the saved battery setup\n");
+            } else {
+                std::printf("FAIL: INA219 input could not be selected; exact INA219 status follows\n");
+                if (active_->callbacks_.batteryStatus != nullptr) {
+                    active_->callbacks_.batteryStatus(active_->callbacks_.context);
+                }
+            }
+            return 1;
+        }
+        std::printf("measurement source: %s\n", simulated ? "SIMULATION" : "INA219");
+        return 0;
     }
 
     if (same(argv[1], "setup")) {
@@ -478,6 +489,7 @@ int CentralConsole::sensor(int argc, char** argv)
         if (!parseFloat(option(argc, argv, "shunt"), request.shuntResistanceOhms) ||
             !parseFloat(option(argc, argv, "max_amps"), request.maximumExpectedCurrentAmps) ||
             !parseFloat(option(argc, argv, "ema"), request.emaAlpha)) {
+            std::printf("FAIL: sensor setup requires numeric shunt=, max_amps= and ema= values\n");
             sensorUsage();
             return 1;
         }
@@ -485,7 +497,7 @@ int CentralConsole::sensor(int argc, char** argv)
         if (request.shuntResistanceOhms <= 0.0F ||
             request.maximumExpectedCurrentAmps <= 0.0F ||
             request.emaAlpha <= 0.0F || request.emaAlpha > 1.0F) {
-            std::printf("FAIL: invalid INA219 setup values\n");
+            std::printf("FAIL: INA219 setup requires shunt>0, max_amps>0 and ema in the range (0,1]\n");
             return 1;
         }
 
@@ -505,14 +517,14 @@ int CentralConsole::sensor(int argc, char** argv)
         const char* socText = option(argc, argv, "soc");
 
         if ((voltageText == nullptr) != (currentText == nullptr)) {
-            sensorUsage();
+            std::printf("FAIL: simulated voltage and current must be provided together\n");
             return 1;
         }
 
         if (voltageText != nullptr) {
             if (!parseFloat(voltageText, request.batteryVoltageVolts) ||
                 !parseFloat(currentText, request.batteryCurrentAmps)) {
-                sensorUsage();
+                std::printf("FAIL: simulated voltage and current must be numeric\n");
                 return 1;
             }
             request.hasElectricalMeasurements = true;
@@ -522,14 +534,14 @@ int CentralConsole::sensor(int argc, char** argv)
             if (!parseFloat(socText, request.stateOfChargePercent) ||
                 request.stateOfChargePercent < 0.0F ||
                 request.stateOfChargePercent > 100.0F) {
-                sensorUsage();
+                std::printf("FAIL: simulated soc must be a numeric percentage from 0 to 100\n");
                 return 1;
             }
             request.hasStateOfChargePercent = true;
         }
 
         if (!request.hasElectricalMeasurements && !request.hasStateOfChargePercent) {
-            sensorUsage();
+            std::printf("FAIL: provide simulated voltage/current and/or soc\n");
             return 1;
         }
 
