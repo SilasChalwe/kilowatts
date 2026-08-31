@@ -29,12 +29,10 @@ struct SystemStateInputs {
     float remainingRuntimeHours;
     float estimatedRuntimeHours;
     bool runtimeEstimateValid;
-    float P_runtime;
     bool requiredRuntimeAchievable;
 
     float P_budget;
     float P_reserve;
-    float P_usable;
     float P_fixed;
     float P_auto_available;
     float P_auto;
