@@ -56,8 +56,6 @@ struct NetworkCommandRequest {
         SET = 1U,
         CLEAR = 2U,
         SETUP = 3U,
-        // Internal handler values retained until the Central handler is trimmed.
-        // The simplified console does not register scan/channel commands.
         SCAN = 4U,
         SET_CHANNEL = 5U
     } action;
