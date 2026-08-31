@@ -38,13 +38,7 @@ struct SystemStateInputs {
     float P_auto;
     float P_remaining;
 
-    bool wifiConnected;
-    const char* wifiStateText;
-    bool mqttConnected;
-    bool currentTimeValid;
-    const char* currentTimeSourceText;
     std::int64_t lastOptimizationEpochSeconds;
-    std::uint32_t pinCommandErrorCount;
 };
 
 class SystemStateJson {
