@@ -73,6 +73,9 @@ void CentralApplication::runApp()
     mqttManager.setSystemCommandHandler(&handleSystemCommand, nullptr);
     mqttManager.setConfigCommandHandler(&handleConfigCommand, nullptr);
     mqttManager.setSimulationCommandHandler(&handleSimulationCommand, nullptr);
+    mqttManager.setBatterySensorCommandHandler(&consoleConfigureBattery, nullptr);
+    mqttManager.setPowerPlanningCommandHandler(&consoleConfigurePowerPlanning, nullptr);
+    mqttManager.setNetworkCommandHandler(&consoleNetwork, nullptr);
 
     CentralConsole::Callbacks consoleCallbacks{};
     consoleCallbacks.status = &consoleStatus;
