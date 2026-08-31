@@ -1,6 +1,6 @@
 # Kilowatts MQTT
 
-MQTT is the frontend transport for Central operations. Wi-Fi and MQTT broker setup are local installation settings and are configured only from the Central serial console.
+MQTT is the frontend transport for Central operations. Installation setup remains local to the Central serial console.
 
 Default namespace:
 
@@ -25,6 +25,21 @@ kilowatts/v1/alert
 | `command` | frontend -> Central | operational commands |
 | `ack` | Central -> frontend | command result |
 | `alert` | Central -> frontend | important changes |
+
+## Installation boundary
+
+These are Central serial-console installation settings and are not frontend MQTT commands:
+
+```text
+sensor setup shunt=R max_amps=A ema=X
+battery setup capacity=AH voltage=V soc=PERCENT
+wifi ...
+mqtt ...
+```
+
+The frontend `battery` command changes only the power plan (`P_budget`, `P_reserve`, minimum SoC and optional runtime). It does not configure the battery's physical capacity, nominal voltage or starting SoC.
+
+The frontend `sensor` command only selects INA219/simulation or supplies simulation values. INA219 shunt setup remains local to Central.
 
 ## Central presence
 
@@ -104,7 +119,7 @@ sensor
 system
 ```
 
-There is no frontend `wifi`, `mqtt`, `config` or `simulation` command type.
+There is no frontend `wifi`, `mqtt`, generic `config` or generic `simulation` command type.
 
 ### Node
 
@@ -202,7 +217,7 @@ Delete:
 }
 ```
 
-Runtime is optional. It affects `P_auto_available`; it does not create another public power variable.
+Runtime is optional. It affects `P_auto_available`; it does not create another public power variable. If runtime is requested without the required battery energy metadata or a valid SoC, Central rejects the command and returns the reason in `ack` instead of replacing a working plan with an invalid one.
 
 ### Sensor
 
@@ -245,7 +260,7 @@ Both sources feed the same calculation:
 P_measured = voltage * current
 ```
 
-INA219 technical/shunt configuration is installation setup and stays on the Central console.
+INA219 technical/shunt configuration and battery physical metadata are installation setup and stay on the Central console.
 
 ### System
 
@@ -282,6 +297,8 @@ Restart Central:
 
 ## Acknowledgement
 
+Every command result is returned on `kilowatts/v1/ack`. The frontend should match `commandId` and display the returned `reason` when a request is rejected or fails instead of replacing it with a generic error.
+
 Example:
 
 ```json
@@ -293,6 +310,15 @@ Example:
   "reason": "power planning configured",
   "target": null
 }
+```
+
+Possible status values are:
+
+```text
+ACCEPTED
+APPLIED
+REJECTED
+FAILED
 ```
 
 ## Alerts
