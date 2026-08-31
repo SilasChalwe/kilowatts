@@ -210,6 +210,7 @@ void sensorUsage()
         "Usage:\n"
         "  sensor ina219\n"
         "  sensor sim\n"
+        "  sensor set shunt=R max_amps=A ema=X capacity=AH soc=PERCENT voltage=V\n"
         "  sensor values voltage=V current=A [soc=PERCENT]\n\n"
         "INA219 and simulation are two input sources for the same power path.\n"
         "P_measured = voltage * current.\n");
@@ -220,9 +221,7 @@ void batteryUsage()
     std::printf(
         "Usage:\n"
         "  battery\n"
-        "  battery configure shunt_ohms=R max_sensor_amps=A ema_alpha=X "
-        "capacity_ah=AH initial_soc=PERCENT nominal_voltage=V\n"
-        "  battery planning budget=W reserve=W min_soc=PERCENT [runtime_hours=H]\n");
+        "  battery set budget=W reserve=W min_soc=PERCENT [runtime=H]\n");
 }
 
 void nodeUsage()
@@ -262,11 +261,9 @@ void wifiUsage()
 {
     std::printf(
         "Usage:\n"
-        "  wifi status\n"
-        "  wifi scan\n"
+        "  wifi\n"
         "  wifi setup\n"
         "  wifi set ssid=NAME password=PASSWORD\n"
-        "  wifi channel CHANNEL\n"
         "  wifi clear\n");
 }
 
@@ -274,8 +271,8 @@ void mqttUsage()
 {
     std::printf(
         "Usage:\n"
-        "  mqtt status\n"
-        "  mqtt set host=HOST port=PORT tls=on|off [username=USER] [password=PASSWORD]\n"
+        "  mqtt\n"
+        "  mqtt set host=HOST [port=PORT] [tls=on|off] [username=USER] [password=PASSWORD]\n"
         "  mqtt clear\n"
         "Topics: status, state, command, ack, alert\n");
 }
@@ -391,72 +388,43 @@ int CentralConsole::battery(int argc, char** argv)
         return 0;
     }
 
-    if (argc == 1 || (argc == 2 && same(argv[1], "status"))) {
+    if (argc == 1) {
         if (active_->callbacks_.batteryStatus == nullptr) return 1;
         active_->callbacks_.batteryStatus(active_->callbacks_.context);
         return 0;
     }
 
-    if (argc >= 2 && same(argv[1], "planning")) {
-        if (active_->callbacks_.configurePowerPlanning == nullptr) return 1;
-
-        PowerPlanningCommandRequest request{};
-        if (!parseFloat(option(argc, argv, "budget"), request.P_budget) ||
-            !parseFloat(option(argc, argv, "reserve"), request.P_reserve) ||
-            !parseFloat(option(argc, argv, "min_soc"), request.minimumStateOfChargePercent)) {
-            batteryUsage();
-            return 1;
-        }
-
-        const char* runtimeText = option(argc, argv, "runtime_hours");
-        request.requiredRuntimeHours = 0.0F;
-        if (runtimeText != nullptr && !parseFloat(runtimeText, request.requiredRuntimeHours)) {
-            batteryUsage();
-            return 1;
-        }
-
-        if (request.P_budget <= 0.0F ||
-            request.P_reserve < 0.0F || request.P_reserve > request.P_budget ||
-            request.minimumStateOfChargePercent < 0.0F ||
-            request.minimumStateOfChargePercent > 100.0F ||
-            request.requiredRuntimeHours < 0.0F) {
-            std::printf("FAIL: invalid power planning configuration\n");
-            return 1;
-        }
-
-        return showResult(active_->callbacks_.configurePowerPlanning(
-            active_->callbacks_.context, request));
-    }
-
-    if (argc < 2 || !same(argv[1], "configure") ||
-        active_->callbacks_.configureBattery == nullptr) {
+    if (!same(argv[1], "set") || active_->callbacks_.configurePowerPlanning == nullptr) {
         batteryUsage();
         return 1;
     }
 
-    BatterySensorCommandRequest request{};
-    if (!parseFloat(option(argc, argv, "shunt_ohms"), request.shuntResistanceOhms) ||
-        !parseFloat(option(argc, argv, "max_sensor_amps"), request.maximumExpectedCurrentAmps) ||
-        !parseFloat(option(argc, argv, "ema_alpha"), request.emaAlpha) ||
-        !parseFloat(option(argc, argv, "capacity_ah"), request.batteryCapacityAmpHours) ||
-        !parseFloat(option(argc, argv, "initial_soc"), request.initialStateOfChargePercent) ||
-        !parseFloat(option(argc, argv, "nominal_voltage"), request.nominalVoltageVolts)) {
+    PowerPlanningCommandRequest request{};
+    if (!parseFloat(option(argc, argv, "budget"), request.P_budget) ||
+        !parseFloat(option(argc, argv, "reserve"), request.P_reserve) ||
+        !parseFloat(option(argc, argv, "min_soc"), request.minimumStateOfChargePercent)) {
         batteryUsage();
         return 1;
     }
 
-    if (request.shuntResistanceOhms <= 0.0F ||
-        request.maximumExpectedCurrentAmps <= 0.0F ||
-        request.emaAlpha <= 0.0F || request.emaAlpha > 1.0F ||
-        request.batteryCapacityAmpHours <= 0.0F ||
-        request.initialStateOfChargePercent < 0.0F ||
-        request.initialStateOfChargePercent > 100.0F ||
-        request.nominalVoltageVolts <= 0.0F) {
-        std::printf("FAIL: invalid battery monitor configuration\n");
+    request.requiredRuntimeHours = 0.0F;
+    const char* runtimeText = option(argc, argv, "runtime");
+    if (runtimeText != nullptr && !parseFloat(runtimeText, request.requiredRuntimeHours)) {
+        batteryUsage();
         return 1;
     }
 
-    return showResult(active_->callbacks_.configureBattery(active_->callbacks_.context, request));
+    if (request.P_budget <= 0.0F ||
+        request.P_reserve < 0.0F || request.P_reserve > request.P_budget ||
+        request.minimumStateOfChargePercent < 0.0F ||
+        request.minimumStateOfChargePercent > 100.0F ||
+        request.requiredRuntimeHours < 0.0F) {
+        std::printf("FAIL: invalid battery settings\n");
+        return 1;
+    }
+
+    return showResult(active_->callbacks_.configurePowerPlanning(
+        active_->callbacks_.context, request));
 }
 
 int CentralConsole::sensor(int argc, char** argv)
@@ -475,6 +443,35 @@ int CentralConsole::sensor(int argc, char** argv)
             ? (simulated ? "measurement source: SIMULATION" : "measurement source: INA219")
             : "FAIL: measurement source change failed");
         return changed ? 0 : 1;
+    }
+
+    if (same(argv[1], "set")) {
+        if (active_->callbacks_.configureBattery == nullptr) return 1;
+
+        BatterySensorCommandRequest request{};
+        if (!parseFloat(option(argc, argv, "shunt"), request.shuntResistanceOhms) ||
+            !parseFloat(option(argc, argv, "max_amps"), request.maximumExpectedCurrentAmps) ||
+            !parseFloat(option(argc, argv, "ema"), request.emaAlpha) ||
+            !parseFloat(option(argc, argv, "capacity"), request.batteryCapacityAmpHours) ||
+            !parseFloat(option(argc, argv, "soc"), request.initialStateOfChargePercent) ||
+            !parseFloat(option(argc, argv, "voltage"), request.nominalVoltageVolts)) {
+            sensorUsage();
+            return 1;
+        }
+
+        if (request.shuntResistanceOhms <= 0.0F ||
+            request.maximumExpectedCurrentAmps <= 0.0F ||
+            request.emaAlpha <= 0.0F || request.emaAlpha > 1.0F ||
+            request.batteryCapacityAmpHours <= 0.0F ||
+            request.initialStateOfChargePercent < 0.0F ||
+            request.initialStateOfChargePercent > 100.0F ||
+            request.nominalVoltageVolts <= 0.0F) {
+            std::printf("FAIL: invalid sensor settings\n");
+            return 1;
+        }
+
+        return showResult(active_->callbacks_.configureBattery(
+            active_->callbacks_.context, request));
     }
 
     if (same(argv[1], "values")) {
@@ -805,26 +802,18 @@ int CentralConsole::optimize(int argc, char** argv)
 int CentralConsole::wifi(int argc, char** argv)
 {
     if (active_ == nullptr || active_->callbacks_.network == nullptr) return 1;
-    if (helpRequested(argc, argv) || argc < 2) {
+    if (helpRequested(argc, argv)) {
         wifiUsage();
-        return helpRequested(argc, argv) ? 0 : 1;
+        return 0;
     }
 
     NetworkCommandRequest request{};
-    if (same(argv[1], "status")) {
+    if (argc == 1) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::STATUS);
-    } else if (same(argv[1], "scan")) {
-        request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SCAN);
     } else if (same(argv[1], "setup")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SETUP);
     } else if (same(argv[1], "clear")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::CLEAR);
-    } else if (same(argv[1], "channel")) {
-        request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SET_CHANNEL);
-        if (argc != 3 || !parseUint8(argv[2], request.wifiChannel)) {
-            wifiUsage();
-            return 1;
-        }
     } else if (same(argv[1], "set")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SET);
         if (!copyText(request.ssid, sizeof(request.ssid), option(argc, argv, "ssid")) ||
@@ -843,31 +832,44 @@ int CentralConsole::wifi(int argc, char** argv)
 int CentralConsole::mqtt(int argc, char** argv)
 {
     if (active_ == nullptr || active_->callbacks_.network == nullptr) return 1;
-    if (helpRequested(argc, argv) || argc < 2) {
+    if (helpRequested(argc, argv)) {
         mqttUsage();
-        return helpRequested(argc, argv) ? 0 : 1;
+        return 0;
     }
 
     NetworkCommandRequest request{};
-    if (same(argv[1], "status")) {
+    if (argc == 1) {
         request = makeNetworkRequest(NetworkCommandTarget::MQTT, NetworkCommandRequest::Action::STATUS);
     } else if (same(argv[1], "clear")) {
         request = makeNetworkRequest(NetworkCommandTarget::MQTT, NetworkCommandRequest::Action::CLEAR);
     } else if (same(argv[1], "set")) {
         request = makeNetworkRequest(NetworkCommandTarget::MQTT, NetworkCommandRequest::Action::SET);
-        unsigned long port = 0U;
-        const char* tls = option(argc, argv, "tls");
 
-        if (!copyText(request.mqttHost, sizeof(request.mqttHost), option(argc, argv, "host")) ||
-            !parseUnsigned(option(argc, argv, "port"), port) ||
-            port == 0U || port > 65535U ||
-            tls == nullptr || (!same(tls, "on") && !same(tls, "off"))) {
+        if (!copyText(request.mqttHost, sizeof(request.mqttHost), option(argc, argv, "host"))) {
             mqttUsage();
             return 1;
         }
 
-        request.mqttPort = static_cast<std::uint16_t>(port);
-        request.mqttUseTls = same(tls, "on");
+        request.mqttUseTls = false;
+        const char* tls = option(argc, argv, "tls");
+        if (tls != nullptr) {
+            if (!same(tls, "on") && !same(tls, "off")) {
+                mqttUsage();
+                return 1;
+            }
+            request.mqttUseTls = same(tls, "on");
+        }
+
+        request.mqttPort = request.mqttUseTls ? 8883U : 1883U;
+        const char* portText = option(argc, argv, "port");
+        if (portText != nullptr) {
+            unsigned long port = 0U;
+            if (!parseUnsigned(portText, port) || port == 0U || port > 65535U) {
+                mqttUsage();
+                return 1;
+            }
+            request.mqttPort = static_cast<std::uint16_t>(port);
+        }
 
         const char* username = option(argc, argv, "username");
         const char* password = option(argc, argv, "password");
