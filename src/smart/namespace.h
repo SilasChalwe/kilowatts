@@ -49,6 +49,7 @@ ChipInfo chipInfo;
 NodeIdentityStore identityStore;
 NodeLoadHardwareStore smartNodeConfigurationStore;
 SmartConsole smartConsole;
+std::uint8_t activeRadioChannel = kilowatts::KILOWATTS_RADIO_CHANNEL;
 
 Node* thisSmartNode = nullptr;
 SemaphoreHandle_t nodeMutex = nullptr;
@@ -58,6 +59,54 @@ QueueHandle_t relayCommandQueue = nullptr;
 struct RelayCommandQueueItem {
     RelayCommandPacket command;
 };
+
+bool setSmartRadioChannel(std::uint8_t channel)
+{
+    if (channel < 1U || channel > 13U) return false;
+
+    const esp_err_t setResult = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (setResult != ESP_OK) {
+        ESP_LOGW(TAG, "Could not switch radio to channel %u: %s",
+                 static_cast<unsigned int>(channel), esp_err_to_name(setResult));
+        return false;
+    }
+
+    esp_now_peer_info_t broadcastPeer{};
+    const esp_err_t peerResult = esp_now_get_peer(
+        EspNowCommunication::BROADCAST_MAC_ADDRESS.data(), &broadcastPeer);
+    if (peerResult != ESP_OK) {
+        ESP_LOGW(TAG, "Broadcast ESP-NOW peer unavailable while switching to channel %u",
+                 static_cast<unsigned int>(channel));
+        return false;
+    }
+
+    broadcastPeer.channel = channel;
+    const esp_err_t modifyResult = esp_now_mod_peer(&broadcastPeer);
+    if (modifyResult != ESP_OK) {
+        ESP_LOGW(TAG, "Could not move broadcast ESP-NOW peer to channel %u: %s",
+                 static_cast<unsigned int>(channel), esp_err_to_name(modifyResult));
+        return false;
+    }
+
+    activeRadioChannel = channel;
+    return true;
+}
+
+void syncUpstreamPeerChannel()
+{
+    if (!communication.hasUpstreamNode()) return;
+
+    const auto upstreamMac = communication.getUpstreamNodeMacAddress();
+    esp_now_peer_info_t upstreamPeer{};
+    if (esp_now_get_peer(upstreamMac.data(), &upstreamPeer) != ESP_OK) return;
+
+    upstreamPeer.channel = activeRadioChannel;
+    const esp_err_t result = esp_now_mod_peer(&upstreamPeer);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Could not sync upstream peer to channel %u: %s",
+                 static_cast<unsigned int>(activeRadioChannel), esp_err_to_name(result));
+    }
+}
 
 bool isCommissioned()
 {
@@ -96,14 +145,6 @@ void sendIdentityReport()
     communication.sendToCentral(EspNowCommunication::MessageType::IDENTITY_REPORT, packet);
 }
 
-/**
- * Builds page `pageIndex` of `totalPages` for this report cycle. A Node's
- * loads are chunked MAX_LOADS_PER_NODE_PACKET at a time — one ESP-NOW
- * packet cannot fit all MAX_LOADS_PER_NODE loads at once (see the
- * NodeReportPacket size static_assert in NodeReportPackets.h) — and
- * CentralNodeRegistry::applyNodeReport() accumulates every page of a
- * sequence before trusting the load set it describes.
- */
 NodeReportPacket buildNodeReportPacket(
     const EspNowCommunication::MacAddress& localMac,
     std::uint16_t sequence,
@@ -158,7 +199,6 @@ NodeReportPacket buildNodeReportPacket(
     return packet;
 }
 
-/** Number of MAX_LOADS_PER_NODE_PACKET-sized pages needed to report loadCount loads. */
 std::uint8_t computeReportPageCount(std::size_t loadCount)
 {
     const std::size_t bounded = std::min<std::size_t>(loadCount, MAX_LOADS_PER_NODE);
@@ -207,11 +247,6 @@ HardwareConfigurationFailureReason applyRemoveLoadCommand(const RemoveLoadComman
     xSemaphoreGive(nodeMutex);
     return reason;
 }
-
-
-/* ------------------------------------------------------------------------- */
-/* Local console                                                             */
-/* ------------------------------------------------------------------------- */
 
 const char* hardwareConfigurationFailureText(HardwareConfigurationFailureReason reason)
 {
@@ -270,7 +305,7 @@ void consoleSmartStatus(void*)
     std::printf("Loads        : %u\n",
                 static_cast<unsigned int>(
                     thisSmartNode != nullptr ? thisSmartNode->getNumberOfLoads() : 0U));
-    std::printf("Radio channel: %u\n", static_cast<unsigned int>(communication.getChannel()));
+    std::printf("Radio channel: %u\n", static_cast<unsigned int>(activeRadioChannel));
     std::printf("Upstream hop : %u\n", static_cast<unsigned int>(communication.getHopCountToCentral()));
 
     xSemaphoreGive(nodeMutex);
@@ -394,13 +429,6 @@ CommandResult consoleSmartRemoveLoad(void*, std::uint8_t relayPin)
         : smartCommandResult(false, false, hardwareConfigurationFailureText(reason));
 }
 
-/**
- * In-place priority/mode/schedule change, without touching the relay pin,
- * name, power rating or polarity - reads the Load's current configuration
- * and re-applies it with only the requested fields changed, the same
- * remove-then-reconfigure mechanism configureNewLoad() already uses, so
- * there is no second, independently-maintained update path.
- */
 CommandResult consoleSmartUpdateLoad(void*, const SmartLoadUpdateRequest& request)
 {
     if (xSemaphoreTake(nodeMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
@@ -597,24 +625,25 @@ void espNowCommunicationTask(void* parameter)
             if (!discovered) {
                 discoveryFailures++;
             } else {
+                syncUpstreamPeerChannel();
                 discoveryFailures = 0;
             }
 
             if (discoveryFailures >= DISCOVERY_FAILURES_BEFORE_SWEEP) {
-                ESP_LOGW(TAG, "Discovery failed %d times, performing channel sweep...", discoveryFailures);
+                ESP_LOGI(TAG, "Searching radio channels for Central...");
                 discoveryFailures = 0;
-                for (uint8_t ch = 1; ch <= 13; ++ch) {
-                    esp_err_t setCh = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-                    if (setCh != ESP_OK) {
-                        ESP_LOGW(TAG, "esp_wifi_set_channel(%u) failed: %s", ch, esp_err_to_name(setCh));
-                        continue;
-                    }
-                    ESP_LOGI(TAG, "Attempting discovery on channel %u", ch);
+                for (std::uint8_t channel = 1U; channel <= 13U; ++channel) {
+                    if (!setSmartRadioChannel(channel)) continue;
+
+                    ESP_LOGI(TAG, "Attempting discovery on channel %u",
+                             static_cast<unsigned int>(channel));
                     if (communication.discoverUpstreamNode(DISCOVERY_WINDOW_MS)) {
-                        ESP_LOGI(TAG, "Discovery succeeded on channel %u", ch);
+                        syncUpstreamPeerChannel();
+                        ESP_LOGI(TAG, "Central found on channel %u",
+                                 static_cast<unsigned int>(channel));
                         break;
                     }
-                    vTaskDelay(pdMS_TO_TICKS(200));
+                    vTaskDelay(pdMS_TO_TICKS(200U));
                 }
             }
         }
