@@ -1,5 +1,7 @@
 #include "WiFiManager.h"
 
+#include "RadioChannelStore.h"
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -7,6 +9,7 @@
 
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "lwip/netdb.h"
@@ -22,16 +25,10 @@ namespace {
 
 constexpr std::uint64_t RECONNECT_BASE_DELAY_MICROSECONDS = 2000000ULL;
 constexpr std::uint64_t RECONNECT_MAXIMUM_DELAY_MICROSECONDS = 60000000ULL;
-constexpr std::uint32_t RECONNECT_BACKOFF_CAP_SHIFT = 5U; // 2^5 * base = 64s, already clamped below
+constexpr std::uint32_t RECONNECT_BACKOFF_CAP_SHIFT = 5U;
 
 esp_timer_handle_t reconnectTimer = nullptr;
 
-/*
- * Blocking scan for ssid, reporting the channel it was found broadcasting
- * on. Shared by verifyChannelAndConnect() (which then decides whether to
- * connect) and findChannelForSsid() (a pure query used by console/MQTT
- * provisioning) so the scan-and-match logic exists in exactly one place.
- */
 bool scanForSsidChannel(const char* ssid, std::uint8_t& channel)
 {
     wifi_scan_config_t scanConfig{};
@@ -171,15 +168,6 @@ bool WiFiManager::verifyChannelAndConnect()
 {
     state_.store(WiFiConnectionState::SCANNING);
 
-    /*
-     * A blocking scan (block = true, inside scanForSsidChannel) is used
-     * here deliberately: the caller (Central's WiFiManager initialisation,
-     * or the reconnect timer callback) is not on a latency-sensitive path,
-     * and a blocking scan lets verifyChannelAndConnect() make its channel
-     * decision and either call esp_wifi_connect() or refuse in one
-     * straight-line function without an extra asynchronous scan-done
-     * handoff.
-     */
     std::uint8_t discoveredChannel = 0U;
     if (!scanForSsidChannel(ssid_, discoveredChannel)) {
         ESP_LOGW(TAG, "SSID '%s' was not found in the scan; retrying with backoff", ssid_);
@@ -188,31 +176,24 @@ bool WiFiManager::verifyChannelAndConnect()
     }
 
     if (discoveredChannel != requiredChannel_) {
-        /*
-         * Refuse to connect rather than letting esp_wifi_connect() force
-         * the shared radio onto a different channel and silently break
-         * ESP-NOW to every Smart Node.
-         */
-        ESP_LOGE(TAG,
-                 "RADIO_CHANNEL_MISMATCH: SSID '%s' is broadcasting on channel %u but ESP-NOW requires channel %u. "
-                 "Reconfigure the Access Point onto the required channel — local ESP-NOW control is unaffected, "
-                 "but MQTT/Wi-Fi connectivity stays unavailable until this is corrected.",
-                 ssid_, static_cast<unsigned int>(discoveredChannel), static_cast<unsigned int>(requiredChannel_));
-        state_.store(WiFiConnectionState::RADIO_CHANNEL_MISMATCH);
+        RadioChannelStore channelStore;
+        if (!channelStore.save(discoveredChannel)) {
+            ESP_LOGE(TAG,
+                     "Wi-Fi '%s' moved to channel %u, but the new shared radio channel could not be saved",
+                     ssid_, static_cast<unsigned int>(discoveredChannel));
+            state_.store(WiFiConnectionState::DISCONNECTED);
+            return false;
+        }
+
+        ESP_LOGI(TAG,
+                 "Wi-Fi '%s' moved from channel %u to %u; saved new shared radio channel and restarting Central",
+                 ssid_,
+                 static_cast<unsigned int>(requiredChannel_),
+                 static_cast<unsigned int>(discoveredChannel));
+        esp_restart();
         return false;
     }
 
-    /*
-     * wifi_sta_config_t::ssid/password are fixed-size raw byte fields (32
-     * and 64 bytes) that ESP-IDF does not require to be null-terminated at
-     * their maximum length - a full-length (32-char SSID / 64-char
-     * WPA2-PSK) value has no room left for a trailing null. snprintf's
-     * always-null-terminate behavior would therefore truncate the last
-     * byte of a maximum-length value; memcpy of the real string length
-     * (capped to the destination size) does not have that problem. The
-     * struct is already zero-initialized above, so any unused tail stays
-     * zero-filled.
-     */
     wifi_config_t wifiConfig{};
     std::memcpy(wifiConfig.sta.ssid, ssid_, std::min(std::strlen(ssid_), sizeof(wifiConfig.sta.ssid)));
     std::memcpy(wifiConfig.sta.password, password_, std::min(std::strlen(password_), sizeof(wifiConfig.sta.password)));
@@ -267,27 +248,6 @@ std::uint32_t WiFiManager::getReconnectAttemptCount() const
 
 bool WiFiManager::printNearbyNetworks() const
 {
-    if (isConnected()) {
-        std::printf(
-            "Wi-Fi scan skipped: scanning would retune the shared radio and interrupt ESP-NOW to every "
-            "Smart Node. Showing the connected network only.\n");
-
-        wifi_ap_record_t accessPoint{};
-        if (esp_wifi_sta_get_ap_info(&accessPoint) != ESP_OK) {
-            std::printf("Connected network details are currently unavailable.\n");
-            return false;
-        }
-
-        std::printf("CONNECTED WI-FI NETWORK\n");
-        std::printf("%-4s %-32s %-8s %-8s\n", "No.", "SSID", "Signal", "Channel");
-        std::printf("%-4u %-32s %-8d %-8u\n",
-                    1U,
-                    reinterpret_cast<const char*>(accessPoint.ssid),
-                    static_cast<int>(accessPoint.rssi),
-                    static_cast<unsigned int>(accessPoint.primary));
-        return true;
-    }
-
     wifi_scan_config_t scanConfig{};
     scanConfig.show_hidden = false;
     if (esp_wifi_scan_start(&scanConfig, true) != ESP_OK) {
@@ -389,7 +349,7 @@ void WiFiManager::printDiagnosticReport() const
 
     ESP_LOGI(TAG, "================ WIFI MANAGER DIAGNOSTIC ================");
     ESP_LOGI(TAG, "SSID              : %s", ssid_);
-    ESP_LOGI(TAG, "Required channel  : %u", static_cast<unsigned int>(requiredChannel_));
+    ESP_LOGI(TAG, "Shared channel    : %u", static_cast<unsigned int>(requiredChannel_));
     ESP_LOGI(TAG, "State             : %s", stateText);
     ESP_LOGI(TAG, "Reconnect attempts: %u", static_cast<unsigned int>(reconnectAttempts_.load()));
     if (isConnected()) {
@@ -418,9 +378,7 @@ void WiFiManager::onStationDisconnected(const wifi_event_sta_disconnected_t* eve
         ESP_LOGW(TAG, "Wi-Fi station disconnected: reason=%u", static_cast<unsigned int>(event->reason));
     }
 
-    if (state_.load() != WiFiConnectionState::RADIO_CHANNEL_MISMATCH) {
-        state_.store(WiFiConnectionState::DISCONNECTED);
-    }
+    state_.store(WiFiConnectionState::DISCONNECTED);
 
     const std::uint32_t attempt = reconnectAttempts_.fetch_add(1U) + 1U;
     const std::uint32_t backoffShift = attempt < RECONNECT_BACKOFF_CAP_SHIFT ? attempt : RECONNECT_BACKOFF_CAP_SHIFT;

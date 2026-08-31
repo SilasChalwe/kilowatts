@@ -455,10 +455,14 @@ bool applyBatteryConfiguration(
     const CentralConfigurationStore::BatterySensorConfiguration& configuration,
     bool restorePersistedStateOfCharge)
 {
-    if (!configuration.configured || !CentralConfigurationStore::isValidBatterySensor(configuration)) return false;
+    if (!CentralConfigurationStore::isValidBatterySensor(configuration)) return false;
+
+    const bool simulating = batteryMonitor.isSimulationEnabled();
+    if (!simulating && !configuration.ina219Configured) return false;
 
     const auto& planning = centralConfigurationStore.getConfiguration().powerPlanning;
-    if (!planning.configured || !CentralConfigurationStore::isValidPowerPlanning(planning)) return false;
+    const float minimumStateOfChargePercent =
+        planning.configured ? planning.minimumStateOfChargePercent : 0.0F;
 
     const PowerManager::BusConfiguration busConfiguration{
         CentralNodeConfig::I2C_SERIAL_DATA_PIN,
@@ -472,12 +476,13 @@ bool applyBatteryConfiguration(
         configuration.emaAlpha};
 
     const PowerManager::BatteryConfiguration batteryConfiguration{
-        configuration.nominalVoltageVolts,
-        configuration.batteryCapacityAmpHours,
-        planning.minimumStateOfChargePercent};
+        configuration.batteryMetadataConfigured ? configuration.nominalVoltageVolts : 0.0F,
+        configuration.batteryMetadataConfigured ? configuration.batteryCapacityAmpHours : 0.0F,
+        minimumStateOfChargePercent};
 
     if (!batteryMonitor.initialize(busConfiguration, sensorConfiguration, batteryConfiguration)) return false;
 
+    if (!configuration.batteryMetadataConfigured) return true;
     return batteryMonitor.initializeStateOfCharge(
         configuration.initialStateOfChargePercent,
         restorePersistedStateOfCharge);
@@ -486,9 +491,8 @@ bool applyBatteryConfiguration(
 bool applyPersistedBatterySensorConfiguration()
 {
     const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
-    if (!battery.configured) return false;
-    (void)applyBatteryConfiguration(battery, true);
-    return batteryMonitor.isStateOfChargeValid();
+    if (!battery.ina219Configured && !battery.batteryMetadataConfigured) return false;
+    return applyBatteryConfiguration(battery, true);
 }
 
 void sensorAcquisitionTask(void* parameter)
@@ -727,12 +731,16 @@ SystemStateInputs makeSystemStateInputs()
     const auto& configuration = centralConfigurationStore.getConfiguration();
     const auto& planning = configuration.powerPlanning;
 
-    inputs.batterySensorConfigured = configuration.batterySensor.configured;
-    inputs.batteryNominalVoltageVolts = configuration.batterySensor.nominalVoltageVolts;
-    inputs.batteryCapacityAmpHours = configuration.batterySensor.batteryCapacityAmpHours;
+    inputs.batterySensorConfigured = configuration.batterySensor.ina219Configured;
+    inputs.batteryNominalVoltageVolts = configuration.batterySensor.batteryMetadataConfigured
+        ? configuration.batterySensor.nominalVoltageVolts
+        : 0.0F;
+    inputs.batteryCapacityAmpHours = configuration.batterySensor.batteryMetadataConfigured
+        ? configuration.batterySensor.batteryCapacityAmpHours
+        : 0.0F;
 
     const float fullEnergyWh =
-        configuration.batterySensor.batteryCapacityAmpHours * configuration.batterySensor.nominalVoltageVolts;
+        inputs.batteryCapacityAmpHours * inputs.batteryNominalVoltageVolts;
     inputs.batteryRatedEnergyWattHours = fullEnergyWh;
 
     inputs.stateOfChargePercent = batteryMonitor.getStateOfChargePercent();
@@ -747,7 +755,6 @@ SystemStateInputs makeSystemStateInputs()
         ? fullEnergyWh *
             (std::max(0.0F, inputs.stateOfChargePercent - planning.minimumStateOfChargePercent) / 100.0F)
         : 0.0F;
-
     inputs.batteryVoltageVolts = latestBatteryMeasurements.voltageVolts;
     inputs.batteryCurrentAmps = latestBatteryMeasurements.currentAmps;
     inputs.P_measured = latestBatteryMeasurements.powerWatts;
@@ -958,7 +965,7 @@ void runOptimizationCycle(bool printDashboard)
 
     const bool runtimeTargetActive = planning.requiredRuntimeHours > 0.0F;
     const bool runtimeInputsReady = !runtimeTargetActive ||
-        (configuration.batterySensor.configured && batteryMonitor.isStateOfChargeValid());
+        (configuration.batterySensor.batteryMetadataConfigured && batteryMonitor.isStateOfChargeValid());
 
     if (planning.configured && runtimeInputsReady &&
         batteryMonitor.setPowerBudgetWatts(planning.P_budget) &&
@@ -997,7 +1004,6 @@ void runOptimizationCycle(bool printDashboard)
                 ++snapshot.automaticSelectedCount;
             }
         }
-
         if (autoRuntimeStateChanged) (void)centralLoadConfigurationStore.persist();
 
         if (batteryMonitor.setAutoPowerWatts(P_auto) && batteryMonitor.updatePowerBudget()) {
@@ -1537,6 +1543,7 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
 
         const CentralConfigurationStore::BatterySensorConfiguration configuration{
             true,
+            true,
             request.batteryShuntResistanceOhms,
             request.batteryMaximumExpectedCurrentAmps,
             request.batteryEmaAlpha,
@@ -1558,8 +1565,10 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
             centralConfigurationStore.persist();
 
         bool monitorReady = false;
-        if (stored && centralConfigurationStore.getConfiguration().powerPlanning.configured) {
-            monitorReady = applyBatteryConfiguration(configuration, previous.configured);
+        if (stored) {
+            monitorReady = applyBatteryConfiguration(
+                configuration,
+                previous.batteryMetadataConfigured);
             batteryReadingValid = false;
         }
         xSemaphoreGive(stateMutex);
@@ -1567,9 +1576,6 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
         if (!stored) return commandResult(false, false, "could not persist battery monitor configuration");
         xSemaphoreGive(optimizationTriggerSemaphore);
 
-        if (!centralConfigurationStore.getConfiguration().powerPlanning.configured) {
-            return commandResult(true, true, "battery monitor saved; configure power planning to initialize battery state");
-        }
         return commandResult(
             true,
             true,
@@ -1732,7 +1738,7 @@ CommandResult handleConfigCommand(void* context, const ConfigCommandRequest& req
 
         if (stored) {
             const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
-            if (battery.configured) {
+            if (battery.ina219Configured || battery.batteryMetadataConfigured) {
                 (void)applyBatteryConfiguration(battery, true);
                 batteryReadingValid = false;
             }
@@ -1812,8 +1818,14 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-        const bool ok = batteryMonitor.enableSimulation(true);
+        bool ok = batteryMonitor.enableSimulation(true);
         batteryReadingValid = false;
+        if (ok) {
+            const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
+            if (battery.batteryMetadataConfigured) {
+                ok = applyBatteryConfiguration(battery, true);
+            }
+        }
         xSemaphoreGive(stateMutex);
         if (ok) xSemaphoreGive(optimizationTriggerSemaphore);
         return commandResult(ok, ok, ok ? "simulation input enabled" : "simulation could not start");
@@ -1823,17 +1835,20 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
         if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
             return commandResult(false, false, "state is busy");
         }
-        const bool ok = batteryMonitor.enableSimulation(false);
+        bool ok = batteryMonitor.enableSimulation(false);
         batteryReadingValid = false;
         if (ok) {
             const auto& battery = centralConfigurationStore.getConfiguration().batterySensor;
-            if (battery.configured && centralConfigurationStore.getConfiguration().powerPlanning.configured) {
-                (void)applyBatteryConfiguration(battery, true);
+            if (!battery.ina219Configured) {
+                ok = false;
+            } else {
+                ok = applyBatteryConfiguration(battery, true);
             }
         }
         xSemaphoreGive(stateMutex);
         if (ok) xSemaphoreGive(optimizationTriggerSemaphore);
-        return commandResult(ok, ok, ok ? "INA219 input selected" : "hardware input could not be selected");
+        return commandResult(ok, ok,
+            ok ? "INA219 input selected" : "INA219 is not configured or not detected");
     }
 
     if (request.action == SimulationCommandAction::SET_VALUES) {
@@ -1874,22 +1889,72 @@ CommandResult handleSimulationCommand(void* context, const SimulationCommandRequ
     return commandResult(false, false, "unsupported simulation command");
 }
 
-CommandResult consoleConfigureBattery(void*, const BatterySensorCommandRequest& request)
+CommandResult consoleConfigureIna219(void*, const Ina219SetupCommandRequest& request)
 {
-    ConfigCommandRequest command{};
-    command.commandId = allocateConsoleCommandId();
-    command.action = ConfigCommandAction::CONFIGURE_BATTERY_SENSOR;
-    command.nodeMacAddress = communication.getLocalMacAddress();
-    command.hasBatterySensorConfiguration = true;
-    command.batteryShuntResistanceOhms = request.shuntResistanceOhms;
-    command.batteryMaximumExpectedCurrentAmps = request.maximumExpectedCurrentAmps;
-    command.batteryEmaAlpha = request.emaAlpha;
-    command.batteryCapacityAmpHours = request.batteryCapacityAmpHours;
-    command.batteryInitialStateOfChargePercent = request.initialStateOfChargePercent;
-    command.batteryNominalVoltageVolts = request.nominalVoltageVolts;
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
+        return commandResult(false, false, "state is busy");
+    }
 
-    const CommandResult result = handleConfigCommand(nullptr, command);
-    return commandResult(result.accepted, result.completed, result.reason);
+    auto configuration = centralConfigurationStore.getConfiguration().batterySensor;
+    configuration.ina219Configured = true;
+    configuration.shuntResistanceOhms = request.shuntResistanceOhms;
+    configuration.maximumExpectedCurrentAmps = request.maximumExpectedCurrentAmps;
+    configuration.emaAlpha = request.emaAlpha;
+
+    const bool stored =
+        CentralConfigurationStore::isValidBatterySensor(configuration) &&
+        centralConfigurationStore.setBatterySensor(configuration) &&
+        centralConfigurationStore.persist();
+
+    bool sensorReady = false;
+    if (stored && !batteryMonitor.isSimulationEnabled()) {
+        sensorReady = applyBatteryConfiguration(configuration, true);
+        batteryReadingValid = false;
+    }
+    xSemaphoreGive(stateMutex);
+
+    if (!stored) return commandResult(false, false, "could not save INA219 setup");
+    xSemaphoreGive(optimizationTriggerSemaphore);
+
+    if (batteryMonitor.isSimulationEnabled()) {
+        return commandResult(true, true, "INA219 setup saved; simulation remains active");
+    }
+    return commandResult(
+        true,
+        true,
+        sensorReady ? "INA219 setup saved; sensor detected" : "INA219 setup saved; sensor not detected");
+}
+
+CommandResult consoleConfigureBatterySetup(void*, const BatterySetupCommandRequest& request)
+{
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
+        return commandResult(false, false, "state is busy");
+    }
+
+    auto configuration = centralConfigurationStore.getConfiguration().batterySensor;
+    const bool hadBatteryMetadata = configuration.batteryMetadataConfigured;
+    configuration.batteryMetadataConfigured = true;
+    configuration.batteryCapacityAmpHours = request.batteryCapacityAmpHours;
+    configuration.initialStateOfChargePercent = request.initialStateOfChargePercent;
+    configuration.nominalVoltageVolts = request.nominalVoltageVolts;
+
+    const bool stored =
+        CentralConfigurationStore::isValidBatterySensor(configuration) &&
+        centralConfigurationStore.setBatterySensor(configuration) &&
+        centralConfigurationStore.persist();
+
+    if (stored) {
+        const bool canApply = batteryMonitor.isSimulationEnabled() || configuration.ina219Configured;
+        if (canApply) {
+            (void)applyBatteryConfiguration(configuration, hadBatteryMetadata);
+            batteryReadingValid = false;
+        }
+    }
+    xSemaphoreGive(stateMutex);
+
+    if (!stored) return commandResult(false, false, "could not save battery setup");
+    xSemaphoreGive(optimizationTriggerSemaphore);
+    return commandResult(true, true, "battery setup saved");
 }
 
 CommandResult consoleConfigurePowerPlanning(void*, const PowerPlanningCommandRequest& request)
@@ -2097,54 +2162,6 @@ void consoleStatus(void*)
             static_cast<double>(latestPlanningSnapshot.budget.P_auto_available));
     }
     std::printf("Control errors: %u\n", static_cast<unsigned int>(relayCommandErrorCount));
-    xSemaphoreGive(stateMutex);
-}
-
-void consoleBatteryStatus(void*)
-{
-    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
-        std::printf("BATTERY: BUSY\n");
-        return;
-    }
-
-    const auto& configuration = centralConfigurationStore.getConfiguration();
-    const auto& battery = configuration.batterySensor;
-    const auto& planning = configuration.powerPlanning;
-
-    std::printf("BATTERY MONITOR\n");
-    std::printf("Configuration      : %s\n", battery.configured ? "CONFIGURED" : "NOT CONFIGURED");
-    std::printf("Measurement source : %s\n", measurementSourceText(batteryMonitor.getMeasurementSource()));
-    if (batteryReadingValid) {
-        std::printf("Voltage            : %.3f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
-        std::printf("Current            : %.3f A\n", static_cast<double>(latestBatteryMeasurements.currentAmps));
-        std::printf("P_measured         : %.3f W\n", static_cast<double>(latestBatteryMeasurements.powerWatts));
-    } else {
-        std::printf("Voltage            : --\n");
-        std::printf("Current            : --\n");
-        std::printf("P_measured         : --\n");
-    }
-
-    if (batteryMonitor.isStateOfChargeValid()) {
-        std::printf("State of Charge    : %.2f %%\n", static_cast<double>(batteryMonitor.getStateOfChargePercent()));
-        std::printf("SoC source         : %s\n", stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource()));
-    } else {
-        std::printf("State of Charge    : --\n");
-        std::printf("SoC source         : UNKNOWN\n");
-    }
-
-    std::printf("Power planning     : %s\n", planning.configured ? "CONFIGURED" : "NOT CONFIGURED");
-    if (planning.configured) {
-        std::printf("P_budget           : %.2f W\n", static_cast<double>(planning.P_budget));
-        std::printf("P_reserve          : %.2f W\n", static_cast<double>(planning.P_reserve));
-        std::printf("Minimum SoC        : %.1f %%\n", static_cast<double>(planning.minimumStateOfChargePercent));
-        if (planning.requiredRuntimeHours > 0.0F) {
-            std::printf("Required runtime   : %.2f h | %.2f h remaining\n",
-                static_cast<double>(planning.requiredRuntimeHours),
-                static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()));
-        } else {
-            std::printf("Required runtime   : NOT CONFIGURED\n");
-        }
-    }
     xSemaphoreGive(stateMutex);
 }
 

@@ -1,6 +1,6 @@
 /**
  * @file CentralConfigurationStore.h
- * @brief Persists Central battery-monitor and power-planning configuration.
+ * @brief Persists Central INA219, battery, and power-planning configuration.
  */
 #ifndef KILOWATTS_CENTRAL_CONFIGURATION_STORE_H
 #define KILOWATTS_CENTRAL_CONFIGURATION_STORE_H
@@ -10,7 +10,8 @@ namespace kilowatts {
 class CentralConfigurationStore {
 public:
     struct BatterySensorConfiguration {
-        bool configured;
+        bool ina219Configured;
+        bool batteryMetadataConfigured;
         float shuntResistanceOhms;
         float maximumExpectedCurrentAmps;
         float emaAlpha;

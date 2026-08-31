@@ -186,14 +186,21 @@ bool PowerManager::initialize(
         return false;
     }
 
+    const bool batteryMetadataProvided =
+        batteryConfiguration.nameplateVoltageVolts != 0.0F ||
+        batteryConfiguration.capacityAmpHours != 0.0F;
+    if (batteryMetadataProvided &&
+        (!isFinitePositive(batteryConfiguration.nameplateVoltageVolts) ||
+         !isFinitePositive(batteryConfiguration.capacityAmpHours))) {
+        return false;
+    }
+
     if (!simulationEnabled_) {
         if (!isFinitePositive(sensorConfiguration.shuntResistanceOhms) ||
             !isFinitePositive(sensorConfiguration.maximumExpectedCurrentAmps) ||
             !std::isfinite(sensorConfiguration.emaAlpha) ||
             sensorConfiguration.emaAlpha <= 0.0F ||
-            sensorConfiguration.emaAlpha > 1.0F ||
-            !isFinitePositive(batteryConfiguration.nameplateVoltageVolts) ||
-            !isFinitePositive(batteryConfiguration.capacityAmpHours)) {
+            sensorConfiguration.emaAlpha > 1.0F) {
             return false;
         }
 
@@ -201,15 +208,6 @@ bool PowerManager::initialize(
             sensorConfiguration.shuntResistanceOhms *
             sensorConfiguration.maximumExpectedCurrentAmps;
         if (maximumExpectedShuntVoltage > MAXIMUM_SHUNT_VOLTAGE_VOLTS) {
-            return false;
-        }
-    } else {
-        const bool batteryMetadataProvided =
-            batteryConfiguration.nameplateVoltageVolts != 0.0F ||
-            batteryConfiguration.capacityAmpHours != 0.0F;
-        if (batteryMetadataProvided &&
-            (!isFinitePositive(batteryConfiguration.nameplateVoltageVolts) ||
-             !isFinitePositive(batteryConfiguration.capacityAmpHours))) {
             return false;
         }
     }

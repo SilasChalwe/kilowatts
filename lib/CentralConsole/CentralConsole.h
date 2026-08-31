@@ -10,11 +10,15 @@
 
 namespace kilowatts {
 
-/** Central-only INA219 and battery measurement setup. */
-struct BatterySensorCommandRequest {
+/** Central INA219 measurement setup only. */
+struct Ina219SetupCommandRequest {
     float shuntResistanceOhms;
     float maximumExpectedCurrentAmps;
     float emaAlpha;
+};
+
+/** Battery energy metadata used for SoC and runtime calculations. */
+struct BatterySetupCommandRequest {
     float batteryCapacityAmpHours;
     float initialStateOfChargePercent;
     float nominalVoltageVolts;
@@ -56,8 +60,6 @@ struct NetworkCommandRequest {
         SET = 1U,
         CLEAR = 2U,
         SETUP = 3U,
-        // Internal handler values retained until the Central handler is trimmed.
-        // The simplified console does not register scan/channel commands.
         SCAN = 4U,
         SET_CHANNEL = 5U
     } action;
@@ -86,7 +88,8 @@ public:
         void (*optimize)(void*);
         bool (*sensorMode)(void*, bool simulated);
         Load::MacAddress (*localMac)(void*);
-        CommandResult (*configureBattery)(void*, const BatterySensorCommandRequest&);
+        CommandResult (*configureIna219)(void*, const Ina219SetupCommandRequest&);
+        CommandResult (*configureBatterySetup)(void*, const BatterySetupCommandRequest&);
         CommandResult (*configurePowerPlanning)(void*, const PowerPlanningCommandRequest&);
         CommandResult (*nodeCommand)(void*, const NodeCommandRequest&);
         CommandResult (*configureLoad)(void*, const LoadConfigurationCommandRequest&);
