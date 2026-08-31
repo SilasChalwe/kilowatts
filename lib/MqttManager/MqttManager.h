@@ -22,9 +22,7 @@ using LoadCommandHandler = CommandResult (*)(void* context, const LoadCommandReq
 using SystemCommandHandler = CommandResult (*)(void* context, const SystemCommandRequest& request);
 using ConfigCommandHandler = CommandResult (*)(void* context, const ConfigCommandRequest& request);
 using SimulationCommandHandler = CommandResult (*)(void* context, const SimulationCommandRequest& request);
-using BatterySensorCommandHandler = CommandResult (*)(void* context, const BatterySensorCommandRequest& request);
 using PowerPlanningCommandHandler = CommandResult (*)(void* context, const PowerPlanningCommandRequest& request);
-using NetworkCommandHandler = CommandResult (*)(void* context, const NetworkCommandRequest& request);
 
 enum class AckStatus : std::uint8_t {
     ACCEPTED = 0U,
@@ -43,12 +41,14 @@ public:
         const char* password;
     };
 
+    // Only five external topics exist.
     static constexpr const char* TOPIC_STATUS = "status";
     static constexpr const char* TOPIC_STATE = "state";
     static constexpr const char* TOPIC_COMMAND = "command";
     static constexpr const char* TOPIC_ACK = "ack";
     static constexpr const char* TOPIC_ALERT = "alert";
 
+    // Internal state parts combined into TOPIC_STATE.
     static constexpr const char* TOPIC_STATE_SYSTEM = "_state/system";
     static constexpr const char* TOPIC_STATE_TREE = "_state/tree";
     static constexpr const char* TOPIC_STATE_LOADS = "_state/loads";
@@ -65,9 +65,7 @@ public:
     void setSystemCommandHandler(SystemCommandHandler handler, void* context);
     void setConfigCommandHandler(ConfigCommandHandler handler, void* context);
     void setSimulationCommandHandler(SimulationCommandHandler handler, void* context);
-    void setBatterySensorCommandHandler(BatterySensorCommandHandler handler, void* context);
     void setPowerPlanningCommandHandler(PowerPlanningCommandHandler handler, void* context);
-    void setNetworkCommandHandler(NetworkCommandHandler handler, void* context);
 
     bool begin(const Credentials& credentials);
     bool isConnected() const;
@@ -94,15 +92,11 @@ private:
     void onDisconnected();
     void onDataReceived(const char* topic, std::size_t topicLength, const char* data, std::size_t dataLength);
 
+    void handleNodeCommandMessage(const char* data, std::size_t dataLength);
     void handleLoadCommandMessage(const char* data, std::size_t dataLength);
     void handleSystemCommandMessage(const char* data, std::size_t dataLength);
-    void handleConfigCommandMessage(const char* data, std::size_t dataLength);
     void handleBatteryCommandMessage(const char* data, std::size_t dataLength);
     void handleSensorCommandMessage(const char* data, std::size_t dataLength);
-    void handleNetworkCommandMessage(
-        const char* data,
-        std::size_t dataLength,
-        NetworkCommandTarget target);
 
     std::string fullTopic(const char* topicSuffix) const;
     bool publishRaw(const char* topicSuffix, const std::string& payload, int qos, bool retain);
@@ -128,12 +122,8 @@ private:
     void* configCommandHandlerContext_;
     SimulationCommandHandler simulationCommandHandler_;
     void* simulationCommandHandlerContext_;
-    BatterySensorCommandHandler batterySensorCommandHandler_;
-    void* batterySensorCommandHandlerContext_;
     PowerPlanningCommandHandler powerPlanningCommandHandler_;
     void* powerPlanningCommandHandlerContext_;
-    NetworkCommandHandler networkCommandHandler_;
-    void* networkCommandHandlerContext_;
 };
 
 } // namespace kilowatts
