@@ -105,6 +105,18 @@ void consoleBatteryReadable(void*)
     xSemaphoreGive(stateMutex);
 }
 
+bool consoleSensorModeConfigured(void* context, bool simulated)
+{
+    const bool changed = consoleSensorMode(context, simulated);
+    if (!changed || !simulated) return changed;
+
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) return false;
+    const auto battery = centralConfigurationStore.getConfiguration().batterySensor;
+    const bool applied = applyBatteryConfiguration(battery, true);
+    xSemaphoreGive(stateMutex);
+    return applied;
+}
+
 CommandResult consoleConfigurePowerPlanningValidated(
     void* context,
     const PowerPlanningCommandRequest& request)
@@ -128,7 +140,14 @@ CommandResult consoleConfigurePowerPlanningValidated(
         }
     }
 
-    return consoleConfigurePowerPlanning(context, request);
+    const CommandResult result = consoleConfigurePowerPlanning(context, request);
+    if (!result.accepted || !batteryMonitor.isSimulationEnabled()) return result;
+
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) return result;
+    const auto battery = centralConfigurationStore.getConfiguration().batterySensor;
+    (void)applyBatteryConfiguration(battery, true);
+    xSemaphoreGive(stateMutex);
+    return result;
 }
 
 } // namespace
@@ -217,7 +236,7 @@ void CentralApplication::runApp()
     consoleCallbacks.loads = &consoleLoads;
     consoleCallbacks.loadStatus = &consoleLoadStatus;
     consoleCallbacks.optimize = &consoleOptimize;
-    consoleCallbacks.sensorMode = &consoleSensorMode;
+    consoleCallbacks.sensorMode = &consoleSensorModeConfigured;
     consoleCallbacks.localMac = &consoleLocalMac;
     consoleCallbacks.configureIna219 = &consoleConfigureIna219;
     consoleCallbacks.configureBatterySetup = &consoleConfigureBatterySetup;
