@@ -26,6 +26,66 @@ CommandResult consoleNetworkReadable(void* context, const NetworkCommandRequest&
     return consoleNetwork(context, request);
 }
 
+void consoleBatteryReadable(void*)
+{
+    if (xSemaphoreTake(stateMutex, pdMS_TO_TICKS(500U)) != pdTRUE) {
+        std::printf("BATTERY: BUSY\n");
+        return;
+    }
+
+    const auto& configuration = centralConfigurationStore.getConfiguration();
+    const auto& battery = configuration.batterySensor;
+    const auto& planning = configuration.powerPlanning;
+
+    const char* ina219Status = "NOT CONFIGURED";
+    if (battery.configured) {
+        if (batteryMonitor.isSimulationEnabled()) {
+            ina219Status = "CONFIGURED (SIMULATION ACTIVE)";
+        } else {
+            ina219Status = batteryMonitor.isHardwareSensorPresent()
+                ? "DETECTED"
+                : "NOT DETECTED";
+        }
+    }
+
+    std::printf("BATTERY MONITOR\n");
+    std::printf("INA219             : %s\n", ina219Status);
+    std::printf("Measurement source : %s\n", measurementSourceText(batteryMonitor.getMeasurementSource()));
+    if (batteryReadingValid) {
+        std::printf("Voltage            : %.3f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
+        std::printf("Current            : %.3f A\n", static_cast<double>(latestBatteryMeasurements.currentAmps));
+        std::printf("P_measured         : %.3f W\n", static_cast<double>(latestBatteryMeasurements.powerWatts));
+    } else {
+        std::printf("Voltage            : --\n");
+        std::printf("Current            : --\n");
+        std::printf("P_measured         : --\n");
+    }
+
+    if (batteryMonitor.isStateOfChargeValid()) {
+        std::printf("State of Charge    : %.2f %%\n", static_cast<double>(batteryMonitor.getStateOfChargePercent()));
+        std::printf("SoC source         : %s\n", stateOfChargeSourceText(batteryMonitor.getStateOfChargeSource()));
+    } else {
+        std::printf("State of Charge    : --\n");
+        std::printf("SoC source         : UNKNOWN\n");
+    }
+
+    std::printf("Power planning     : %s\n", planning.configured ? "CONFIGURED" : "NOT CONFIGURED");
+    if (planning.configured) {
+        std::printf("P_budget           : %.2f W\n", static_cast<double>(planning.P_budget));
+        std::printf("P_reserve          : %.2f W\n", static_cast<double>(planning.P_reserve));
+        std::printf("Minimum SoC        : %.1f %%\n", static_cast<double>(planning.minimumStateOfChargePercent));
+        if (planning.requiredRuntimeHours > 0.0F) {
+            std::printf("Required runtime   : %.2f h | %.2f h remaining\n",
+                static_cast<double>(planning.requiredRuntimeHours),
+                static_cast<double>(batteryMonitor.getRemainingRequiredRuntimeHours()));
+        } else {
+            std::printf("Required runtime   : NOT CONFIGURED\n");
+        }
+    }
+
+    xSemaphoreGive(stateMutex);
+}
+
 } // namespace
 
 void CentralApplication::runApp()
@@ -106,7 +166,7 @@ void CentralApplication::runApp()
     CentralConsole::Callbacks consoleCallbacks{};
     consoleCallbacks.status = &consoleStatus;
     consoleCallbacks.dashboard = &consoleDashboard;
-    consoleCallbacks.batteryStatus = &consoleBatteryStatus;
+    consoleCallbacks.batteryStatus = &consoleBatteryReadable;
     consoleCallbacks.nodes = &consoleNodes;
     consoleCallbacks.nodeStatus = &consoleNodeStatus;
     consoleCallbacks.loads = &consoleLoads;
