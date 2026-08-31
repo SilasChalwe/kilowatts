@@ -262,6 +262,7 @@ void wifiUsage()
     std::printf(
         "Usage:\n"
         "  wifi\n"
+        "  wifi scan\n"
         "  wifi setup\n"
         "  wifi set ssid=NAME password=PASSWORD\n"
         "  wifi clear\n");
@@ -810,6 +811,8 @@ int CentralConsole::wifi(int argc, char** argv)
     NetworkCommandRequest request{};
     if (argc == 1) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::STATUS);
+    } else if (same(argv[1], "scan")) {
+        request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SCAN);
     } else if (same(argv[1], "setup")) {
         request = makeNetworkRequest(NetworkCommandTarget::WIFI, NetworkCommandRequest::Action::SETUP);
     } else if (same(argv[1], "clear")) {
