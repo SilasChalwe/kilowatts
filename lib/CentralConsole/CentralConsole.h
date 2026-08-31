@@ -55,11 +55,16 @@ struct NetworkCommandRequest {
         STATUS = 0U,
         SET = 1U,
         CLEAR = 2U,
-        SETUP = 3U
+        SETUP = 3U,
+        // Internal handler values retained until the Central handler is trimmed.
+        // The simplified console does not register scan/channel commands.
+        SCAN = 4U,
+        SET_CHANNEL = 5U
     } action;
 
     char ssid[WiFiCredentialsStore::SSID_BUFFER_SIZE];
     char wifiPassword[WiFiCredentialsStore::PASSWORD_BUFFER_SIZE];
+    std::uint8_t wifiChannel;
 
     char mqttHost[MqttCredentialsStore::HOST_BUFFER_SIZE];
     std::uint16_t mqttPort;
