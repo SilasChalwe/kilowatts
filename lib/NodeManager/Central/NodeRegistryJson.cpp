@@ -22,14 +22,10 @@ void appendString(std::string& out, const char* value)
 
 bool pinIsUsed(const CentralNodeRegistry::PlanningNode* node, std::uint8_t pin)
 {
-    if (node == nullptr) {
-        return false;
-    }
+    if (node == nullptr) return false;
     for (std::size_t i = 0U; i < node->node.getNumberOfLoads(); ++i) {
         const Load* load = node->node.getLoad(i);
-        if (load != nullptr && load->getRelayPin() == pin) {
-            return true;
-        }
+        if (load != nullptr && load->getRelayPin() == pin) return true;
     }
     return false;
 }
@@ -52,20 +48,17 @@ void appendRelayPins(
     bool first = true;
     for (std::size_t i = 0U; i < record.relayCapabilityCount; ++i) {
         const std::uint8_t pin = record.relayPins[i];
-        if (!pinIsUsed(node, pin)) {
-            continue;
-        }
+        if (!pinIsUsed(node, pin)) continue;
         if (!first) out += ",";
         first = false;
         out += std::to_string(static_cast<unsigned int>(pin));
     }
+
     out += "],\"availableRelayPins\":[";
     first = true;
     for (std::size_t i = 0U; i < record.relayCapabilityCount; ++i) {
         const std::uint8_t pin = record.relayPins[i];
-        if (pinIsUsed(node, pin)) {
-            continue;
-        }
+        if (pinIsUsed(node, pin)) continue;
         if (!first) out += ",";
         first = false;
         out += std::to_string(static_cast<unsigned int>(pin));
@@ -129,22 +122,21 @@ std::string NodeRegistryJson::buildStateNodesJson(
     std::size_t onlineNodeCount = 0U;
     for (std::size_t i = 0U; i < centralNodeRegistry.getNumberOfNodes(); ++i) {
         const auto* node = centralNodeRegistry.getNode(i);
-        if (node != nullptr && nodeIsOnline(*node, nowMilliseconds, onlineTimeoutMilliseconds)) {
+        if (node != nullptr && !node->isCentralNode &&
+            nodeIsOnline(*node, nowMilliseconds, onlineTimeoutMilliseconds)) {
             ++onlineNodeCount;
         }
     }
 
     std::string json = "{\"schemaVersion\":" + std::to_string(schemaVersion);
     json += ",\"nodeCount\":" + std::to_string(centralNodeRegistry.getNumberOfNodes());
-    json += ",\"onlineNodeCount\":" + std::to_string(onlineNodeCount);
+    json += ",\"onlineSmartNodeCount\":" + std::to_string(onlineNodeCount);
     json += ",\"nodes\":[";
 
     bool first = true;
     for (std::size_t i = 0U; i < commissioningRegistry.getCount(); ++i) {
         const auto* record = commissioningRegistry.getRecord(i);
-        if (record == nullptr) {
-            continue;
-        }
+        if (record == nullptr) continue;
         if (!first) json += ",";
         first = false;
 
@@ -165,7 +157,8 @@ std::string NodeRegistryJson::buildStateNodesJson(
         appendString(json, record->firmwareVersion);
         json += ",\"chipModel\":";
         appendString(json, record->chipModel);
-        json += ",\"loadCount\":" + std::to_string(planningNode != nullptr ? planningNode->node.getNumberOfLoads() : 0U) + ",";
+        json += ",\"loadCount\":" +
+            std::to_string(planningNode != nullptr ? planningNode->node.getNumberOfLoads() : 0U) + ",";
         appendRelayPins(json, *record, planningNode);
         json += ",\"diagnostics\":";
         appendDiagnostics(json, record->diagnostics);
@@ -173,7 +166,8 @@ std::string NodeRegistryJson::buildStateNodesJson(
         if (planningNode == nullptr) {
             json += ",\"online\":false,\"hopCountToCentral\":null,\"nextHopMac\":null";
         } else if (isCentral) {
-            json += ",\"online\":true,\"hopCountToCentral\":0,\"nextHopMac\":null";
+            // Central liveness is authoritative only on the retained MQTT `status` topic.
+            json += ",\"online\":null,\"hopCountToCentral\":0,\"nextHopMac\":null";
         } else {
             const bool online = nodeIsOnline(*planningNode, nowMilliseconds, onlineTimeoutMilliseconds);
             json += ",\"online\":";
@@ -202,9 +196,7 @@ std::string NodeRegistryJson::buildConfigNodesJson(
 
     for (std::size_t i = 0U; i < commissioningRegistry.getCount(); ++i) {
         const auto* record = commissioningRegistry.getRecord(i);
-        if (record == nullptr) {
-            continue;
-        }
+        if (record == nullptr) continue;
         if (!first) json += ",";
         first = false;
 
@@ -218,7 +210,8 @@ std::string NodeRegistryJson::buildConfigNodesJson(
         appendString(json, record->friendlyName);
         json += ",\"lifecycleState\":\"";
         json += toText(record->lifecycleState);
-        json += "\",\"loadCount\":" + std::to_string(planningNode != nullptr ? planningNode->node.getNumberOfLoads() : 0U) + ",";
+        json += "\",\"loadCount\":" +
+            std::to_string(planningNode != nullptr ? planningNode->node.getNumberOfLoads() : 0U) + ",";
         appendRelayPins(json, *record, planningNode);
         json += "}";
     }
