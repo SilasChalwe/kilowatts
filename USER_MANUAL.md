@@ -1,188 +1,84 @@
 # Kilowatts — User Manual
 
-Kilowatts is a load-allocation and power-monitoring system. Central accounts for FIXED loads, gives the remaining AUTO allowance to the existing Best-First Search, and commands relays. INA219 or simulation supplies voltage/current into the same measurement path.
+Kilowatts is a load-allocation and power-monitoring system. Central accounts for FIXED loads, gives `P_auto_available` to the existing Best-First Search, and commands the selected loads ON or OFF. INA219 or simulation supplies voltage/current into the same measurement path.
 
-The software does not replace fuses, breakers, BMS cut-offs or other electrical protection hardware.
+## Power names
 
-## 1. Power model
-
-The canonical values are:
+These are the power names used by the system:
 
 ```text
-P_budget
-P_reserve
-P_usable
-P_fixed
-P_auto_available
-P_auto
-P_remaining
-P_measured
-P_runtime
-```
-
-Main formulas:
-
-```text
-P_usable = max(0, P_budget - P_reserve)
-
-P_auto_available = max(0, planningAllowance - P_fixed)
-
-P_remaining = max(0, P_budget - (P_fixed + P_auto))
-
-P_measured = voltage * current
+P_budget          configured installation power limit
+P_reserve         watts the user intentionally keeps unused
+P_fixed           total watts of FIXED_ON loads
+P_auto_available  watts passed to Best-First Search
+P_auto            total watts of AUTO loads selected by Best-First
+P_remaining       unused part of P_budget after FIXED + selected AUTO loads
+P_measured        instantaneous power from voltage × current
 ```
 
 Without a runtime target:
 
 ```text
-planningAllowance = P_usable
+P_auto_available = max(0, P_budget - P_reserve - P_fixed)
+```
+
+After Best-First selects AUTO loads:
+
+```text
+P_remaining = max(0, P_budget - (P_fixed + P_auto))
 ```
 
 Example:
 
 ```text
-P_budget  = 200 W
-P_reserve = 20 W
-P_fixed   = 80 W
-
-P_usable         = 180 W
-P_auto_available = 100 W
+P_budget          = 200 W
+P_reserve         = 20 W
+P_fixed           = 80 W
+P_auto_available  = 100 W
 ```
 
-If Best-First selects 100 W of AUTO loads:
+If Best-First selects 100 W:
 
 ```text
-P_auto      = 100 W
-P_remaining = 200 - (80 + 100) = 20 W
+P_auto       = 100 W
+P_remaining  = 20 W
 ```
 
-## 2. Runtime target
+## Runtime
 
-Battery capacity is energy, not instantaneous power.
+Runtime is an optional planning condition. It does not create another public power variable.
 
-When runtime is configured:
+The system uses battery capacity, nominal voltage, current SoC, minimum SoC, and requested runtime to work out how much AUTO power can be allowed while trying to meet the requested runtime. The result is reflected directly in `P_auto_available`.
+
+If the requested runtime cannot be met because FIXED loads already consume too much, then:
 
 ```text
-usableEnergyWh =
-    capacityAh * nominalVoltage *
-    max(0, SoC - minimumSoC) / 100
-
-P_runtime = usableEnergyWh / remainingRuntimeHours
-
-planningAllowance = min(P_usable, P_runtime)
+P_auto_available = 0 W
+Runtime target = NOT ACHIEVABLE
 ```
 
-Example:
+FIXED demand is still reported honestly.
 
-```text
-200 Ah * 15 V * (70% - 20%) = 1500 Wh
-1500 Wh / 24 h = 62.5 W
-```
+## INA219 and simulation
 
-If `P_fixed = 40 W`, then:
-
-```text
-P_auto_available = 62.5 - 40 = 22.5 W
-```
-
-If fixed demand already exceeds the runtime allowance, AUTO allocation becomes 0 and the runtime target is reported as not achievable.
-
-## 3. INA219 and simulation
-
-There is one measurement path.
+There is one measurement path:
 
 ```text
 if simulation:
-    use simulated voltage/current
+    voltage/current = simulated input
 else:
-    use INA219 voltage/current
+    voltage/current = INA219 input
 
-P_measured = voltage * current
+P_measured = voltage × current
 ```
 
-`P_measured` is actual/simulated instantaneous consumption. It does not replace `P_budget`.
+`P_measured` tells the system what is actually being consumed at that moment. It does not replace `P_budget`.
 
-The firmware can warn when:
+If `P_measured > P_budget`, Kilowatts can report a monitoring warning. This is software monitoring, not electrical hardware protection.
 
-```text
-P_measured > P_budget
-```
+## Load behavior
 
-That is monitoring only, not hardware protection.
-
-## 4. Console
-
-Open the Central monitor:
-
-```bash
-pio device monitor -e central
-```
-
-The console is intentionally small:
-
-```text
-status
-dashboard
-battery
-sensor
-nodes
-node
-loads
-load
-optimize
-wifi
-mqtt
-system
-clear
-```
-
-Use `<command> help` for syntax.
-
-### Power planning
-
-```text
-battery planning budget=200 reserve=20 min_soc=20 runtime_hours=24
-```
-
-Disable runtime planning with:
-
-```text
-battery planning budget=200 reserve=20 min_soc=20 runtime_hours=0
-```
-
-### Battery / INA219 configuration
-
-```text
-battery configure shunt_ohms=0.005 max_sensor_amps=40 ema_alpha=0.2 capacity_ah=200 initial_soc=70 nominal_voltage=15
-```
-
-`max_sensor_amps` describes the expected INA219/shunt measurement range. It is not a software current-protection setting.
-
-### Select measurement input
-
-Real INA219:
-
-```text
-sensor ina219
-```
-
-Simulation:
-
-```text
-sensor sim
-```
-
-Provide simulated values:
-
-```text
-sensor values voltage=15 current=1.5 soc=70
-```
-
-Simulation and INA219 then continue through the same PowerManager logic.
-
-## 5. Loads
-
-Modes:
+Supported modes are:
 
 ```text
 FIXED_ON
@@ -191,105 +87,55 @@ AUTO_ON
 AUTO_OFF
 ```
 
-FIXED_ON power becomes `P_fixed`. Best-First receives only `P_auto_available` and selects AUTO loads using the existing algorithm.
+`FIXED_ON` loads are counted first in `P_fixed`.
 
-Add a Central load:
-
-```text
-load add pin=16 name=Lamp power=10 priority=5 type=DC active_high=off mode=AUTO_OFF schedule=none
-```
-
-Add a Smart Node load:
+AUTO loads are candidates for Best-First Search. Best-First receives only:
 
 ```text
-load add mac=AA:BB:CC:DD:EE:FF pin=4 name=Fan power=25 priority=10 type=DC active_high=off mode=AUTO_OFF schedule=18:30-20:00
-```
-
-Inspect or change loads:
-
-```text
-loads
-load show 16
-load show AA:BB:CC:DD:EE:FF 4
-load set AA:BB:CC:DD:EE:FF 4 priority=20
-load set AA:BB:CC:DD:EE:FF 4 mode=AUTO_ON schedule=19:00-21:00
-load remove AA:BB:CC:DD:EE:FF 4
-```
-
-## 6. Nodes
-
-```text
-nodes
-node show AA:BB:CC:DD:EE:FF
-node commission AA:BB:CC:DD:EE:FF name=Kitchen
-node rename AA:BB:CC:DD:EE:FF name=Kitchen2
-node decommission AA:BB:CC:DD:EE:FF
-```
-
-## 7. Optimizer
-
-Run one cycle:
-
-```text
-optimize
-```
-
-Check/change the interval:
-
-```text
-optimize status
-optimize interval seconds=30
-```
-
-The Best-First Search algorithm itself is unchanged.
-
-## 8. Dashboard
-
-Run:
-
-```text
-dashboard
-```
-
-The important output is:
-
-```text
-Measurement source
-Voltage
-Current
-P_measured
-Battery SoC
-P_budget
-P_reserve
-P_usable
-P_fixed
 P_auto_available
-P_auto
-P_remaining
-P_runtime     (when active)
 ```
 
-## 9. Wi-Fi and MQTT
+The Best-First Search algorithm is unchanged.
 
-Configure Wi-Fi:
+## Main console commands
 
 ```text
+status
+dashboard
+battery
+sensor ina219
+sensor sim
+sensor values voltage=15 current=8 soc=70
+nodes
+loads
+optimize
 wifi status
-wifi scan
-wifi setup
-wifi set ssid=HOME_WIFI password=PASSWORD
-wifi clear
+mqtt status
 ```
 
-Configure MQTT:
+Configure the power plan:
 
 ```text
-mqtt status
-mqtt set host=BROKER port=1883 tls=off [username=USER] [password=PASSWORD]
-mqtt clear
+battery planning budget=200 reserve=20 min_soc=20 runtime_hours=24
 ```
 
-The external MQTT API has only five topics:
+Disable runtime planning while keeping the same budget/reserve:
+
+```text
+battery planning budget=200 reserve=20 min_soc=20 runtime_hours=0
+```
+
+Configure battery/INA219 information:
+
+```text
+battery configure shunt_ohms=0.005 max_sensor_amps=40 ema_alpha=0.2 capacity_ah=200 initial_soc=70 nominal_voltage=15
+```
+
+`max_sensor_amps` describes the expected sensor/shunt measurement range. It is not a software current-protection limit.
+
+## MQTT
+
+MQTT has only five external topics:
 
 ```text
 kilowatts/v1/status
@@ -299,87 +145,39 @@ kilowatts/v1/ack
 kilowatts/v1/alert
 ```
 
-`state` contains the useful system, load and node state in one retained message.
+`state` contains system, load, and node state.
 
-All commands go to `command` and include one of these types:
-
-```text
-load
-system
-config
-simulation
-```
-
-Example power-planning command:
-
-```json
-{
-  "type": "config",
-  "commandId": 1001,
-  "action": "CONFIGURE_POWER_PLANNING",
-  "nodeMac": "AA:BB:CC:DD:EE:FF",
-  "powerPlanning": {
-    "P_budget": 200,
-    "P_reserve": 20,
-    "minimumStateOfChargePercent": 20,
-    "requiredRuntimeHours": 24
-  }
-}
-```
-
-Example simulation input:
-
-```json
-{
-  "type": "simulation",
-  "commandId": 1002,
-  "action": "SET_VALUES",
-  "values": {
-    "batteryVoltageVolts": 15,
-    "batteryCurrentAmps": 1.5,
-    "stateOfChargePercent": 70
-  }
-}
-```
-
-See `lib/MqttManager/README.md` for the MQTT message reference.
-
-## 10. Alerts
-
-Useful alerts include:
+The power state uses only:
 
 ```text
-BATTERY_RESERVE
-RUNTIME_TARGET
-BATTERY_SENSOR
-MEASURED_POWER_BUDGET
-NODE_OFFLINE
+P_budget
+P_reserve
+P_fixed
+P_auto_available
+P_auto
+P_remaining
+P_measured
 ```
 
-`MEASURED_POWER_BUDGET` means measured instantaneous power crossed above or back below configured `P_budget`.
+All MQTT commands go to `command` and use a `type` field.
 
-## 11. Reset
+See `lib/MqttManager/README.md` for examples.
 
-Reboot Central:
+## What the system answers
 
-```text
-system reset
-```
+For each planning cycle, Kilowatts answers:
 
-Factory reset Central:
+1. How much power is configured? → `P_budget`
+2. How much is reserved? → `P_reserve`
+3. How much are FIXED_ON loads already using? → `P_fixed`
+4. How much can AUTO loads use? → `P_auto_available`
+5. Which AUTO loads fit best? → existing Best-First Search
+6. How much AUTO power was selected? → `P_auto`
+7. How much configured power remains? → `P_remaining`
+8. What is actually being consumed now? → `P_measured`
 
-```text
-system factory-reset confirm=RESET
-```
+Central then sends relay commands for the selected load states.
 
-Factory reset a Smart Node:
+## Hardware boundary
 
-```text
-system factory-reset mac=AA:BB:CC:DD:EE:FF confirm=RESET
-```
-
-## 12. Hardware boundary
-
-Kilowatts software performs measurement, SoC/energy estimation, runtime planning, Best-First allocation, monitoring and relay/GPIO commands.
-
-Physical electrical protection remains the responsibility of appropriately rated hardware such as fuses, breakers, BMS cut-offs and thermal protection.
+Kilowatts performs planning, monitoring, and relay/GPIO commands. Real electrical protection must come from correctly rated hardware such as fuses, breakers, BMS cut-offs, and other installation-specific protection devices.
