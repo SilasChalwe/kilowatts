@@ -38,8 +38,8 @@ constexpr std::uint32_t BATTERY_TELEMETRY_STALE_TIMEOUT_MILLISECONDS = 5000U;
 constexpr const char* MQTT_TOPIC_NAMESPACE = KILOWATTS_MQTT_TOPIC_NAMESPACE;
 constexpr const char* MQTT_DEVICE_ID = "central-01";
 
-/* Breaking power-flow field cleanup: no legacy MQTT field aliases are emitted. */
-constexpr std::uint32_t MQTT_SCHEMA_VERSION = 4U;
+/* Direct frontend commands and simplified retained state. No legacy aliases. */
+constexpr std::uint32_t MQTT_SCHEMA_VERSION = 5U;
 
 } // namespace CentralNodeConfig
 } // namespace kilowatts
