@@ -20,10 +20,13 @@ bool isValidPercent(float value)
 constexpr const char* NVS_NAMESPACE = "kw_central";
 constexpr const char* VERSION_KEY = "cfg_ver";
 constexpr const char* DATA_KEY = "cfg";
-constexpr std::uint8_t SAVED_VERSION = 7U;
+constexpr std::uint8_t SAVED_VERSION = 8U;
+constexpr std::uint8_t PREVIOUS_SAVED_VERSION = 7U;
+constexpr std::uint8_t INA219_CONFIGURED_FLAG = 0x01U;
+constexpr std::uint8_t BATTERY_METADATA_CONFIGURED_FLAG = 0x02U;
 
 struct PersistedConfiguration {
-    std::uint8_t batteryConfigured;
+    std::uint8_t batteryConfigurationFlags;
     float shuntResistanceOhms;
     float maximumExpectedCurrentAmps;
     float emaAlpha;
@@ -42,7 +45,7 @@ struct PersistedConfiguration {
 
 CentralConfigurationStore::CentralConfigurationStore()
     : configuration_{
-          BatterySensorConfiguration{false, 0.0F, 0.0F, 0.2F, 0.0F, 0.0F, 0.0F},
+          BatterySensorConfiguration{false, false, 0.0F, 0.0F, 0.2F, 0.0F, 0.0F, 0.0F},
           PowerPlanningConfiguration{false, 0.0F, 0.0F, 0.0F, 0.0F}}
 {
 }
@@ -56,13 +59,28 @@ CentralConfigurationStore::getConfiguration() const
 bool CentralConfigurationStore::isValidBatterySensor(
     const BatterySensorConfiguration& configuration)
 {
-    if (!configuration.configured) return true;
-    return std::isfinite(configuration.shuntResistanceOhms) && configuration.shuntResistanceOhms > 0.0F &&
-           std::isfinite(configuration.maximumExpectedCurrentAmps) && configuration.maximumExpectedCurrentAmps > 0.0F &&
-           std::isfinite(configuration.emaAlpha) && configuration.emaAlpha > 0.0F && configuration.emaAlpha <= 1.0F &&
-           std::isfinite(configuration.batteryCapacityAmpHours) && configuration.batteryCapacityAmpHours > 0.0F &&
-           isValidPercent(configuration.initialStateOfChargePercent) &&
-           std::isfinite(configuration.nominalVoltageVolts) && configuration.nominalVoltageVolts > 0.0F;
+    if (configuration.ina219Configured) {
+        if (!std::isfinite(configuration.shuntResistanceOhms) ||
+            configuration.shuntResistanceOhms <= 0.0F ||
+            !std::isfinite(configuration.maximumExpectedCurrentAmps) ||
+            configuration.maximumExpectedCurrentAmps <= 0.0F ||
+            !std::isfinite(configuration.emaAlpha) ||
+            configuration.emaAlpha <= 0.0F || configuration.emaAlpha > 1.0F) {
+            return false;
+        }
+    }
+
+    if (configuration.batteryMetadataConfigured) {
+        if (!std::isfinite(configuration.batteryCapacityAmpHours) ||
+            configuration.batteryCapacityAmpHours <= 0.0F ||
+            !isValidPercent(configuration.initialStateOfChargePercent) ||
+            !std::isfinite(configuration.nominalVoltageVolts) ||
+            configuration.nominalVoltageVolts <= 0.0F) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool CentralConfigurationStore::isValidPowerPlanning(
@@ -103,16 +121,35 @@ bool CentralConfigurationStore::loadPersisted()
     PersistedConfiguration saved{};
     std::size_t savedSize = sizeof(saved);
 
-    if (result == ESP_OK && version == SAVED_VERSION) {
+    if (result == ESP_OK &&
+        (version == SAVED_VERSION || version == PREVIOUS_SAVED_VERSION)) {
         result = nvs_get_blob(handle, DATA_KEY, &saved, &savedSize);
     }
     nvs_close(handle);
 
-    if (result != ESP_OK || version != SAVED_VERSION || savedSize != sizeof(saved)) return false;
+    if (result != ESP_OK ||
+        (version != SAVED_VERSION && version != PREVIOUS_SAVED_VERSION) ||
+        savedSize != sizeof(saved)) {
+        return false;
+    }
+
+    bool ina219Configured = false;
+    bool batteryMetadataConfigured = false;
+    if (version == PREVIOUS_SAVED_VERSION) {
+        const bool oldCombinedConfiguration = saved.batteryConfigurationFlags != 0U;
+        ina219Configured = oldCombinedConfiguration;
+        batteryMetadataConfigured = oldCombinedConfiguration;
+    } else {
+        ina219Configured =
+            (saved.batteryConfigurationFlags & INA219_CONFIGURED_FLAG) != 0U;
+        batteryMetadataConfigured =
+            (saved.batteryConfigurationFlags & BATTERY_METADATA_CONFIGURED_FLAG) != 0U;
+    }
 
     Configuration restored{
         BatterySensorConfiguration{
-            saved.batteryConfigured != 0U,
+            ina219Configured,
+            batteryMetadataConfigured,
             saved.shuntResistanceOhms,
             saved.maximumExpectedCurrentAmps,
             saved.emaAlpha,
@@ -127,7 +164,9 @@ bool CentralConfigurationStore::loadPersisted()
             saved.requiredRuntimeHours}};
 
     if (!isValidBatterySensor(restored.batterySensor) ||
-        !isValidPowerPlanning(restored.powerPlanning)) return false;
+        !isValidPowerPlanning(restored.powerPlanning)) {
+        return false;
+    }
 
     configuration_ = restored;
     return true;
@@ -146,7 +185,13 @@ bool CentralConfigurationStore::persist() const
     const auto& battery = configuration_.batterySensor;
     const auto& planning = configuration_.powerPlanning;
 
-    saved.batteryConfigured = battery.configured ? 1U : 0U;
+    saved.batteryConfigurationFlags = 0U;
+    if (battery.ina219Configured) {
+        saved.batteryConfigurationFlags |= INA219_CONFIGURED_FLAG;
+    }
+    if (battery.batteryMetadataConfigured) {
+        saved.batteryConfigurationFlags |= BATTERY_METADATA_CONFIGURED_FLAG;
+    }
     saved.shuntResistanceOhms = battery.shuntResistanceOhms;
     saved.maximumExpectedCurrentAmps = battery.maximumExpectedCurrentAmps;
     saved.emaAlpha = battery.emaAlpha;
