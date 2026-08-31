@@ -37,20 +37,32 @@ void consoleBatteryReadable(void*)
     const auto& battery = configuration.batterySensor;
     const auto& planning = configuration.powerPlanning;
 
+    const bool simulating = batteryMonitor.isSimulationEnabled();
+    const bool ina219Detected = battery.configured && batteryMonitor.isHardwareSensorPresent();
+
     const char* ina219Status = "NOT CONFIGURED";
     if (battery.configured) {
-        if (batteryMonitor.isSimulationEnabled()) {
+        if (simulating) {
             ina219Status = "CONFIGURED (SIMULATION ACTIVE)";
         } else {
-            ina219Status = batteryMonitor.isHardwareSensorPresent()
-                ? "DETECTED"
-                : "NOT DETECTED";
+            ina219Status = ina219Detected ? "DETECTED" : "NOT DETECTED";
         }
+    }
+
+    const char* measurementSource = "NONE";
+    if (simulating) {
+        measurementSource = "SIMULATED";
+    } else if (!battery.configured) {
+        measurementSource = "INA219 NOT CONFIGURED";
+    } else if (!ina219Detected) {
+        measurementSource = "INA219 NOT DETECTED";
+    } else {
+        measurementSource = "INA219";
     }
 
     std::printf("BATTERY MONITOR\n");
     std::printf("INA219             : %s\n", ina219Status);
-    std::printf("Measurement source : %s\n", measurementSourceText(batteryMonitor.getMeasurementSource()));
+    std::printf("Measurement source : %s\n", measurementSource);
     if (batteryReadingValid) {
         std::printf("Voltage            : %.3f V\n", static_cast<double>(latestBatteryMeasurements.voltageVolts));
         std::printf("Current            : %.3f A\n", static_cast<double>(latestBatteryMeasurements.currentAmps));
