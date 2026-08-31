@@ -52,7 +52,7 @@ void integer(std::string& out, const char* key, std::int64_t value, bool comma =
 std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t schemaVersion)
 {
     std::string json;
-    json.reserve(1200);
+    json.reserve(1100);
     json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",";
 
     json += "\"battery\":{";
@@ -75,14 +75,12 @@ std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t sc
     number(json, "remainingRuntimeHours", in.remainingRuntimeHours);
     number(json, "estimatedRuntimeHours", in.estimatedRuntimeHours);
     boolean(json, "runtimeEstimateValid", in.runtimeEstimateValid);
-    number(json, "P_runtime", in.P_runtime);
     boolean(json, "requiredRuntimeAchievable", in.requiredRuntimeAchievable, false);
     json += "},";
 
     json += "\"powerFlow\":{";
     number(json, "P_budget", in.P_budget);
     number(json, "P_reserve", in.P_reserve);
-    number(json, "P_usable", in.P_usable);
     number(json, "P_fixed", in.P_fixed);
     number(json, "P_auto_available", in.P_auto_available);
     number(json, "P_auto", in.P_auto);
