@@ -286,7 +286,7 @@ Example:
 
 ```json
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "commandId": 20,
   "commandType": "battery",
   "status": "APPLIED",
