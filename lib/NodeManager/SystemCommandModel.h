@@ -1,6 +1,6 @@
 /**
  * @file SystemCommandModel.h
- * @brief Canonical requests shared by Console and MQTT.
+ * @brief Canonical requests shared by the Central console and operational handlers.
  */
 #ifndef KILOWATTS_SYSTEM_COMMAND_MODEL_H
 #define KILOWATTS_SYSTEM_COMMAND_MODEL_H
@@ -40,17 +40,21 @@ enum class NetworkCommandTarget : std::uint8_t {
     MQTT = 1U
 };
 
+/** Central-console network setup only. MQTT does not expose these requests. */
 struct NetworkCommandRequest {
     NetworkCommandTarget target;
     enum class Action : std::uint8_t {
         STATUS = 0U,
         SET = 1U,
         CLEAR = 2U,
-        SETUP = 3U
+        SETUP = 3U,
+        SCAN = 4U,
+        SET_CHANNEL = 5U
     } action;
 
     char ssid[WiFiCredentialsStore::SSID_BUFFER_SIZE];
     char wifiPassword[WiFiCredentialsStore::PASSWORD_BUFFER_SIZE];
+    std::uint8_t wifiChannel;
 
     char mqttHost[MqttCredentialsStore::HOST_BUFFER_SIZE];
     std::uint16_t mqttPort;
@@ -120,6 +124,7 @@ enum class ConfigCommandAction : std::uint8_t {
     CONFIGURE_POWER_PLANNING = 7U
 };
 
+/** Internal canonical configuration request used by Central handlers. */
 struct ConfigCommandRequest {
     std::uint32_t commandId;
     ConfigCommandAction action;
