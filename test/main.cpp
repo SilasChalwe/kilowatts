@@ -50,10 +50,8 @@ bool prepareBudget(
 {
     if (!powerManager.enableSimulation(true)) return false;
 
-    const PowerManager::BusConfiguration bus{
-        0U, 0U, 0U, 100000U};
-    const PowerManager::SensorConfiguration sensor{
-        0.1F, 3.0F, 1.0F};
+    const PowerManager::BusConfiguration bus{0U, 0U, 0U, 100000U};
+    const PowerManager::SensorConfiguration sensor{0.1F, 3.0F, 1.0F};
     const PowerManager::BatteryConfiguration battery{
         15.0F,
         200.0F,
@@ -62,14 +60,12 @@ bool prepareBudget(
     if (!powerManager.initialize(bus, sensor, battery)) return false;
     if (!powerManager.setSimulatedMeasurements(voltage, current)) return false;
     if (!powerManager.updateMeasurements()) return false;
-    if (!powerManager.setSimulatedStateOfChargePercent(
-            stateOfChargePercent)) return false;
+    if (!powerManager.setSimulatedStateOfChargePercent(stateOfChargePercent)) return false;
     if (!powerManager.setPowerBudgetWatts(P_budget)) return false;
     if (!powerManager.setPowerReserveWatts(P_reserve)) return false;
     if (!powerManager.setFixedPowerWatts(P_fixed)) return false;
     if (!powerManager.setAutoPowerWatts(P_auto)) return false;
-    if (!powerManager.setRemainingRequiredRuntimeHours(
-            remainingRuntimeHours)) return false;
+    if (!powerManager.setRemainingRequiredRuntimeHours(remainingRuntimeHours)) return false;
 
     return powerManager.updatePowerBudget();
 }
@@ -80,9 +76,7 @@ Load makeAutoLoad(
     float powerRatingWatts,
     std::uint16_t priority)
 {
-    const Load::MacAddress mac{{
-        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}};
-
+    const Load::MacAddress mac{{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01}};
     return Load(
         Load::Id{mac, relayPin},
         name,
@@ -94,7 +88,7 @@ Load makeAutoLoad(
 
 void caseConfiguredBudgetAndReserve()
 {
-    currentCase = "P_budget/P_reserve/P_fixed/P_auto";
+    currentCase = "configured budget and reserve";
 
     PowerManager powerManager;
     check(
@@ -111,30 +105,24 @@ void caseConfiguredBudgetAndReserve()
 
     PowerBudget budget = powerManager.getPowerBudget();
 
-    check(nearlyEqual(budget.P_budget, 200.0F),
-          "P_budget is the configured 200 W");
-    check(nearlyEqual(budget.P_reserve, 20.0F),
-          "P_reserve is 20 W");
-    check(nearlyEqual(budget.P_usable, 180.0F),
-          "P_usable = P_budget - P_reserve = 180 W");
-    check(nearlyEqual(budget.P_fixed, 80.0F),
-          "P_fixed is 80 W");
-    check(nearlyEqual(budget.P_auto_available, 100.0F),
-          "P_auto_available = 180 - 80 = 100 W");
+    check(nearlyEqual(budget.P_budget, 200.0F), "P_budget is 200 W");
+    check(nearlyEqual(budget.P_reserve, 20.0F), "P_reserve is 20 W");
+    check(nearlyEqual(budget.P_fixed, 80.0F), "P_fixed is 80 W");
+    check(
+        nearlyEqual(budget.P_auto_available, 100.0F),
+        "P_auto_available = 200 - 20 - 80 = 100 W");
 
-    check(powerManager.setAutoPowerWatts(100.0F),
-          "P_auto accepted");
-    check(powerManager.updatePowerBudget(),
-          "budget recomputed after AUTO selection");
+    check(powerManager.setAutoPowerWatts(100.0F), "P_auto accepted");
+    check(powerManager.updatePowerBudget(), "budget recomputed after AUTO selection");
 
     budget = powerManager.getPowerBudget();
-    check(nearlyEqual(budget.P_auto, 100.0F),
-          "P_auto is 100 W");
-    check(nearlyEqual(budget.P_remaining, 20.0F),
-          "P_remaining = 200 - (80 + 100) = 20 W");
+    check(nearlyEqual(budget.P_auto, 100.0F), "P_auto is 100 W");
+    check(
+        nearlyEqual(budget.P_remaining, 20.0F),
+        "P_remaining = 200 - (80 + 100) = 20 W");
 }
 
-void casePartialAutoLeavesUnusedCapacity()
+void casePartialAutoLeavesHeadroom()
 {
     currentCase = "partial AUTO selection";
 
@@ -152,16 +140,13 @@ void casePartialAutoLeavesUnusedCapacity()
         "budget computed");
 
     const PowerBudget budget = powerManager.getPowerBudget();
-
-    check(nearlyEqual(budget.P_auto_available, 100.0F),
-          "AUTO allocation ceiling remains 100 W");
-    check(nearlyEqual(budget.P_remaining, 50.0F),
-          "P_remaining includes 20 W reserve plus 30 W unused capacity");
+    check(nearlyEqual(budget.P_auto_available, 100.0F), "P_auto_available remains 100 W");
+    check(nearlyEqual(budget.P_remaining, 50.0F), "P_remaining is 50 W");
 }
 
 void caseMeasuredPowerIsMonitoringOnly()
 {
-    currentCase = "P_measured is not P_budget";
+    currentCase = "P_measured is monitoring";
 
     PowerManager powerManager;
     check(
@@ -179,16 +164,14 @@ void caseMeasuredPowerIsMonitoringOnly()
         "budget computed");
 
     const PowerBudget budget = powerManager.getPowerBudget();
-
-    check(nearlyEqual(budget.P_measured, 22.5F),
-          "P_measured = 15 V * 1.5 A = 22.5 W");
-    check(nearlyEqual(budget.P_budget, 200.0F),
-          "configured P_budget remains 200 W");
-    check(nearlyEqual(budget.P_auto_available, 180.0F),
-          "22.5 W measurement does not replace available planning budget");
+    check(nearlyEqual(budget.P_measured, 22.5F), "P_measured = 15 * 1.5 = 22.5 W");
+    check(nearlyEqual(budget.P_budget, 200.0F), "P_budget remains 200 W");
+    check(
+        nearlyEqual(budget.P_auto_available, 180.0F),
+        "P_measured does not replace P_auto_available");
 }
 
-void caseRuntimeTarget()
+void caseRuntimeTargetConstrainsAutoAvailable()
 {
     currentCase = "24-hour runtime target";
 
@@ -203,20 +186,16 @@ void caseRuntimeTarget()
             24.0F,
             40.0F,
             0.0F),
-        "runtime budget computed");
+        "runtime policy computed");
 
     const PowerBudget budget = powerManager.getPowerBudget();
 
-    // 200 Ah * 15 V * (70%-20%) = 1500 Wh.
-    // 1500 Wh / 24 h = 62.5 W average planning allowance.
-    check(budget.runtimeBudgetActive,
-          "runtime budget is active");
-    check(nearlyEqual(budget.P_runtime, 62.5F),
-          "P_runtime is 62.5 W");
-    check(nearlyEqual(budget.P_auto_available, 22.5F),
-          "P_auto_available = 62.5 - 40 = 22.5 W");
-    check(budget.requiredRuntimeAchievable,
-          "40 W fixed demand can fit the runtime allowance");
+    // Usable battery energy above the 20% SoC reserve is 1500 Wh.
+    // Over 24 hours that internally limits planning to 62.5 W.
+    // With 40 W FIXED_ON, Best-First receives 22.5 W.
+    check(budget.runtimeBudgetActive, "runtime policy is active");
+    check(nearlyEqual(budget.P_auto_available, 22.5F), "P_auto_available is 22.5 W");
+    check(budget.requiredRuntimeAchievable, "runtime target is achievable");
 }
 
 void caseFixedDemandExceedsRuntimeAllowance()
@@ -234,18 +213,12 @@ void caseFixedDemandExceedsRuntimeAllowance()
             24.0F,
             80.0F,
             0.0F),
-        "runtime budget computed");
+        "runtime policy computed");
 
     const PowerBudget budget = powerManager.getPowerBudget();
-
-    check(nearlyEqual(budget.P_runtime, 62.5F),
-          "P_runtime remains 62.5 W");
-    check(nearlyEqual(budget.P_auto_available, 0.0F),
-          "no power is allocated to AUTO loads");
-    check(!budget.requiredRuntimeAchievable,
-          "runtime target is reported not achievable");
-    check(nearlyEqual(budget.P_fixed, 80.0F),
-          "fixed demand is reported honestly and is not clipped");
+    check(nearlyEqual(budget.P_auto_available, 0.0F), "AUTO receives 0 W");
+    check(!budget.requiredRuntimeAchievable, "runtime target is not achievable");
+    check(nearlyEqual(budget.P_fixed, 80.0F), "P_fixed remains 80 W");
 }
 
 void caseStateOfChargeReserve()
@@ -266,45 +239,33 @@ void caseStateOfChargeReserve()
         "budget computed at reserve");
 
     const PowerBudget budget = powerManager.getPowerBudget();
-
-    check(nearlyEqual(budget.P_runtime, 0.0F),
-          "no usable battery energy remains above the SoC reserve");
-    check(nearlyEqual(budget.P_auto_available, 0.0F),
-          "AUTO allocation is zero at the configured SoC reserve");
+    check(nearlyEqual(budget.P_auto_available, 0.0F), "AUTO allocation is zero at SoC reserve");
 }
 
-void caseBestFirstReceivesOnlyAutoAvailablePower()
+void caseBestFirstReceivesAutoAvailable()
 {
-    currentCase = "Best-First input remains unchanged";
+    currentCase = "Best-First input unchanged";
 
     Load loadA = makeAutoLoad(1U, "A", 70.0F, 3U);
     Load loadB = makeAutoLoad(2U, "B", 60.0F, 2U);
     Load loadC = makeAutoLoad(3U, "C", 40.0F, 1U);
 
-    const std::vector<const Load*> automaticLoads{
-        &loadA, &loadB, &loadC};
-
+    const std::vector<const Load*> automaticLoads{&loadA, &loadB, &loadC};
     CurrentTimeProvider timeProvider;
     const float P_auto_available = 100.0F;
 
-    BestFirstSearch search(
-        P_auto_available,
-        automaticLoads,
-        timeProvider);
-
+    BestFirstSearch search(P_auto_available, automaticLoads, timeProvider);
     const auto& selected = search.getBestCombination();
 
     float selectedPower = 0.0F;
     for (const Load* load : selected) {
-        if (load != nullptr) {
-            selectedPower += load->getPowerRatingWatts();
-        }
+        if (load != nullptr) selectedPower += load->getPowerRatingWatts();
     }
 
-    check(!selected.empty(),
-          "Best-First selects at least one load");
-    check(selectedPower <= P_auto_available + 0.01F,
-          "Best-First selection does not exceed P_auto_available");
+    check(!selected.empty(), "Best-First selects at least one load");
+    check(
+        selectedPower <= P_auto_available + 0.01F,
+        "selected AUTO power does not exceed P_auto_available");
 }
 
 void caseInvalidReserveIsRejected()
@@ -330,12 +291,12 @@ void caseInvalidReserveIsRejected()
 int main()
 {
     caseConfiguredBudgetAndReserve();
-    casePartialAutoLeavesUnusedCapacity();
+    casePartialAutoLeavesHeadroom();
     caseMeasuredPowerIsMonitoringOnly();
-    caseRuntimeTarget();
+    caseRuntimeTargetConstrainsAutoAvailable();
     caseFixedDemandExceedsRuntimeAllowance();
     caseStateOfChargeReserve();
-    caseBestFirstReceivesOnlyAutoAvailablePower();
+    caseBestFirstReceivesAutoAvailable();
     caseInvalidReserveIsRejected();
 
     std::printf(
