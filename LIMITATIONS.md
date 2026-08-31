@@ -26,6 +26,20 @@ The MQTT connection uses TLS via the standard ESP-IDF CA certificate bundle (`es
 
 The firmware writes a GPIO/relay command and reports success once that write completes at the firmware level (per `USER_MANUAL.md` §"Command acknowledgement meaning"). It has no way to confirm what, if anything, is actually connected downstream of that pin or whether it physically switched. This is an architectural boundary, not a bug — adding real feedback (a current-sensing or relay-state-confirmation mechanism) is future work, see `FUTURE_WORK.md`.
 
+## Unexplained watchdog reset, observed once, not investigated
+
+While reading the Central node's diagnostics over MQTT during the four-LED
+hardware test (`test-evidence/FOUR_LED_HARDWARE_TEST_2026-08-31.md`, "MQTT
+control-path test"), `state.nodes[].diagnostics.resetReason` reported `"WDT"`
+(a watchdog-triggered reset) for the Central node. This was noticed in
+passing from a live telemetry read, not reproduced, and no boot log from the
+actual reset event was captured — so there is no evidence here of what
+triggered it, whether it happened once during flashing/setup earlier in the
+session or reflects an intermittent runtime hang. Stated as an open question
+rather than a diagnosed bug: before relying on long unattended runtime,
+capture Central's boot log across a longer unattended period and watch for
+`resetReason` recurring as `WDT` rather than `POWERON`/`SW_CPU_RESET`.
+
 ## Uncommissioned Smart Node persisted-state edge case
 
 The standalone Smart Node console was verified for add/show/set/list/remove in

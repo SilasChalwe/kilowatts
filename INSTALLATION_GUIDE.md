@@ -106,6 +106,17 @@ To remove the runtime target, configure the plan without `runtime`:
 battery plan budget=200 reserve=20 min_soc=20
 ```
 
+**Re-entering the same runtime value does not restart its countdown.** The
+runtime target is tracked against an in-memory reference time that resets
+only when the configured runtime-hour value actually *changes*. Typing
+`runtime=4` again while it is already 4 continues the existing countdown
+rather than starting a fresh 4-hour window. To deliberately restart it,
+change the value away and back (e.g. `runtime=5` then `runtime=4`), or change
+it to the new value you actually want. See
+`test-evidence/FOUR_LED_HARDWARE_TEST_2026-08-31.md` ("Real-time runtime
+behavior") for how this was confirmed by code inspection and by observing the
+countdown live.
+
 ## 5. Test with simulation only
 
 No INA219 setup is required.
@@ -121,6 +132,16 @@ optimize
 battery
 dashboard
 ```
+
+**Order matters here, and it is not optional.** `battery plan` reloads the
+battery's last-*persisted* SoC — running it after `battery setup ... soc=X`
+silently discards the SoC you just set. `sensor values ... soc=X` must always
+be the step that runs *after* `battery plan`, as shown above, or the plan
+will be computed against a stale SoC. This was confirmed directly during
+hardware testing (a plan saved before re-applying simulated SoC 100% loaded a
+stale persisted 70% instead); see
+`test-evidence/FOUR_LED_HARDWARE_TEST_2026-08-31.md` ("Simulation setup-order
+finding").
 
 The system calculates:
 
@@ -251,3 +272,13 @@ Before using a real installation, verify:
 - correctly rated physical fuses, breakers, BMS, and other required protection hardware.
 
 Kilowatts software plans, monitors, and commands loads. It does not replace electrical protection hardware.
+
+**Relay contact check, not just relay click**: verify the load is wired to
+each relay's `COM` + `NO` (normally-open) contact, not `COM` + `NC`. A load
+wired to `NC` will physically be ON exactly when the firmware reports OFF,
+and vice versa — the relay's own click/indicator LED still looks correct in
+both cases, so the only way to catch this is to command a known state (e.g.
+`FIXED_ON`) and physically confirm the connected load itself, not just the
+relay module, responds correctly. This was caught and corrected during
+hardware testing; see `test-evidence/FOUR_LED_HARDWARE_TEST_2026-08-31.md`
+("GPIO 4 relay and load test").
