@@ -26,27 +26,24 @@ After Best-First selects AUTO loads:
 P_remaining = max(0, P_budget - (P_fixed + P_auto))
 ```
 
-Example:
-
-```text
-P_budget          = 200 W
-P_reserve         = 20 W
-P_fixed           = 80 W
-P_auto_available  = 100 W
-P_auto            = 100 W
-P_remaining       = 20 W
-```
-
 ## Runtime
 
 Runtime is optional. Battery capacity, nominal voltage, SoC, minimum SoC and requested runtime can reduce `P_auto_available` so the system can try to meet the requested runtime.
 
-If FIXED loads already consume more than the runtime target allows:
+```text
+E_usable = capacityAh × nominalVoltage × max(0, SoC - minimumSoC) / 100
+runtime allowance = E_usable / runtimeHours
+P_auto_available = max(0, min(P_budget - P_reserve, runtime allowance) - P_fixed)
+```
+
+If FIXED loads already consume more than the runtime allowance:
 
 ```text
 P_auto_available = 0 W
 Runtime target = NOT ACHIEVABLE
 ```
+
+FIXED_ON loads remain ON. Runtime only restricts AUTO allocation.
 
 ## INA219 and simulation
 
@@ -63,22 +60,78 @@ P_measured = voltage × current
 
 `P_measured` is actual instantaneous consumption monitoring. It does not replace `P_budget`.
 
+INA219 does not directly measure battery SoC. In real-hardware mode, the user supplies an initial SoC and battery capacity; the system then estimates SoC from measured current over time. In simulation, SoC can be supplied directly with `sensor values`.
+
 ## Console = installation setup
 
 Wi-Fi and MQTT broker configuration are done only on the Central serial console. They are not frontend/MQTT commands.
 
-Main commands:
+The setup is intentionally separated into three concepts:
+
+```text
+sensor setup   INA219 measurement settings
+battery setup  battery capacity, nominal voltage and starting SoC
+battery plan   power-allocation policy
+```
+
+### INA219 setup
+
+```text
+sensor setup shunt=R max_amps=A ema=X
+sensor ina219
+```
+
+`shunt`, `max_amps`, and `ema` describe only the INA219 measurement path. `max_amps` is an expected measurement-range input, not a software hardware-protection limit.
+
+### Battery setup
+
+```text
+battery setup capacity=AH voltage=V soc=PERCENT
+```
+
+This information is used for SoC and runtime calculations. It is independent of the INA219 setup, so simulation can test runtime without fake INA219 settings.
+
+### Power plan
+
+```text
+battery plan budget=W reserve=W min_soc=PERCENT [runtime=H]
+```
+
+Omit `runtime` to use normal budget planning without a runtime target.
+
+### Simulation
+
+```text
+sensor sim
+sensor values voltage=15 current=8 soc=70
+```
+
+If runtime is being tested, configure battery metadata first:
+
+```text
+battery setup capacity=10 voltage=12 soc=80
+battery plan budget=200 reserve=20 min_soc=20 runtime=4
+sensor sim
+sensor values voltage=12 current=5 soc=80
+optimize
+```
+
+No INA219 setup is required for this simulation path.
+
+### Main serial commands
 
 ```text
 status
 dashboard
 battery
-battery set budget=200 reserve=20 min_soc=20 runtime=24
 
 sensor ina219
 sensor sim
-sensor values voltage=15 current=8 soc=70
-sensor set shunt=0.005 max_amps=40 ema=0.2 capacity=200 soc=70 voltage=15
+sensor setup shunt=R max_amps=A ema=X
+sensor values voltage=V current=A [soc=PERCENT]
+
+battery setup capacity=AH voltage=V soc=PERCENT
+battery plan budget=W reserve=W min_soc=PERCENT [runtime=H]
 
 nodes
 loads
@@ -100,8 +153,6 @@ mqtt clear
 The shared Wi-Fi/ESP-NOW channel is automatic. `wifi set` detects the configured Access Point's current channel and saves it. If that Access Point later moves to another channel, Central detects the new channel, saves it and restarts automatically so Wi-Fi and ESP-NOW come back on the same channel. Smart Nodes search the radio channels for Central when normal discovery fails. There is no manual `wifi channel` command.
 
 For MQTT, port and TLS are optional. Defaults are 1883 without TLS and 8883 with TLS.
-
-`max_amps` describes the expected INA219/shunt measurement range. It is not a software hardware-protection limit.
 
 ## Frontend MQTT = operation
 
@@ -129,34 +180,9 @@ Do not decide Central status from whether the browser/frontend itself is connect
 
 ### State
 
-`state` contains:
+`state` contains system, loads and nodes. The system section contains battery, sensor/measurement and power-flow information. Wi-Fi state and MQTT connection details are intentionally not published to the frontend.
 
-```text
-system
-loads
-nodes
-```
-
-The system section contains battery, sensor/measurement and power-flow information. Wi-Fi state and MQTT connection details are intentionally not published to the frontend.
-
-The nodes section includes Central and Smart Node information such as:
-
-```text
-MAC address
-role
-name
-lifecycle/sync state
-firmware version
-chip model
-load count
-relay pins
-online state for Smart Nodes
-hardware diagnostics
-```
-
-Diagnostics can include heap, flash, PSRAM, CPU cores/frequency, silicon revision, reset reason and temperature when available.
-
-Central's online/offline status comes from the `status` topic; its retained node record is not used as the liveness signal.
+The nodes section includes Central and Smart Node information such as MAC address, role, name, lifecycle/sync state, firmware version, chip model, load count, relay pins, Smart Node online state and hardware diagnostics. Diagnostics can include heap, flash, PSRAM, CPU cores/frequency, silicon revision, reset reason and temperature when available.
 
 ### Frontend command types
 
@@ -171,18 +197,6 @@ system
 ```
 
 There is no frontend Wi-Fi or MQTT configuration command.
-
-Node operations support add/commission, update/rename and delete/decommission.
-
-Load operations support add, update and delete. Load update is used for mode, priority and schedule changes.
-
-Battery commands configure the planning values such as `P_budget`, `P_reserve`, minimum SoC and runtime.
-
-Sensor commands select INA219 or simulation and can provide simulated voltage/current/SoC values.
-
-System commands can run optimization, change the optimization interval and restart Central.
-
-See `lib/MqttManager/README.md` for exact JSON examples.
 
 ## What the system answers
 
