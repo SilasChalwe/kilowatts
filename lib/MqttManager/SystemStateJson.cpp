@@ -52,7 +52,7 @@ void integer(std::string& out, const char* key, std::int64_t value, bool comma =
 std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t schemaVersion)
 {
     std::string json;
-    json.reserve(1100);
+    json.reserve(900);
     json += "{\"schemaVersion\":" + std::to_string(schemaVersion) + ",";
 
     json += "\"battery\":{";
@@ -87,21 +87,8 @@ std::string SystemStateJson::build(const SystemStateInputs& in, std::uint32_t sc
     number(json, "P_remaining", in.P_remaining, false);
     json += "},";
 
-    json += "\"connectivity\":{";
-    boolean(json, "wifiConnected", in.wifiConnected);
-    text(json, "wifiState", in.wifiStateText);
-    boolean(json, "mqttConnected", in.mqttConnected, false);
-    json += "},";
-
-    json += "\"time\":{";
-    boolean(json, "valid", in.currentTimeValid);
-    text(json, "source", in.currentTimeSourceText);
     integer(json, "lastOptimizationEpochSeconds", in.lastOptimizationEpochSeconds, false);
-    json += "},";
-
-    json += "\"diagnostics\":{";
-    integer(json, "pinCommandErrorCount", static_cast<std::int64_t>(in.pinCommandErrorCount), false);
-    json += "}}";
+    json += "}";
     return json;
 }
 
