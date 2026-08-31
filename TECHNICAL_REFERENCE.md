@@ -2,7 +2,7 @@
 
 Kilowatts keeps planning and measurement separate.
 
-## Canonical power values
+## Exact power values used by the system
 
 ```text
 P_budget
@@ -24,6 +24,8 @@ Meanings:
 - `P_remaining`: configured power left after FIXED + selected AUTO loads.
 - `P_measured`: instantaneous voltage × current from INA219 or simulation.
 
+No additional public power names are used.
+
 Without runtime planning:
 
 ```text
@@ -40,20 +42,22 @@ P_remaining = max(0, P_budget - (P_fixed + P_auto))
 
 Runtime is an internal constraint on `P_auto_available`; it does not add another public power variable.
 
-The internal calculation is:
+Internally the system calculates the battery energy available above the configured minimum SoC, divides that energy by the requested remaining runtime, and uses the result to reduce the AUTO allowance when necessary.
+
+Conceptually:
 
 ```text
-usableEnergyWh =
+usable battery energy =
     capacityAh × nominalVoltage ×
     max(0, SoC - minimumSoC) / 100
 
-runtime allowance = usableEnergyWh / remainingRuntimeHours
+runtime allowance =
+    usable battery energy / remainingRuntimeHours
 
-planning allowance =
-    min(P_budget - P_reserve, runtime allowance)
-
-P_auto_available =
-    max(0, planning allowance - P_fixed)
+P_auto_available = max(
+    0,
+    min(P_budget - P_reserve, runtime allowance) - P_fixed
+)
 ```
 
 Example:
@@ -68,10 +72,10 @@ runtime = 24 h
 P_fixed = 40 W
 ```
 
-Usable battery energy is 1500 Wh. The internal runtime allowance is 62.5 W, therefore:
+Usable battery energy is 1500 Wh. The internal runtime allowance is 62.5 W, so:
 
 ```text
-P_auto_available = 62.5 - 40 = 22.5 W
+P_auto_available = 22.5 W
 ```
 
 Only `P_auto_available` is passed to Best-First.
@@ -89,9 +93,7 @@ else:
 P_measured = voltage × current
 ```
 
-`P_measured` is monitoring data. It is not the installation allocation budget.
-
-This avoids the zero-load problem: a real sensor can measure approximately 0 W when all loads are OFF, while the installation can still have configured capacity to start loads.
+`P_measured` is monitoring data. It is not `P_budget` and it is not used as the starting allocation budget.
 
 ## FIXED and AUTO
 
@@ -101,7 +103,7 @@ Central first computes:
 P_fixed = sum(FIXED_ON powerRatingWatts)
 ```
 
-Then it computes `P_auto_available` and sends the AUTO candidates plus that value to the existing Best-First Search.
+Then it calculates `P_auto_available` and sends the AUTO candidates plus that value to the existing Best-First Search.
 
 The Best-First Search algorithm itself is unchanged.
 
@@ -119,7 +121,7 @@ P_remaining = max(0, P_budget - (P_fixed + P_auto))
 
 ## Best-First result
 
-The active planner uses only these rejection states:
+The active planner uses only:
 
 ```text
 NONE
@@ -140,7 +142,7 @@ If true, it publishes a monitoring warning. It does not guess the electrical cau
 
 ## Interfaces
 
-Console power output uses:
+Console and MQTT power output use exactly:
 
 ```text
 P_budget
@@ -152,7 +154,7 @@ P_remaining
 P_measured
 ```
 
-Runtime is shown as hours/status, not as another named power value.
+Runtime is shown using hours and achievable status.
 
 MQTT uses five external topics:
 
@@ -163,8 +165,6 @@ command
 ack
 alert
 ```
-
-The retained `state` topic exposes the same canonical power values.
 
 ## Hardware boundary
 
