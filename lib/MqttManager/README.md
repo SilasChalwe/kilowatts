@@ -1,22 +1,26 @@
 # Kilowatts MQTT
 
-MQTT is only a transport for the same Central logic used by the serial console. It does not run a second planner.
+MQTT is only a transport for the same Central logic used by the serial console. It does not run another planner.
 
-Default namespace: `kilowatts/v1`
+Default namespace:
+
+```text
+kilowatts/v1
+```
 
 ## Topics
 
-The external MQTT API has only five topics:
+Only five external topics are used:
 
-| Topic | Direction | Retained | Purpose |
-|---|---|---:|---|
-| `status` | Central -> client | yes | `online` / `offline` |
-| `state` | Central -> client | yes | Current system, load and node state |
-| `command` | client -> Central | no | All load, system, configuration and simulation commands |
-| `ack` | Central -> client | no | Command result |
-| `alert` | Central -> client | no | Important state changes and monitoring warnings |
+| Topic | Direction | Purpose |
+|---|---|---|
+| `status` | Central -> client | online/offline |
+| `state` | Central -> client | current system, loads and nodes |
+| `command` | client -> Central | all commands |
+| `ack` | Central -> client | command result |
+| `alert` | Central -> client | important monitoring/state changes |
 
-Full example topics:
+Full topics:
 
 ```text
 kilowatts/v1/status
@@ -28,49 +32,40 @@ kilowatts/v1/alert
 
 ## State
 
-`state` combines the useful retained views into one payload:
+`state` combines the useful retained data:
 
 ```json
 {
-  "system": { },
-  "loads": { },
-  "nodes": { }
+  "system": {},
+  "loads": {},
+  "nodes": {}
 }
 ```
 
-The system section reports the same canonical power values used by Central:
+The power-flow section uses only:
 
 ```text
 P_budget
 P_reserve
-P_usable
 P_fixed
 P_auto_available
 P_auto
 P_remaining
-P_measured
-P_runtime
 ```
 
-`P_measured` comes from the active measurement input. In hardware mode the input is INA219 voltage/current. In simulation mode the input is simulated voltage/current. Both follow the same PowerManager path.
+Battery measurement contains:
+
+```text
+P_measured
+```
+
+Runtime is reported using runtime hours/status fields. It does not add another named power value.
 
 ## Command
 
-Every command is sent to the single `command` topic and includes a `type` field.
+Every MQTT command goes to `command` and includes a `type`.
 
-### Load command
-
-```json
-{
-  "type": "load",
-  "commandId": 1,
-  "nodeMac": "AA:BB:CC:DD:EE:FF",
-  "relayPin": 16,
-  "mode": "AUTO_ON"
-}
-```
-
-### Power planning configuration
+### Power planning
 
 ```json
 {
@@ -87,24 +82,36 @@ Every command is sent to the single `command` topic and includes a `type` field.
 }
 ```
 
-### Simulation
-
-Enable simulation:
+### Load command
 
 ```json
 {
-  "type": "simulation",
+  "type": "load",
   "commandId": 3,
-  "action": "ENABLE"
+  "nodeMac": "AA:BB:CC:DD:EE:FF",
+  "relayPin": 16,
+  "mode": "AUTO_ON"
 }
 ```
 
-Provide simulated input:
+### Simulation input
+
+Enable:
 
 ```json
 {
   "type": "simulation",
   "commandId": 4,
+  "action": "ENABLE"
+}
+```
+
+Set measurement values:
+
+```json
+{
+  "type": "simulation",
+  "commandId": 5,
   "action": "SET_VALUES",
   "values": {
     "batteryVoltageVolts": 15,
@@ -114,25 +121,25 @@ Provide simulated input:
 }
 ```
 
-The simulated instantaneous power is calculated exactly like the INA219 path:
+Simulation calculates power exactly like INA219:
 
 ```text
-P_measured = voltage * current
+P_measured = voltage × current
 ```
 
-Disable simulation to return to INA219 input:
+Disable simulation and return to INA219:
 
 ```json
 {
   "type": "simulation",
-  "commandId": 5,
+  "commandId": 6,
   "action": "DISABLE"
 }
 ```
 
-## Acknowledgements
+## Acknowledgement
 
-Every accepted or rejected command is reported on `ack`.
+Results are published on `ack`:
 
 ```json
 {
@@ -147,12 +154,11 @@ Every accepted or rejected command is reported on `ack`.
 
 ## Alerts
 
-`alert` is used only for meaningful changes such as:
+`alert` is used for meaningful changes such as:
 
 - battery SoC reaching the configured reserve policy;
 - requested runtime becoming unachievable;
-- `P_measured` exceeding configured `P_budget`;
-- a Smart Node going offline;
-- informational configuration events.
+- `P_measured` exceeding `P_budget`;
+- a Smart Node going offline.
 
-These are software monitoring/control messages. They are not claims of hardware electrical protection.
+These are monitoring/control messages, not hardware electrical protection claims.
