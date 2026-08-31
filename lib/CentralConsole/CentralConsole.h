@@ -2,29 +2,11 @@
 #define KILOWATTS_CENTRAL_CONSOLE_H
 
 #include "Load.h"
-#include "MqttCredentialsStore.h"
 #include "SystemCommandModel.h"
-#include "WiFiCredentialsStore.h"
 
 #include <cstdint>
 
 namespace kilowatts {
-
-struct BatterySensorCommandRequest {
-    float shuntResistanceOhms;
-    float maximumExpectedCurrentAmps;
-    float emaAlpha;
-    float batteryCapacityAmpHours;
-    float initialStateOfChargePercent;
-    float nominalVoltageVolts;
-};
-
-struct PowerPlanningCommandRequest {
-    float P_budget;
-    float P_reserve;
-    float minimumStateOfChargePercent;
-    float requiredRuntimeHours;
-};
 
 struct NodeCommandRequest {
     enum class Action : std::uint8_t { COMMISSION = 0U, RENAME = 1U, DECOMMISSION = 2U } action;
@@ -47,23 +29,6 @@ struct LoadConfigurationCommandRequest {
 struct RemoveLoadCommandRequest {
     Load::MacAddress nodeMacAddress;
     std::uint8_t relayPin;
-};
-
-enum class NetworkCommandTarget : std::uint8_t { WIFI = 0U, MQTT = 1U };
-
-struct NetworkCommandRequest {
-    NetworkCommandTarget target;
-    enum class Action : std::uint8_t {
-        STATUS = 0U, SET = 1U, CLEAR = 2U, SETUP = 3U, SCAN = 4U, SET_CHANNEL = 5U
-    } action;
-    char ssid[WiFiCredentialsStore::SSID_BUFFER_SIZE];
-    char wifiPassword[WiFiCredentialsStore::PASSWORD_BUFFER_SIZE];
-    std::uint8_t wifiChannel;
-    char mqttHost[MqttCredentialsStore::HOST_BUFFER_SIZE];
-    std::uint16_t mqttPort;
-    bool mqttUseTls;
-    char mqttUsername[MqttCredentialsStore::USERNAME_BUFFER_SIZE];
-    char mqttPassword[MqttCredentialsStore::PASSWORD_BUFFER_SIZE];
 };
 
 class CentralConsole {
