@@ -2,7 +2,7 @@
 
 Kilowatts keeps planning and measurement separate.
 
-## Exact power values used by the system
+## Exact power values
 
 ```text
 P_budget
@@ -17,7 +17,7 @@ P_measured
 Meanings:
 
 - `P_budget`: configured installation power allocation.
-- `P_reserve`: configured watts intentionally left unused.
+- `P_reserve`: configured watts intentionally left outside allocation.
 - `P_fixed`: sum of `FIXED_ON` load ratings.
 - `P_auto_available`: watts passed to Best-First Search.
 - `P_auto`: sum of AUTO load ratings selected by Best-First Search.
@@ -41,8 +41,6 @@ P_remaining = max(0, P_budget - (P_fixed + P_auto))
 ## Runtime calculation
 
 Runtime is an internal constraint on `P_auto_available`; it does not add another public power variable.
-
-Internally the system calculates the battery energy available above the configured minimum SoC, divides that energy by the requested remaining runtime, and uses the result to reduce the AUTO allowance when necessary.
 
 Conceptually:
 
@@ -72,7 +70,7 @@ runtime = 24 h
 P_fixed = 40 W
 ```
 
-Usable battery energy is 1500 Wh. The internal runtime allowance is 62.5 W, so:
+Usable battery energy is 1500 Wh. The internal runtime allowance is 62.5 W, therefore:
 
 ```text
 P_auto_available = 22.5 W
@@ -97,23 +95,13 @@ P_measured = voltage × current
 
 ## FIXED and AUTO
 
-Central first computes:
-
 ```text
 P_fixed = sum(FIXED_ON powerRatingWatts)
 ```
 
-Then it calculates `P_auto_available` and sends the AUTO candidates plus that value to the existing Best-First Search.
+Central calculates `P_auto_available` and sends the AUTO candidates plus that value to the existing Best-First Search. The Best-First Search algorithm itself is unchanged.
 
-The Best-First Search algorithm itself is unchanged.
-
-Selected AUTO loads are summed into:
-
-```text
-P_auto
-```
-
-Then:
+Selected AUTO loads are summed into `P_auto`, then:
 
 ```text
 P_remaining = max(0, P_budget - (P_fixed + P_auto))
@@ -128,7 +116,7 @@ NONE
 POWER_BUDGET_EXCEEDED
 ```
 
-Old battery-current, main-current, and branch-current rejection reasons are not part of this model.
+Old battery-current, main-current and branch-current rejection reasons are not part of this model.
 
 ## Monitoring
 
@@ -140,23 +128,19 @@ P_measured > P_budget
 
 If true, it publishes a monitoring warning. It does not guess the electrical cause and does not claim hardware protection.
 
-## Interfaces
+## Console and frontend boundary
 
-Console and MQTT power output use exactly:
+The Central serial console owns installation setup:
 
 ```text
-P_budget
-P_reserve
-P_fixed
-P_auto_available
-P_auto
-P_remaining
-P_measured
+Wi-Fi credentials
+MQTT broker credentials
+INA219/shunt technical configuration
 ```
 
-Runtime is shown using hours and achievable status.
+These settings are not remotely exposed through MQTT commands or frontend state.
 
-MQTT uses five external topics:
+Frontend MQTT has five external topics:
 
 ```text
 status
@@ -165,6 +149,32 @@ command
 ack
 alert
 ```
+
+`status` is the authoritative Central liveness signal. Central publishes retained `online`; the MQTT Last Will publishes retained `offline` if Central disappears.
+
+`state` contains:
+
+```text
+system
+loads
+nodes
+```
+
+The system state contains battery/measurement/power-flow data, not Wi-Fi or MQTT connection details.
+
+The nodes state includes Central and Smart Node hardware/device information such as firmware version, chip model, relay capability and diagnostics. Central's node entry is not used as its liveness signal; `status` is.
+
+Frontend `command` accepts only:
+
+```text
+node
+load
+battery
+sensor
+system
+```
+
+Node commands support add/update/delete. Load commands support add/update/delete. Battery commands set planning inputs. Sensor commands choose INA219/simulation or provide simulation values. System commands trigger optimization, change its interval, or restart Central.
 
 ## Hardware boundary
 
