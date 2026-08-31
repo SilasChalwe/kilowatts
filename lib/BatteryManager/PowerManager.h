@@ -37,8 +37,8 @@ enum class StateOfChargeSource : std::uint8_t {
 /**
  * Canonical planning values.
  *
- * P_usable         = max(0, P_budget - P_reserve)
- * P_auto_available = max(0, planning allowance - P_fixed)
+ * P_auto_available = power Best-First is allowed to use after reserve,
+ *                    FIXED_ON demand, and optional runtime policy.
  * P_remaining      = max(0, P_budget - (P_fixed + P_auto))
  * P_measured       = measured voltage * measured current
  */
@@ -49,14 +49,12 @@ struct PowerBudget {
 
     float P_budget;
     float P_reserve;
-    float P_usable;
     float P_fixed;
     float P_auto_available;
     float P_auto;
     float P_remaining;
 
     bool runtimeBudgetActive;
-    float P_runtime;
     bool requiredRuntimeAchievable;
 };
 
