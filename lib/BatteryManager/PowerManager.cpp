@@ -127,8 +127,8 @@ PowerManager::PowerManager()
       stateOfChargeInitialized_(false),
       powerBudget_{
           0.0F, 0.0F, 0.0F,
-          0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
-          false, 0.0F, true},
+          0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F,
+          false, true},
       remainingRequiredRuntimeHours_(0.0F),
       initialized_(false),
       simulationEnabled_(false),
@@ -678,11 +678,11 @@ bool PowerManager::updatePowerBudget()
         remainingRequiredRuntimeHours_ > 0.0F;
     if (stateOfChargeRequired && !isStateOfChargeValid()) return false;
 
-    const float P_usable = std::max(0.0F, P_budget - P_reserve);
-    float planningAllowance = P_usable;
+    const float powerAfterReserveWatts =
+        std::max(0.0F, P_budget - P_reserve);
+    float planningAllowanceWatts = powerAfterReserveWatts;
 
     const bool runtimeBudgetActive = remainingRequiredRuntimeHours_ > 0.0F;
-    float P_runtime = 0.0F;
     bool requiredRuntimeAchievable = true;
 
     if (runtimeBudgetActive) {
@@ -698,29 +698,29 @@ bool PowerManager::updatePowerBudget()
             batteryConfiguration_.capacityAmpHours *
             batteryConfiguration_.nameplateVoltageVolts *
             usableSocFraction;
+        const float runtimeAllowanceWatts =
+            usableEnergyWh / remainingRequiredRuntimeHours_;
 
-        P_runtime = usableEnergyWh / remainingRequiredRuntimeHours_;
-        if (!std::isfinite(P_runtime)) return false;
+        if (!std::isfinite(runtimeAllowanceWatts)) return false;
 
-        planningAllowance = std::min(P_usable, P_runtime);
-        requiredRuntimeAchievable = P_fixed <= planningAllowance;
+        planningAllowanceWatts =
+            std::min(powerAfterReserveWatts, runtimeAllowanceWatts);
+        requiredRuntimeAchievable = P_fixed <= planningAllowanceWatts;
     }
 
     if (isStateOfChargeValid() &&
         stateOfChargePercent_ <= minimumStateOfChargePercent) {
-        planningAllowance = 0.0F;
+        planningAllowanceWatts = 0.0F;
         if (runtimeBudgetActive && P_fixed > 0.0F) {
             requiredRuntimeAchievable = false;
         }
     }
 
-    powerBudget_.P_usable = P_usable;
     powerBudget_.P_auto_available =
-        std::max(0.0F, planningAllowance - P_fixed);
+        std::max(0.0F, planningAllowanceWatts - P_fixed);
     powerBudget_.P_remaining =
         std::max(0.0F, P_budget - (P_fixed + P_auto));
     powerBudget_.runtimeBudgetActive = runtimeBudgetActive;
-    powerBudget_.P_runtime = P_runtime;
     powerBudget_.requiredRuntimeAchievable = requiredRuntimeAchievable;
     powerBudget_.batteryVoltageVolts = measurements_.voltageVolts;
     powerBudget_.batteryCurrentAmps = measurements_.currentAmps;
@@ -755,10 +755,9 @@ void PowerManager::printDiagnosticReport() const
         static_cast<double>(measurements_.powerWatts));
     ESP_LOGI(
         TAG,
-        "P_budget=%.2f P_reserve=%.2f P_usable=%.2f",
+        "P_budget=%.2f P_reserve=%.2f",
         static_cast<double>(powerBudget_.P_budget),
-        static_cast<double>(powerBudget_.P_reserve),
-        static_cast<double>(powerBudget_.P_usable));
+        static_cast<double>(powerBudget_.P_reserve));
     ESP_LOGI(
         TAG,
         "P_fixed=%.2f P_auto_available=%.2f P_auto=%.2f P_remaining=%.2f",
@@ -769,9 +768,8 @@ void PowerManager::printDiagnosticReport() const
     if (powerBudget_.runtimeBudgetActive) {
         ESP_LOGI(
             TAG,
-            "Runtime remaining=%.2f h P_runtime=%.2f W achievable=%s",
+            "Runtime remaining=%.2f h achievable=%s",
             static_cast<double>(remainingRequiredRuntimeHours_),
-            static_cast<double>(powerBudget_.P_runtime),
             powerBudget_.requiredRuntimeAchievable ? "YES" : "NO");
     }
 #endif
