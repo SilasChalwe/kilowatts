@@ -5,7 +5,7 @@
 Example:
 
 ```text
-battery planning budget=200 reserve=20 min_soc=20 runtime_hours=24
+battery set budget=200 reserve=20 min_soc=20 runtime=24
 ```
 
 The public power values are exactly:
@@ -19,8 +19,6 @@ P_auto
 P_remaining
 P_measured
 ```
-
-No other public power value is added for runtime.
 
 If:
 
@@ -36,7 +34,7 @@ and runtime does not reduce the AUTO allowance:
 P_auto_available = 200 - 20 - 80 = 100 W
 ```
 
-Best-First receives `P_auto_available`.
+Best-First receives only `P_auto_available`.
 
 If Best-First selects AUTO loads totaling 70 W:
 
@@ -47,27 +45,25 @@ P_remaining = 200 - (80 + 70) = 50 W
 
 ## 2. Runtime
 
-When `runtime_hours` is greater than zero, battery energy and SoC are used internally to reduce `P_auto_available` when necessary.
-
-The interface reports runtime hours and whether the target is achievable. It does not expose another runtime power variable.
+When `runtime` is greater than zero, battery energy and SoC are used internally to reduce `P_auto_available` when necessary.
 
 To disable runtime planning:
 
 ```text
-battery planning budget=200 reserve=20 min_soc=20 runtime_hours=0
+battery set budget=200 reserve=20 min_soc=20 runtime=0
 ```
 
-## 3. Configure battery and INA219
+## 3. Configure INA219/battery measurement
+
+Technical sensor setup stays on the Central console:
 
 ```text
-battery configure shunt_ohms=0.005 max_sensor_amps=40 ema_alpha=0.2 capacity_ah=200 initial_soc=70 nominal_voltage=15
+sensor set shunt=0.005 max_amps=40 ema=0.2 capacity=200 soc=70 voltage=15
 ```
 
-`max_sensor_amps` describes the expected INA219/shunt measurement range. It is not a software protection limit.
+`max_amps` describes the expected INA219/shunt measurement range. It is not a software protection limit.
 
 ## 4. Test with simulation
-
-Simulation is only another input source:
 
 ```text
 sensor sim
@@ -91,13 +87,36 @@ optimize
 
 ```text
 sensor ina219
-battery status
+battery
 dashboard
 ```
 
 INA219 now supplies voltage/current to the same path used by simulation.
 
-## 6. Configure loads
+## 6. Configure Central networking
+
+Wi-Fi and MQTT broker setup are local installation settings. They are not frontend MQTT commands.
+
+Wi-Fi:
+
+```text
+wifi
+wifi setup
+wifi set ssid=MyWiFi password=MyPassword
+wifi clear
+```
+
+MQTT broker:
+
+```text
+mqtt
+mqtt set host=192.168.1.10
+mqtt clear
+```
+
+Optional MQTT settings include `port=`, `tls=on|off`, `username=` and `password=`.
+
+## 7. Configure loads
 
 Central load example:
 
@@ -113,12 +132,11 @@ load add mac=AA:BB:CC:DD:EE:FF pin=4 name=Fan power=25 priority=10 type=DC activ
 
 Use realistic `power=` values because planning uses each load's configured rating.
 
-## 7. Check operation
-
-Use:
+## 8. Check operation
 
 ```text
 status
+nodes
 loads
 optimize
 dashboard
@@ -133,9 +151,9 @@ Each planning cycle should:
 5. calculate `P_auto` and `P_remaining`;
 6. measure actual instantaneous consumption as `P_measured`.
 
-## 8. MQTT
+## 9. Frontend MQTT
 
-MQTT exposes only:
+Only five external topics are used:
 
 ```text
 kilowatts/v1/status
@@ -145,9 +163,21 @@ kilowatts/v1/ack
 kilowatts/v1/alert
 ```
 
-Use `state` for system/load/node state and `command` for remote commands.
+Use `status` for Central `online`/`offline` presence.
 
-## 9. Hardware check
+Use `state` for system, loads and nodes. The node state includes Central/Smart Node chip and diagnostic information. Wi-Fi and broker details are not published to the frontend.
+
+Use `command` only for:
+
+```text
+node
+load
+battery
+sensor
+system
+```
+
+## 10. Hardware check
 
 Before using a real installation, verify:
 
